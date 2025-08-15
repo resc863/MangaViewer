@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "MangaViewer (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "MangaViewer (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
