@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch MangaViewer (x64)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build Debug x64",
+      "program": "${workspaceFolder}/MangaViewer/bin/Debug/net8.0-windows10.0.19041.0/win-x64/MangaViewer.exe",
+      "cwd": "${workspaceFolder}/MangaViewer",
+      "env": {},
+      "console": "internalConsole"
+    },
+    {
+      "name": "Launch MangaViewer (x86)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build Debug x86",
+      "program": "${workspaceFolder}/MangaViewer/bin/Debug/net8.0-windows10.0.19041.0/win-x86/MangaViewer.exe",
+      "cwd": "${workspaceFolder}/MangaViewer",
+      "env": {},
+      "console": "internalConsole"
+    }
+  ]
+}

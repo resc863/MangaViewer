@@ -1,0 +1,61 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "restore",
+      "command": "dotnet",
+      "type": "process",
+      "args": ["restore", "MangaViewer/MangaViewer.csproj"],
+      "problemMatcher": "$msCompile",
+      "group": "build"
+    },
+    {
+      "label": "build Debug x64",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "MangaViewer/MangaViewer.csproj",
+        "-c","Debug",
+        "-f","net8.0-windows10.0.19041.0",
+        "-p:Platform=x64"
+      ],
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "dependsOn": ["restore"],
+      "detail": "Build WinUI3 app (x64 Debug)"
+    },
+    {
+      "label": "build Debug x86",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "MangaViewer/MangaViewer.csproj",
+        "-c","Debug",
+        "-f","net8.0-windows10.0.19041.0",
+        "-p:Platform=x86"
+      ],
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "dependsOn": ["restore"],
+      "detail": "Build WinUI3 app (x86 Debug)"
+    },
+    {
+      "label": "build Debug ARM64",
+      "command": "dotnet",
+      "type": "process",
+      "args": [
+        "build",
+        "MangaViewer/MangaViewer.csproj",
+        "-c","Debug",
+        "-f","net8.0-windows10.0.19041.0",
+        "-p:Platform=ARM64"
+      ],
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "dependsOn": ["restore"],
+      "detail": "Build WinUI3 app (ARM64 Debug)"
+    }
+  ]
+}

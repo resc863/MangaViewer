@@ -8,153 +8,74 @@
     xmlns:converters="using:MangaViewer.Converters"
     mc:Ignorable="d">
 
-    <Grid x:Name="RootGrid">
+    <Grid x:Name="RootGrid" Background="Transparent"> <!-- Transparent so acrylic system backdrop shows -->
         <Grid.Resources>
-            <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+            <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
         </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- Title Bar -->
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="40" 
-              Background="{ThemeResource LayerOnMicaBaseAltFillColorDefaultBrush}">
+        <!-- Title bar area becomes acrylic (transparent to backdrop) -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="40" Background="Transparent">
             <StackPanel Orientation="Horizontal" Spacing="10" Margin="10,0">
                 <Button Command="{Binding TogglePaneCommand}" FontFamily="Segoe MDL2 Assets" Content="&#xE700;"/>
                 <Button Content="폴더 열기" Click="OpenFolder_Click" IsEnabled="{Binding IsControlEnabled}"/>
                 <Button Content="{Binding DirectionButtonText}" Command="{Binding ToggleDirectionCommand}"/>
                 <Button Content="{Binding CoverButtonText}" Command="{Binding ToggleCoverCommand}"/>
-                <Button Content="{Binding OcrButtonText}" Command="{Binding RunOcrCommand}" IsEnabled="{Binding IsControlEnabled}"/>
-                <Button Content="OCR 지우기" Command="{Binding ClearOcrCommand}" 
-                        Visibility="{Binding OcrResultsCount, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                <Button Content="OCR" Command="{Binding RunOcrCommand}"/>
+                <Button Content="설정" Click="OpenSettings_Click"/>
             </StackPanel>
         </Grid>
 
-        <!-- Main SplitView -->
-        <SplitView Grid.Row="1"
-                   PaneBackground="{ThemeResource ApplicationPageBackgroundThemeBrush}"
-                   DisplayMode="Inline"
-                   OpenPaneLength="160"
-                   IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}">
+        <SplitView Grid.Row="1" DisplayMode="Inline" OpenPaneLength="160" IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}">
             <SplitView.Pane>
-                <ListView ItemsSource="{Binding Thumbnails}"
+                <!-- Thumbnails: solid background to exclude from acrylic -->
+                <ListView x:Name="ThumbnailsList"
+                          Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
+                          ItemsSource="{Binding Thumbnails}"
                           SelectedIndex="{Binding SelectedThumbnailIndex, Mode=TwoWay}"
-                          SelectionMode="Single">
+                          SelectionMode="Single"
+                          ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
                     <ListView.ItemTemplate>
                         <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
-                            <Image Source="{Binding ThumbnailSource, Mode=OneWay}" 
-                                   Height="120" Stretch="Uniform" Margin="5"/>
+                            <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
                         </DataTemplate>
                     </ListView.ItemTemplate>
                 </ListView>
             </SplitView.Pane>
 
-            <!-- Content -->
             <SplitView.Content>
-                <Grid>
-                    <!-- Single Page View -->
-                    <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}">
-                        <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
-                            <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform"
-                                   SizeChanged="Image_SizeChanged"/>
-                            <ItemsControl ItemsSource="{Binding LeftOcrResults}">
-                                <ItemsControl.ItemsPanel>
-                                    <ItemsPanelTemplate>
-                                        <Canvas Width="{Binding ElementName=SingleImage, Path=ActualWidth}"
-                                                Height="{Binding ElementName=SingleImage, Path=ActualHeight}"/>
-                                    </ItemsPanelTemplate>
-                                </ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemTemplate>
-                                    <DataTemplate x:DataType="viewmodels:BoundingBoxViewModel">
-                                        <Grid Canvas.Left="{Binding X}"
-                                              Canvas.Top="{Binding Y}"
-                                              Width="{Binding Width}"
-                                              Height="{Binding Height}"
-                                              Background="Transparent">
-                                            <Rectangle Fill="DodgerBlue" Opacity="0.22" Stroke="CornflowerBlue" StrokeThickness="1.0" />
-                                            <Button Command="{Binding CopyCommand}" Opacity="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-                                        </Grid>
-                                    </DataTemplate>
-                                </ItemsControl.ItemTemplate>
-                            </ItemsControl>
+                <!-- Content area: acrylic (transparent) margins; wrappers solid to exclude images themselves -->
+                <Grid Background="Transparent">
+                    <!-- Single Page Mode -->
+                    <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Grid x:Name="SingleWrapper" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                            <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
+                            <Canvas x:Name="SingleOverlay" IsHitTestVisible="False" />
                         </Grid>
                     </Grid>
 
-                    <!-- Two Page View -->
-                    <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <!-- Two Page Mode -->
+                    <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="0"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <!-- Left Page -->
-                        <Grid Grid.Column="0">
-                            <Grid HorizontalAlignment="Right" VerticalAlignment="Center">
-                                <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform"
-                                       SizeChanged="Image_SizeChanged"/>
-                                <ItemsControl ItemsSource="{Binding LeftOcrResults}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <Canvas Width="{Binding ElementName=LeftImage, Path=ActualWidth}"
-                                                    Height="{Binding ElementName=LeftImage, Path=ActualHeight}"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="viewmodels:BoundingBoxViewModel">
-                                            <Grid Canvas.Left="{Binding X}"
-                                                  Canvas.Top="{Binding Y}"
-                                                  Width="{Binding Width}"
-                                                  Height="{Binding Height}"
-                                                  Background="Transparent">
-                                                <Rectangle Fill="DodgerBlue" Opacity="0.22" Stroke="CornflowerBlue" StrokeThickness="1.0" />
-                                                <Button Command="{Binding CopyCommand}" Opacity="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </Grid>
+                        <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                            <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
+                            <Canvas x:Name="LeftOverlay" IsHitTestVisible="False" />
                         </Grid>
-
-                        <!-- Right Page -->
-                        <Grid Grid.Column="1">
-                            <Grid HorizontalAlignment="Left" VerticalAlignment="Center">
-                                <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform"
-                                       SizeChanged="Image_SizeChanged"/>
-                                <ItemsControl ItemsSource="{Binding RightOcrResults}">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <Canvas Width="{Binding ElementName=RightImage, Path=ActualWidth}"
-                                                    Height="{Binding ElementName=RightImage, Path=ActualHeight}"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate x:DataType="viewmodels:BoundingBoxViewModel">
-                                            <Grid Canvas.Left="{Binding X}"
-                                                  Canvas.Top="{Binding Y}"
-                                                  Width="{Binding Width}"
-                                                  Height="{Binding Height}"
-                                                  Background="Transparent">
-                                                <Rectangle Fill="DodgerBlue" Opacity="0.22" Stroke="CornflowerBlue" StrokeThickness="1.0" />
-                                                <Button Command="{Binding CopyCommand}" Opacity="0" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                            </Grid>
+                        <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                            <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
+                            <Canvas x:Name="RightOverlay" IsHitTestVisible="False" />
                         </Grid>
                     </Grid>
                 </Grid>
             </SplitView.Content>
         </SplitView>
-
-        <!-- Notification -->
-        <Border Grid.Row="1"
-                Visibility="{Binding IsNotificationVisible, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}"
-                VerticalAlignment="Bottom" HorizontalAlignment="Center" 
-                Margin="20" Padding="10,5" 
-                Background="#333333" CornerRadius="4" >
-            <TextBlock Text="{Binding NotificationText}" Foreground="White"/>
-        </Border>
     </Grid>
 </Window>
