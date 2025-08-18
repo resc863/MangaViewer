@@ -30,6 +30,7 @@ namespace MangaViewer.ViewModels
         private BitmapImage? _rightImageSource;
         private int _selectedThumbnailIndex = -1;
         private bool _isPaneOpen = true;
+        private bool _isNavOpen = false; // navigation view pane starts closed
         private bool _isLoading;
         private bool _isSinglePageMode;
         private bool _isTwoPageMode;
@@ -73,6 +74,7 @@ namespace MangaViewer.ViewModels
         }
 
         public bool IsPaneOpen { get => _isPaneOpen; set => SetProperty(ref _isPaneOpen, value); }
+        public bool IsNavOpen { get => _isNavOpen; set => SetProperty(ref _isNavOpen, value); }
         public bool IsLoading { get => _isLoading; private set { if (SetProperty(ref _isLoading, value)) OnPropertyChanged(nameof(IsControlEnabled)); } }
         public bool IsControlEnabled => !IsLoading && !IsOcrRunning;
 
@@ -85,6 +87,7 @@ namespace MangaViewer.ViewModels
         public RelayCommand ToggleDirectionCommand { get; }
         public RelayCommand ToggleCoverCommand { get; }
         public RelayCommand TogglePaneCommand { get; }
+        public RelayCommand ToggleNavPaneCommand { get; }
         public RelayCommand GoLeftCommand { get; }
         public RelayCommand GoRightCommand { get; }
         public RelayCommand RunOcrCommand { get; }
@@ -114,6 +117,7 @@ namespace MangaViewer.ViewModels
             ToggleDirectionCommand = new RelayCommand(_ => { _mangaManager.ToggleDirection(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
             ToggleCoverCommand = new RelayCommand(_ => { _mangaManager.ToggleCover(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
             TogglePaneCommand = new RelayCommand(_ => IsPaneOpen = !IsPaneOpen);
+            ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
             RunOcrCommand = new RelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
