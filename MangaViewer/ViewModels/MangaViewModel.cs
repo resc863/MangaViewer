@@ -35,6 +35,7 @@ namespace MangaViewer.ViewModels
         private bool _isSinglePageMode;
         private bool _isTwoPageMode;
         private bool _isOcrRunning;
+        private int _previousPageIndex; // for slide direction
 
         // Wrapper size logging (optional future adaptive layout)
         private double _leftWrapperWidth, _leftWrapperHeight;
@@ -102,6 +103,7 @@ namespace MangaViewer.ViewModels
 
         public event EventHandler? OcrCompleted;
         public event EventHandler? PageViewChanged;
+        public event EventHandler<int>? PageSlideRequested; // delta (+ forward, - backward)
 
         public MangaViewModel()
         {
@@ -147,17 +149,23 @@ namespace MangaViewer.ViewModels
 
         private void OnMangaLoaded()
         {
+            _previousPageIndex = 0; // reset
             OnPropertyChanged(nameof(Thumbnails));
             UpdateCommandStates();
         }
 
         private void OnPageChanged()
         {
+            int newIndex = _mangaManager.CurrentPageIndex;
+            int delta = newIndex - _previousPageIndex;
+
             CancelOcr();
             var paths = _mangaManager.GetImagePathsForCurrentPage();
             string? leftPath = paths.Count > 0 ? paths[0] : null;
             string? rightPath = paths.Count > 1 ? paths[1] : null;
-            if (_mangaManager.IsRightToLeft && !(paths.Count == 1 && _mangaManager.CurrentPageIndex == 0))
+            // RTL 시 두 장짜리 페이지만 순서를 뒤집어 표시.
+            // 단일 페이지(표지 또는 마지막 홀수 페이지)는 좌측에 그대로 두어 숨겨지는 문제 방지.
+            if (_mangaManager.IsRightToLeft && paths.Count == 2)
                 (leftPath, rightPath) = (rightPath, leftPath);
 
             LeftImageFilePath = leftPath;
@@ -168,7 +176,8 @@ namespace MangaViewer.ViewModels
             LeftImageSource = !string.IsNullOrEmpty(leftPath) ? _imageCache.Get(leftPath) : null;
             RightImageSource = !string.IsNullOrEmpty(rightPath) ? _imageCache.Get(rightPath) : null;
 
-            IsSinglePageMode = LeftImageSource != null && RightImageSource == null;
+            // 단일 페이지는 어느 한쪽만 이미지가 존재할 때로 판정 (RTL 처리 후 한쪽만 남아도 정상 처리)
+            IsSinglePageMode = (LeftImageSource != null) ^ (RightImageSource != null);
             IsTwoPageMode = LeftImageSource != null && RightImageSource != null;
 
             int primaryImageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
@@ -181,6 +190,13 @@ namespace MangaViewer.ViewModels
             TryPrefetchAhead();
             RunOcrCommand.RaiseCanExecuteChanged();
             ClearOcr();
+
+            // Raise slide request (ignore 0 delta e.g., initial load or mode toggles re-mapping)
+            if (delta != 0)
+                PageSlideRequested?.Invoke(this, delta);
+
+            _previousPageIndex = newIndex;
+
             PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
         #endregion

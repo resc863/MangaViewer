@@ -29,66 +29,18 @@
         </Grid>
 
         <!-- Navigation / content area -->
-        <NavigationView Grid.Row="1" x:Name="LeftNav" IsSettingsVisible="True" IsBackButtonVisible="Collapsed"
-                        PaneDisplayMode="LeftCompact" OpenPaneLength="240" CompactPaneLength="48"
-                        IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" ItemInvoked="LeftNav_ItemInvoked"
-                        IsTitleBarAutoPaddingEnabled="False">
+        <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Collapsed"
+                        IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="LeftCompact" OpenPaneLength="240" CompactPaneLength="48"
+                        IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True">
             <NavigationView.MenuItems>
+                <NavigationViewItem Content="리더" Icon="Library" Tag="Reader"/>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
                 <StackPanel Margin="12,12,12,24">
                     <TextBlock Text="Manga Viewer" Opacity="0.6" FontSize="12"/>
                 </StackPanel>
             </NavigationView.PaneFooter>
-
-            <NavigationView.Content>
-                <SplitView DisplayMode="Inline" OpenPaneLength="160" IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}" PanePlacement="Right">
-                    <SplitView.Pane>
-                        <ListView x:Name="ThumbnailsList"
-                                  Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
-                                  ItemsSource="{Binding Thumbnails}"
-                                  SelectedIndex="{Binding SelectedThumbnailIndex, Mode=TwoWay}"
-                                  SelectionMode="Single"
-                                  ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
-                            <ListView.ItemTemplate>
-                                <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
-                                    <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
-                                </DataTemplate>
-                            </ListView.ItemTemplate>
-                        </ListView>
-                    </SplitView.Pane>
-
-                    <SplitView.Content>
-                        <Grid Background="Transparent">
-                            <!-- Single Page Mode -->
-                            <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <Grid x:Name="SingleWrapper" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
-                                    <Canvas x:Name="SingleOverlay" IsHitTestVisible="False" />
-                                </Grid>
-                            </Grid>
-
-                            <!-- Two Page Mode -->
-                            <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="0"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-
-                                <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
-                                    <Canvas x:Name="LeftOverlay" IsHitTestVisible="False" />
-                                </Grid>
-                                <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
-                                    <Canvas x:Name="RightOverlay" IsHitTestVisible="False" />
-                                </Grid>
-                            </Grid>
-                        </Grid>
-                    </SplitView.Content>
-                </SplitView>
-            </NavigationView.Content>
+            <Frame x:Name="ContentFrame" />
         </NavigationView>
     </Grid>
 </Window>

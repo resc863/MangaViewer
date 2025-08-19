@@ -7,20 +7,18 @@ using System.Threading.Tasks;
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// 썸네일 디코딩 우선순위 스케줄러.
-    /// 선택한 인덱스 주변(거리 기반) 먼저 디코딩하여 체감 속도 향상.
-    /// 간단한 리스트 정렬 방식, 동시성 제한.
+    /// 썸네일 디코딩 우선순위 스케줄러 (선택 인덱스 인근 우선).
     /// </summary>
     public sealed class ThumbnailDecodeScheduler
     {
-        private class Request
+        private sealed class Request
         {
-            public MangaPageViewModel Vm { get; init; } = null!;
-            public string Path { get; init; } = string.Empty;
-            public int Index { get; init; }          // 전체 목록 내 인덱스
-            public int Priority { get; set; }        // 선택 인덱스와의 거리
-            public DispatcherQueue Dispatcher { get; init; } = null!;
-            public long Order { get; init; }         // FIFO 안정 정렬용
+            public MangaPageViewModel Vm = null!;
+            public string Path = string.Empty;
+            public int Index;
+            public int Priority;
+            public DispatcherQueue Dispatcher = null!;
+            public long Order;
         }
 
         private static readonly Lazy<ThumbnailDecodeScheduler> _instance = new(() => new ThumbnailDecodeScheduler());
@@ -58,7 +56,7 @@ namespace MangaViewer.Services
                 });
                 _pendingKeys.Add(path);
                 SortPending_NoLock();
-                TrySchedule();
+                TrySchedule_NoLock();
             }
         }
 
@@ -72,11 +70,12 @@ namespace MangaViewer.Services
             {
                 if (_selectedIndex == selectedIndex) return;
                 _selectedIndex = selectedIndex;
-                foreach (var req in _pending)
+                for (int i = 0; i < _pending.Count; i++)
                 {
+                    var req = _pending[i];
                     req.Priority = selectedIndex >= 0 ? Math.Abs(req.Index - selectedIndex) : req.Index;
                 }
-                SortPending_NoLock();
+                // 먼 항목 제거
                 for (int i = _pending.Count - 1; i >= 0; i--)
                 {
                     if (_pending[i].Priority > 200)
@@ -85,18 +84,18 @@ namespace MangaViewer.Services
                         _pending.RemoveAt(i);
                     }
                 }
-                TrySchedule();
+                SortPending_NoLock();
+                TrySchedule_NoLock();
             }
         }
 
-        private void SortPending_NoLock() =>
-            _pending.Sort((a, b) =>
-            {
-                int c = a.Priority.CompareTo(b.Priority);
-                return c != 0 ? c : a.Order.CompareTo(b.Order);
-            });
+        private void SortPending_NoLock() => _pending.Sort((a, b) =>
+        {
+            int c = a.Priority.CompareTo(b.Priority);
+            return c != 0 ? c : a.Order.CompareTo(b.Order);
+        });
 
-        private void TrySchedule()
+        private void TrySchedule_NoLock()
         {
             while (_running < MaxConcurrency && _pending.Count > 0)
             {
@@ -112,14 +111,14 @@ namespace MangaViewer.Services
         private async Task ProcessAsync(Request req)
         {
             try { await req.Vm.EnsureThumbnailAsync(req.Dispatcher); }
-            catch { /* 실패 무시 */ }
+            catch { }
             finally
             {
                 lock (_lock)
                 {
                     _running--;
                     _runningKeys.Remove(req.Path);
-                    TrySchedule();
+                    TrySchedule_NoLock();
                 }
             }
         }
