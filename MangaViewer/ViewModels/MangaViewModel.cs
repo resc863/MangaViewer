@@ -109,6 +109,7 @@ namespace MangaViewer.ViewModels
 
             _mangaManager.MangaLoaded += OnMangaLoaded;
             _mangaManager.PageChanged += OnPageChanged;
+            _ocrService.SettingsChanged += OnOcrSettingsChanged; // auto refresh
 
             OpenFolderCommand = new RelayCommand(async p => await OpenFolderAsync(p), _ => IsOpenFolderEnabled);
             NextPageCommand = new RelayCommand(_ => _mangaManager.GoToNextPage(), _ => _mangaManager.TotalImages > 0);
@@ -120,6 +121,15 @@ namespace MangaViewer.ViewModels
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
             RunOcrCommand = new RelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
+        }
+
+        private async void OnOcrSettingsChanged(object? sender, EventArgs e)
+        {
+            // If current boxes exist, attempt auto rerun (avoid spamming if running)
+            if (IsOcrRunning) return;
+            if (LeftImageFilePath == null && RightImageFilePath == null) return;
+            if (!RunOcrCommand.CanExecute(null)) return;
+            try { await RunOcrAsync(); } catch { }
         }
 
         public void BeginStreamingGallery()
@@ -314,8 +324,16 @@ namespace MangaViewer.ViewModels
         {
             if (IsOcrRunning) return;
             CancelOcr();
-            var paths = _mangaManager.GetImagePathsForCurrentPage();
-            if (paths.Count == 0) return;
+            var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
+            if (originalPaths.Count == 0) return;
+
+            // Adjust ordering for right-to-left so index 0 always maps to currently displayed left page
+            var paths = new List<string>(originalPaths);
+            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+            {
+                // Display logic swaps the visual left/right when RTL. Mirror that here so OCR boxes align.
+                (paths[0], paths[1]) = (paths[1], paths[0]);
+            }
 
             IsOcrRunning = true;
             OnPropertyChanged(nameof(IsControlEnabled));

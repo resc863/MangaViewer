@@ -26,7 +26,7 @@ namespace MangaViewer.Services
         // Diagnostics toggle
         public static bool DiagnosticVerbose { get; set; } = true;
 
-        private readonly OcrEngine? _ocrEngine;
+        private OcrEngine? _ocrEngine; // mutable (recreated on language change)
         private readonly ConcurrentDictionary<string, List<BoundingBoxViewModel>> _cache = new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, Task<List<BoundingBoxViewModel>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
         private readonly SemaphoreSlim _gate = new(1); // 엔진 단일 접근
@@ -38,17 +38,77 @@ namespace MangaViewer.Services
         public double ParagraphGapFactorHorizontal { get; private set; } = 0.8;
         public OcrGrouping GroupingMode => _grouping;
         public WritingMode TextWritingMode => _writingMode;
-        public string CurrentLanguage { get; private set; } = "auto";
+        public string CurrentLanguage { get; private set; } = "auto"; // "auto" = user profile languages
+
+        public event EventHandler? SettingsChanged;
 
         private OcrService() => _ocrEngine = OcrEngine.TryCreateFromUserProfileLanguages();
 
         #region Configuration
-        public void SetLanguage(string lang) { if (!string.IsNullOrWhiteSpace(lang)) CurrentLanguage = lang; ClearCache(); }
-        public void SetGrouping(OcrGrouping grouping) { if (_grouping != grouping) { _grouping = grouping; ClearCache(); } }
-        public void SetWritingMode(WritingMode mode) { if (_writingMode != mode) { _writingMode = mode; ClearCache(); } }
-        public void SetParagraphGapFactorVertical(double v) { ParagraphGapFactorVertical = Math.Clamp(v, 0.1, 3.0); if (_grouping == OcrGrouping.Paragraph) ClearCache(); }
-        public void SetParagraphGapFactorHorizontal(double v) { ParagraphGapFactorHorizontal = Math.Clamp(v, 0.1, 3.0); if (_grouping == OcrGrouping.Paragraph) ClearCache(); }
-        public void ClearCache() { _cache.Clear(); _inflight.Clear(); }
+        public void SetLanguage(string lang)
+        {
+            if (string.IsNullOrWhiteSpace(lang)) return;
+            if (string.Equals(CurrentLanguage, lang, StringComparison.OrdinalIgnoreCase)) return;
+            CurrentLanguage = lang;
+            try
+            {
+                OcrEngine? newEngine = null;
+                if (!string.Equals(lang, "auto", StringComparison.OrdinalIgnoreCase))
+                {
+                    try
+                    {
+                        var language = new Windows.Globalization.Language(lang);
+                        newEngine = OcrEngine.TryCreateFromLanguage(language);
+                        if (DiagnosticVerbose) Debug.WriteLine($"[OCR][LANG] Create engine lang={lang} success?={(newEngine!=null)}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[OCR][LANG] CreateFromLanguage fail lang={lang} ex={ex.Message}");
+                    }
+                }
+                _ocrEngine = newEngine ?? OcrEngine.TryCreateFromUserProfileLanguages();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OCR][LANG] unexpected error: {ex.Message}");
+            }
+            ClearCache();
+            OnSettingsChanged();
+        }
+        public void SetGrouping(OcrGrouping grouping)
+        {
+            if (_grouping == grouping) return;
+            _grouping = grouping;
+            ClearCache();
+            OnSettingsChanged();
+        }
+        public void SetWritingMode(WritingMode mode)
+        {
+            if (_writingMode == mode) return;
+            _writingMode = mode;
+            ClearCache();
+            OnSettingsChanged();
+        }
+        public void SetParagraphGapFactorVertical(double v)
+        {
+            double nv = Math.Clamp(v, 0.1, 3.0);
+            if (Math.Abs(nv - ParagraphGapFactorVertical) < 0.0001) return;
+            ParagraphGapFactorVertical = nv;
+            if (_grouping == OcrGrouping.Paragraph) { ClearCache(); OnSettingsChanged(); }
+        }
+        public void SetParagraphGapFactorHorizontal(double v)
+        {
+            double nv = Math.Clamp(v, 0.1, 3.0);
+            if (Math.Abs(nv - ParagraphGapFactorHorizontal) < 0.0001) return;
+            ParagraphGapFactorHorizontal = nv;
+            if (_grouping == OcrGrouping.Paragraph) { ClearCache(); OnSettingsChanged(); }
+        }
+        public void ClearCache()
+        {
+            _cache.Clear();
+            _inflight.Clear();
+        }
+        private void OnSettingsChanged() => SettingsChanged?.Invoke(this, EventArgs.Empty);
         #endregion
 
         /// <summary>OCR 실행 (mem: 지원, 디스크 임시 파일 금지)</summary>

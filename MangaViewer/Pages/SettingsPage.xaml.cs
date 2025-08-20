@@ -32,6 +32,28 @@ namespace MangaViewer.Pages
         {
             BuildUi();
             Loaded += SettingsPage_Loaded;
+            Unloaded += SettingsPage_Unloaded;
+            // Removed direct OCR auto-run here to avoid duplicate with MangaViewModel subscription
+            _ocr.SettingsChanged += Ocr_SettingsChanged; // keep for potential UI sync only
+        }
+
+        private void SettingsPage_Unloaded(object sender, RoutedEventArgs e)
+        {
+            _ocr.SettingsChanged -= Ocr_SettingsChanged;
+        }
+
+        private void Ocr_SettingsChanged(object? sender, EventArgs e)
+        {
+            // Only sync UI selections; OCR rerun handled in MangaViewModel
+            if (!IsLoaded) return;
+            // sync combos if external change occurred
+            int langIndex = 0;
+            if (string.Equals(_ocr.CurrentLanguage, "ja", StringComparison.OrdinalIgnoreCase)) langIndex = 1;
+            else if (string.Equals(_ocr.CurrentLanguage, "ko", StringComparison.OrdinalIgnoreCase)) langIndex = 2;
+            else if (string.Equals(_ocr.CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase)) langIndex = 3;
+            if (_langCombo.SelectedIndex != langIndex) _langCombo.SelectedIndex = langIndex;
+            if (_groupCombo.SelectedIndex != (int)_ocr.GroupingMode) _groupCombo.SelectedIndex = (int)_ocr.GroupingMode;
+            if (_writingCombo.SelectedIndex != (int)_ocr.TextWritingMode) _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
         }
 
         private void BuildUi()
@@ -40,6 +62,7 @@ namespace MangaViewer.Pages
             stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _langCombo = new ComboBox { Width = 160 };
+            _langCombo.Items.Add(new ComboBoxItem { Content = "자동", Tag = "auto" });
             _langCombo.Items.Add(new ComboBoxItem { Content = "일본어", Tag = "ja" });
             _langCombo.Items.Add(new ComboBoxItem { Content = "한국어", Tag = "ko" });
             _langCombo.Items.Add(new ComboBoxItem { Content = "영어", Tag = "en" });
@@ -48,8 +71,8 @@ namespace MangaViewer.Pages
 
             _groupCombo = new ComboBox { Width = 160 };
             _groupCombo.Items.Add(new ComboBoxItem { Content = "단어", Tag = OcrService.OcrGrouping.Word.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "줄", Tag = OcrService.OcrGrouping.Line.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "문단", Tag = OcrService.OcrGrouping.Paragraph.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = "행", Tag = OcrService.OcrGrouping.Line.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = "단락", Tag = OcrService.OcrGrouping.Paragraph.ToString() });
             _groupCombo.SelectionChanged += GroupCombo_SelectionChanged;
             stack.Children.Add(Row("그룹:", _groupCombo));
 
@@ -60,7 +83,11 @@ namespace MangaViewer.Pages
             _writingCombo.SelectionChanged += WritingCombo_SelectionChanged;
             stack.Children.Add(Row("쓰기 방향:", _writingCombo));
 
+            // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
+
+            // Tag section header (separate grouping from OCR settings)
+            stack.Children.Add(new TextBlock { Text = "태그 표시", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _tagFontSlider = new Slider { Minimum = 8, Maximum = 32, Width = 220, Value = _tagSettings.TagFontSize };
             _tagFontSlider.ValueChanged += TagFontSlider_ValueChanged;
@@ -78,7 +105,7 @@ namespace MangaViewer.Pages
 
             var limitsPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _cacheMaxCountBox = new NumberBox { Header = "최대 이미지 수", Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
-            _cacheMaxBytesBox = new NumberBox { Header = "최대 바이트(GB)", Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
+            _cacheMaxBytesBox = new NumberBox { Header = "최대 용량(GB)", Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
             var applyBtn = new Button { Content = "적용" }; applyBtn.Click += ApplyCacheLimit_Click;
             limitsPanel.Children.Add(_cacheMaxCountBox);
             limitsPanel.Children.Add(_cacheMaxBytesBox);
@@ -163,7 +190,7 @@ namespace MangaViewer.Pages
             var per = ImageCacheService.Instance.GetPerGalleryCounts().OrderByDescending(k=>k.Value).ToList();
             foreach (var kv in per) _cacheEntries.Add(new CacheEntryView { GalleryId = kv.Key, Count = kv.Value });
             var (cnt, bytes) = ImageCacheService.Instance.GetMemoryUsage();
-            _cacheSummary.Text = $"전체: {cnt} images, {(bytes/1024d/1024d):F1} MB";
+            _cacheSummary.Text = $"총계: {cnt} images, {(bytes/1024d/1024d):F1} MB";
         }
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
@@ -178,7 +205,13 @@ namespace MangaViewer.Pages
 
         private void SettingsPage_Loaded(object sender, RoutedEventArgs e)
         {
-            _langCombo.SelectedIndex = _ocr.CurrentLanguage switch { "ko" => 1, "en" => 2, _ => 0 };
+            // Language
+            int langIndex = 0; // default auto
+            if (string.Equals(_ocr.CurrentLanguage, "ja", StringComparison.OrdinalIgnoreCase)) langIndex = 1;
+            else if (string.Equals(_ocr.CurrentLanguage, "ko", StringComparison.OrdinalIgnoreCase)) langIndex = 2;
+            else if (string.Equals(_ocr.CurrentLanguage, "en", StringComparison.OrdinalIgnoreCase)) langIndex = 3;
+            _langCombo.SelectedIndex = langIndex;
+
             _groupCombo.SelectedIndex = (int)_ocr.GroupingMode;
             _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
             RefreshCacheView();

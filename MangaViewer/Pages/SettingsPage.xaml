@@ -5,13 +5,14 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:controls="using:MangaViewer.Controls"
-    mc:Ignorable="d">
-    <ScrollViewer>
-        <StackPanel Spacing="16" Padding="24">
+    mc:Ignorable="d" Background="Transparent">
+    <ScrollViewer Background="Transparent">
+        <StackPanel Spacing="16" Padding="24" Background="Transparent">
             <TextBlock Text="OCR 설정" FontSize="20" FontWeight="SemiBold"/>
             <StackPanel Orientation="Horizontal" Spacing="12">
                 <TextBlock Text="언어:" VerticalAlignment="Center"/>
                 <ComboBox x:Name="LangCombo" Width="160" SelectionChanged="LangCombo_SelectionChanged">
+                    <ComboBoxItem Content="자동" Tag="auto"/>
                     <ComboBoxItem Content="일본어" Tag="ja"/>
                     <ComboBoxItem Content="한국어" Tag="ko"/>
                     <ComboBoxItem Content="영어" Tag="en"/>
@@ -21,8 +22,8 @@
                 <TextBlock Text="그룹:" VerticalAlignment="Center"/>
                 <ComboBox x:Name="GroupCombo" Width="160" SelectionChanged="GroupCombo_SelectionChanged">
                     <ComboBoxItem Content="단어" Tag="Word"/>
-                    <ComboBoxItem Content="라인" Tag="Line"/>
-                    <ComboBoxItem Content="문단" Tag="Paragraph"/>
+                    <ComboBoxItem Content="행" Tag="Line"/>
+                    <ComboBoxItem Content="단락" Tag="Paragraph"/>
                 </ComboBox>
             </StackPanel>
             <StackPanel Orientation="Horizontal" Spacing="12">
@@ -36,7 +37,7 @@
             <controls:ParagraphGapSliderControl />
             <!-- Tag font size slider -->
             <StackPanel Orientation="Horizontal" Spacing="12">
-                <TextBlock Text="태그 글자 크기:" VerticalAlignment="Center"/>
+                <TextBlock Text="태그 폰트 크기:" VerticalAlignment="Center"/>
                 <Slider x:Name="TagFontSlider" Minimum="8" Maximum="32" Width="220" ValueChanged="TagFontSlider_ValueChanged"/>
                 <TextBlock x:Name="TagFontValue" VerticalAlignment="Center"/>
             </StackPanel>

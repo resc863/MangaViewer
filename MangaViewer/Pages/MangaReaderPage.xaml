@@ -6,12 +6,12 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:viewmodels="using:MangaViewer.ViewModels"
     xmlns:converters="using:MangaViewer.Converters"
-    mc:Ignorable="d">
+    mc:Ignorable="d" Background="Transparent">
     <Page.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Page.Resources>
     <Grid Background="Transparent">
-        <SplitView DisplayMode="Inline" OpenPaneLength="160" IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}" PanePlacement="Right">
+        <SplitView DisplayMode="Inline" OpenPaneLength="160" IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}" PanePlacement="Right" Background="Transparent">
             <SplitView.Pane>
                 <ListView x:Name="ThumbnailsList"
                           Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
@@ -27,21 +27,21 @@
                 </ListView>
             </SplitView.Pane>
             <SplitView.Content>
-                <Grid x:Name="PageSlideHost">
+                <Grid x:Name="PageSlideHost" Background="Transparent">
                     <Grid x:Name="PageContentRoot" Background="Transparent" RenderTransformOrigin="0.5,0.5">
                         <Grid.RenderTransform>
                             <TranslateTransform x:Name="PageTranslate" />
                         </Grid.RenderTransform>
                         <Grid Background="Transparent">
                             <!-- Single Page Mode -->
-                            <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
                                 <Grid x:Name="SingleWrapper" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                                     <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
-                                    <Canvas x:Name="SingleOverlay" IsHitTestVisible="False" />
+                                    <Canvas x:Name="SingleOverlay" Background="Transparent" />
                                 </Grid>
                             </Grid>
                             <!-- Two Page Mode -->
-                            <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="0"/>
@@ -49,11 +49,11 @@
                                 </Grid.ColumnDefinitions>
                                 <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                                     <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
-                                    <Canvas x:Name="LeftOverlay" IsHitTestVisible="False" />
+                                    <Canvas x:Name="LeftOverlay" Background="Transparent" />
                                 </Grid>
                                 <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                                     <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
-                                    <Canvas x:Name="RightOverlay" IsHitTestVisible="False" />
+                                    <Canvas x:Name="RightOverlay" Background="Transparent" />
                                 </Grid>
                             </Grid>
                         </Grid>

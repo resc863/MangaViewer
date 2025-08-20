@@ -11,6 +11,10 @@
     <Grid x:Name="RootGrid" Background="Transparent">
         <Grid.Resources>
             <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+            <!-- Transparent NavView Pane style -->
+            <Style TargetType="NavigationView">
+                <Setter Property="Background" Value="Transparent"/>
+            </Style>
         </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -31,17 +35,18 @@
         <!-- Navigation / content area -->
         <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Auto"
                         IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="LeftCompact" OpenPaneLength="240" CompactPaneLength="48"
-                        IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested">
+                        IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested"
+                        Background="Transparent">
             <NavigationView.MenuItems>
                 <NavigationViewItem Content="리더" Icon="Library" Tag="Reader"/>
                 <NavigationViewItem Content="검색" Icon="Find" Tag="Search"/>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
-                <StackPanel Margin="12,12,12,24">
+                <StackPanel Margin="12,12,12,24" Background="Transparent">
                     <TextBlock Text="Manga Viewer" Opacity="0.6" FontSize="12"/>
                 </StackPanel>
             </NavigationView.PaneFooter>
-            <Frame x:Name="ContentFrame" />
+            <Frame x:Name="ContentFrame" Background="Transparent" />
         </NavigationView>
     </Grid>
 </Window>

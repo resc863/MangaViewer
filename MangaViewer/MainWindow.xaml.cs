@@ -6,6 +6,8 @@ using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Navigation;
 using System;
 using Windows.System;
+using Microsoft.UI.Composition.SystemBackdrops; // Mica
+using WinRT; // DispatcherQueue
 
 namespace MangaViewer
 {
@@ -14,6 +16,9 @@ namespace MangaViewer
         public MangaViewModel ViewModel { get; }
         public static Frame? RootFrame { get; private set; }
         public static MangaViewModel? RootViewModel { get; private set; }
+
+        private MicaController? _micaController;
+        private SystemBackdropConfiguration? _backdropConfig;
 
         public MainWindow()
         {
@@ -26,6 +31,7 @@ namespace MangaViewer
             RootViewModel = ViewModel;
             RootGrid.DataContext = ViewModel;
             RootGrid.KeyDown += OnRootGridKeyDown;
+            RootGrid.Loaded += OnRootGridLoaded;
 
             ContentFrame.CacheSize = 10; // keep more pages cached
             ContentFrame.Navigated += OnFrameNavigated;
@@ -35,6 +41,62 @@ namespace MangaViewer
             ContentFrame.Navigate(typeof(Pages.MangaReaderPage), ViewModel);
             LeftNav.SelectedItem = LeftNav.MenuItems[0];
             UpdateBackButton();
+
+            Activated += OnWindowActivated;
+            Closed += OnWindowClosed;
+        }
+
+        private void OnRootGridLoaded(object sender, RoutedEventArgs e)
+        {
+            TrySetMicaBackdrop();
+            if (RootGrid is FrameworkElement fe)
+                fe.ActualThemeChanged += OnHostActualThemeChanged;
+        }
+
+        private ElementTheme GetHostTheme()
+        {
+            if (RootGrid is FrameworkElement fe)
+                return fe.ActualTheme;
+            return ElementTheme.Default;
+        }
+
+        private void TrySetMicaBackdrop()
+        {
+            if (!MicaController.IsSupported()) return;
+            _backdropConfig = new SystemBackdropConfiguration
+            {
+                IsInputActive = true,
+                Theme = MapToBackdropTheme(GetHostTheme())
+            };
+            _micaController = new MicaController { Kind = MicaKind.Base }; // or BaseAlt
+            _micaController.AddSystemBackdropTarget(this.As<Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop>());
+            _micaController.SetSystemBackdropConfiguration(_backdropConfig);
+        }
+
+        private static SystemBackdropTheme MapToBackdropTheme(ElementTheme theme) => theme switch
+        {
+            ElementTheme.Dark => SystemBackdropTheme.Dark,
+            ElementTheme.Light => SystemBackdropTheme.Light,
+            _ => SystemBackdropTheme.Default
+        };
+
+        private void OnHostActualThemeChanged(FrameworkElement sender, object args)
+        {
+            if (_backdropConfig != null)
+                _backdropConfig.Theme = MapToBackdropTheme(GetHostTheme());
+        }
+
+        private void OnWindowActivated(object sender, WindowActivatedEventArgs e)
+        {
+            if (_backdropConfig != null)
+                _backdropConfig.IsInputActive = e.WindowActivationState != WindowActivationState.Deactivated;
+        }
+
+        private void OnWindowClosed(object sender, WindowEventArgs e)
+        {
+            _micaController?.Dispose();
+            _micaController = null;
+            _backdropConfig = null;
         }
 
         private void OnFrameNavigated(object sender, NavigationEventArgs e)

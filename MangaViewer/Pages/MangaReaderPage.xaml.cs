@@ -11,6 +11,9 @@ using System.ComponentModel;
 using System.Linq;
 using Microsoft.UI.Xaml.Media; // for VisualTreeHelper if needed
 using Windows.System.Threading;
+using Windows.ApplicationModel.DataTransfer; // Clipboard
+using Microsoft.UI.Input; // Pointer identifiers
+using Microsoft.UI.Xaml.Input; // Tapped
 
 namespace MangaViewer.Pages
 {
@@ -218,7 +221,7 @@ namespace MangaViewer.Pages
             DrawBoxes(RightWrapperGrid, RightOverlayCanvas, ViewModel.RightOcrBoxes, ViewModel.RightImageSource.PixelWidth, ViewModel.RightImageSource.PixelHeight, false);
         }
 
-        private static void DrawBoxes(Grid wrapper, Canvas overlay, System.Collections.Generic.IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
+        private void DrawBoxes(Grid wrapper, Canvas overlay, System.Collections.Generic.IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
             overlay.Children.Clear();
             double wrapperW = wrapper.ActualWidth;
@@ -249,11 +252,37 @@ namespace MangaViewer.Pages
                     Height = h,
                     StrokeThickness = 1,
                     Stroke = strokeBrush,
-                    Fill = fillBrush
+                    Fill = fillBrush,
+                    Tag = b
                 };
+                rect.Tapped += OnOcrRectTapped;
+                rect.PointerEntered += (_, __) => rect.Opacity = 0.85;
+                rect.PointerExited += (_, __) => rect.Opacity = 1.0;
                 Canvas.SetLeft(rect, x);
                 Canvas.SetTop(rect, y);
                 overlay.Children.Add(rect);
+            }
+        }
+
+        private void OnOcrRectTapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (sender is Rectangle r && r.Tag is BoundingBoxViewModel vm && !string.IsNullOrWhiteSpace(vm.Text))
+            {
+                try
+                {
+                    var dp = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
+                    dp.SetText(vm.Text);
+                    Clipboard.SetContent(dp);
+                    Clipboard.Flush();
+                    // optional: brief visual feedback
+                    r.StrokeThickness = 2;
+                    var _ = DispatcherQueue.TryEnqueue(async () =>
+                    {
+                        await System.Threading.Tasks.Task.Delay(300);
+                        r.StrokeThickness = 1;
+                    });
+                }
+                catch { }
             }
         }
 

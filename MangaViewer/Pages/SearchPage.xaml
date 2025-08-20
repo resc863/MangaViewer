@@ -6,7 +6,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="using:MangaViewer.ViewModels"
     xmlns:controls="using:MangaViewer.Controls"
-    mc:Ignorable="d">
+    mc:Ignorable="d" Background="Transparent">
     <Page.Resources>
         <Style x:Key="GalleryTileButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent"/>
@@ -17,7 +17,7 @@
             <controls:TagWrapPanel HorizontalSpacing="4" VerticalSpacing="6" />
         </ItemsPanelTemplate>
     </Page.Resources>
-    <Grid Padding="12" RowSpacing="12">
+    <Grid Padding="12" RowSpacing="12" Background="Transparent">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -27,7 +27,7 @@
             <Button Content="검색" Click="OnSearchClick"/>
             <ProgressRing x:Name="BusyRing" Width="24" Height="24" IsActive="False"/>
         </StackPanel>
-        <ScrollViewer x:Name="ResultsScroll" Grid.Row="1">
+        <ScrollViewer x:Name="ResultsScroll" Grid.Row="1" Background="Transparent">
             <ItemsControl x:Name="ResultsList" IsTabStop="False">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
@@ -36,7 +36,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:GalleryItemViewModel">
-                        <Grid Width="180" Margin="4">
+                        <Grid Width="180" Margin="4" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                             <Grid.ContextFlyout>
                                 <MenuFlyout Opening="MetaFlyout_Opening">
                                     <MenuFlyoutItem Text="불러오기" Command="{x:Bind OpenCommand}"/>
