@@ -20,19 +20,22 @@ namespace MangaViewer.Pages
             public double Width { get; set; } // adaptive width
         }
 
-        internal static SearchPage? LastInstance; // 외부 페이지에서 접근
+        internal static SearchPage? LastInstance; // 최근 인스턴스
 
         public SearchViewModel ViewModel { get; } = new();
         private MangaViewModel? _mangaViewModel;
         private CancellationTokenSource? _streamCts;
         private FrameworkElement? _lastContextTarget; // remembers last right-click target
-        private bool _isStreamingNavigate; // 중복 / 재진입 방지
-        private Task _uiBatchChain = Task.CompletedTask; // UI 배치 직렬화
+        private Task _uiBatchChain = Task.CompletedTask; // UI batch serialization
+
+        // NEW: streaming generation & active gallery tracking
+        private int _streamGeneration;
+        private string? _activeGalleryUrl;
 
         public SearchPage()
         {
             this.InitializeComponent();
-            NavigationCacheMode = NavigationCacheMode.Required; // 페이지 캐시 유지
+            NavigationCacheMode = NavigationCacheMode.Required;
             DataContext = ViewModel;
             ViewModel.GalleryOpenRequested += OnGalleryOpenRequested;
             Loaded += SearchPage_Loaded;
@@ -65,7 +68,6 @@ namespace MangaViewer.Pages
             base.OnNavigatedTo(e);
             if (e.Parameter is MangaViewModel vm) _mangaViewModel = vm;
 
-            // 돌아왔을 때 기존 결과가 있다면 ItemsSource 복원
             if (ResultsList.ItemsSource == null && ViewModel.Results.Count > 0)
             {
                 ResultsList.ItemsSource = ViewModel.Results;
@@ -87,7 +89,7 @@ namespace MangaViewer.Pages
             try
             {
                 await ViewModel.SearchAsync(QueryBox.Text ?? string.Empty);
-                ResultsList.ItemsSource = ViewModel.Results; // 항상 동일 컬렉션 바인딩
+                ResultsList.ItemsSource = ViewModel.Results;
             }
             finally { BusyRing.IsActive = false; }
         }
@@ -98,48 +100,72 @@ namespace MangaViewer.Pages
         private async void OnGalleryOpenRequested(object? sender, GalleryItemViewModel item)
         {
             if (_mangaViewModel == null || item.GalleryUrl == null) return;
-            if (_isStreamingNavigate) return; // 이미 진행중
+
+            // Increase generation for new request (used to discard stale batches)
+            _streamGeneration++;
+            int localGen = _streamGeneration;
+            string newGalleryUrl = item.GalleryUrl;
+
             BusyRing.IsActive = true;
 
+            // Cancel previous streaming (token + background session) if switching gallery
+            if (_activeGalleryUrl != null && !string.Equals(_activeGalleryUrl, newGalleryUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                try { _streamCts?.Cancel(); } catch { }
+                try { Services.EhentaiService.CancelDownload(_activeGalleryUrl); } catch { }
+            }
+            _activeGalleryUrl = newGalleryUrl;
+
+            // Create new CTS
             try { _streamCts?.Cancel(); } catch { }
             _streamCts?.Dispose();
             _streamCts = new CancellationTokenSource();
             var token = _streamCts.Token;
-            bool navigated = false;
 
             try
             {
                 var service = new Services.EhentaiService();
-                var cached = Services.EhentaiService.TryGetCachedGallery(item.GalleryUrl);
+                var cached = Services.EhentaiService.TryGetCachedGallery(newGalleryUrl);
                 if (cached != null && cached.Count > 0)
                 {
-                    await _mangaViewModel.LoadLocalFilesAsync(cached);
-                    SafeNavigateToReader();
+                    // Cached: load immediately (ignore if user already switched again)
+                    if (localGen == _streamGeneration)
+                    {
+                        await _mangaViewModel.LoadLocalFilesAsync(cached);
+                        SafeNavigateToReader();
+                    }
                     return;
                 }
 
-                var (pageUrls, _) = await service.GetAllPageUrlsAsync(item.GalleryUrl, token);
+                // Fetch all page URLs
+                var (pageUrls, _) = await service.GetAllPageUrlsAsync(newGalleryUrl, token);
+                if (localGen != _streamGeneration || token.IsCancellationRequested) return;
+
                 _mangaViewModel.BeginStreamingGallery();
                 if (pageUrls.Count > 0) _mangaViewModel.SetExpectedTotalPages(pageUrls.Count);
 
-                await foreach (var batch in service.DownloadPagesStreamingOrderedAsync(item.GalleryUrl, pageUrls, 32, s => Debug.WriteLine("[Stream] " + s), token).WithCancellation(token))
+                bool navigated = false;
+
+                await foreach (var batch in service.DownloadPagesStreamingOrderedAsync(newGalleryUrl, pageUrls, 32, s => Debug.WriteLine("[Stream] " + s), token).WithCancellation(token))
                 {
-                    if (token.IsCancellationRequested) break;
+                    if (localGen != _streamGeneration || token.IsCancellationRequested) break; // stale
                     if (batch.Files.Any())
                     {
+                        var files = batch.Files; // capture
                         _uiBatchChain = _uiBatchChain.ContinueWith(_ => DispatcherQueue.TryEnqueue(() =>
                         {
-                            try { _mangaViewModel.AddDownloadedFiles(batch.Files); }
+                            if (localGen != _streamGeneration) return; // stale
+                            try { _mangaViewModel.AddDownloadedFiles(files); }
                             catch (Exception ex) { Debug.WriteLine("[SearchPage] AddDownloadedFiles error: " + ex.Message); }
                         }), TaskScheduler.Default);
 
                         if (!navigated && batch.Completed > 0)
                         {
                             navigated = true;
-                            _isStreamingNavigate = true;
-                            // 첫 이미지 확보 후 리더로 이동하지만 스트리밍은 계속 진행
-                            DispatcherQueue.TryEnqueue(SafeNavigateToReader);
-                            // 취소/탈출 제거 -> 잔여 페이지 계속 다운로드
+                            DispatcherQueue.TryEnqueue(() =>
+                            {
+                                if (localGen == _streamGeneration) SafeNavigateToReader();
+                            });
                         }
                     }
                 }
@@ -151,8 +177,10 @@ namespace MangaViewer.Pages
             }
             finally
             {
-                BusyRing.IsActive = false;
-                _isStreamingNavigate = false;
+                if (localGen == _streamGeneration)
+                {
+                    BusyRing.IsActive = false;
+                }
             }
         }
 

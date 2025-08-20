@@ -12,7 +12,7 @@ using Microsoft.UI.Dispatching;
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// 만화 이미지 로드 및 페이지(1~2장 묶음) 계산/내비게이션 관리.
+    /// 만화 이미지 로딩 및 페이지(1~2장 단위) 구성/내비게이션 로직 관리.
     /// </summary>
     public class MangaManager
     {
@@ -37,7 +37,7 @@ namespace MangaViewer.Services
 
         public MangaManager() => Pages = new ReadOnlyObservableCollection<MangaPageViewModel>(_pages);
 
-        /// <summary>폴더 내 지원 이미지 로드 (지연 추가)</summary>
+        /// <summary>로컬 폴더 전체 이미지 로드 (초기 추가)</summary>
         public async Task LoadFolderAsync(StorageFolder folder)
         {
             _loadCts?.Cancel();
@@ -73,10 +73,10 @@ namespace MangaViewer.Services
             MangaLoaded?.Invoke();
             PageChanged?.Invoke();
 
-            // 나머지 배치 추가 (UI 부하 감소)
+            // 나머지 비동기 삽입 (UI 부하 완화)
             _ = Task.Run(async () =>
             {
-                const int batchSize = 64; // 한번에 UI 추가할 최대 항목
+                const int batchSize = 64;
                 var batch = new List<MangaPageViewModel>(batchSize);
                 for (int i = 1; i < imageFiles.Count; i++)
                 {
@@ -114,43 +114,62 @@ namespace MangaViewer.Services
             if (_pages.Count < total)
             {
                 for (int i = _pages.Count; i < total; i++)
-                    _pages.Add(new MangaPageViewModel());
+                    _pages.Add(new MangaPageViewModel()); // placeholder (FilePath null)
                 MangaLoaded?.Invoke();
                 PageChanged?.Invoke();
             }
         }
 
+        /// <summary>
+        /// 스트리밍/다운로드된 파일 경로 추가. mem: 키 기반 순서 고정, 중복/재다운로드 방지.
+        /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> filePaths)
         {
             var incoming = filePaths?.Where(f => !string.IsNullOrWhiteSpace(f)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new();
             if (incoming.Count == 0) return;
 
-            // Natural order assumed by file name numeric part
+            // 사전 정렬: 이름에 포함된 숫자 (mem:gid:####.ext 의 ####) 기준
             foreach (var path in incoming.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
             {
+                bool isMem = path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase);
                 string name = System.IO.Path.GetFileNameWithoutExtension(path) ?? string.Empty;
-                int index = ExtractNumericIndex(name) - 1; // zero-based
+                // mem:gid:####.ext 형태 -> 마지막 콜론 뒤 4자리 숫자 추출
+                int index = -1;
+                if (isMem)
+                {
+                    int lastColon = path.LastIndexOf(':');
+                    if (lastColon >= 0 && lastColon + 5 <= path.Length)
+                    {
+                        var numSpan = path.AsSpan(lastColon + 1, Math.Min(4, path.Length - (lastColon + 1)));
+                        if (int.TryParse(numSpan, out int parsed)) index = parsed - 1;
+                    }
+                }
+                else
+                {
+                    index = ExtractNumericIndex(name) - 1; // zero-based
+                }
+
                 if (index < 0) continue;
-                // expand if needed (in case expected not set)
+
+                // 필요 시 placeholder 확장
                 if (index >= _pages.Count)
                 {
                     SetExpectedTotal(index + 1);
                 }
+
                 var vm = _pages[index];
                 if (vm.FilePath == null)
                 {
-                    vm.FilePath = path;
+                    vm.FilePath = path; // 최초 채움
                 }
-                else if (!string.Equals(vm.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                else
                 {
-                    // conflict -> append first free slot
-                    bool placed = false;
-                    for (int i = 0; i < _pages.Count; i++)
-                    {
-                        if (_pages[i].FilePath == null) { _pages[i].FilePath = path; placed = true; break; }
-                    }
-                    if (!placed)
-                        _pages.Add(new MangaPageViewModel { FilePath = path });
+                    // 이미 슬롯이 채워져 있으면 규칙:
+                    // 1) 둘 다 mem: 이면 이미 다운로드된 것으로 간주 -> skip (중복 방지)
+                    if (isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) continue;
+                    // 2) 기존이 mem: 이고 새로운 것이 로컬 파일이면 교체 (품질 향상 케이스 가정)
+                    if (!isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { vm.FilePath = path; }
+                    // 3) 그 외 (서로 다른 실제 파일 충돌) -> 무시 (순서 보존)
                 }
             }
             PageChanged?.Invoke();
@@ -208,8 +227,8 @@ namespace MangaViewer.Services
         private int GetMaxPageIndex()
         {
             if (_pages.Count == 0) return 0;
-            // Cover 분리: 총 페이지 = 1(표지) + floor((N-1+1)/2) = 1 + N/2 (정수 나눗셈)
-            int pageCount = IsCoverSeparate ? (1 + _pages.Count / 2) : ((_pages.Count + 1) / 2);
+            // Cover 분리: 전체 페이지 = 1(표지) + floor((N-1)/2 + 1) = 1 + (N-1)/2
+            int pageCount = IsCoverSeparate ? (1 + (_pages.Count - 1 + 1) / 2) : ((_pages.Count + 1) / 2);
             return pageCount - 1;
         }
 

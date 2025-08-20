@@ -14,7 +14,7 @@ using MangaViewer.ViewModels;
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// OCR 서비스: 이미지 파일 OCR + 결과 캐시 + 그룹핑.
+    /// OCR 서비스: 이미지 파일 / 인메모리(mem:) 이미지 OCR + 결과 캐시 + 그룹핑. (디스크 임시 저장 미사용)
     /// </summary>
     public sealed class OcrService
     {
@@ -23,20 +23,22 @@ namespace MangaViewer.Services
 
         public static OcrService Instance { get; } = new();
 
+        // Diagnostics toggle
+        public static bool DiagnosticVerbose { get; set; } = true;
+
         private readonly OcrEngine? _ocrEngine;
         private readonly ConcurrentDictionary<string, List<BoundingBoxViewModel>> _cache = new(StringComparer.OrdinalIgnoreCase);
-        private readonly ConcurrentDictionary<string, Task<List<BoundingBoxViewModel>>> _inflight = new(StringComparer.OrdinalIgnoreCase); // 중복 OCR 방지
-        private readonly SemaphoreSlim _gate = new(1); // 엔진 동시 접근 제한 (엔진 내부 thread-unsafe 가정)
+        private readonly ConcurrentDictionary<string, Task<List<BoundingBoxViewModel>>> _inflight = new(StringComparer.OrdinalIgnoreCase);
+        private readonly SemaphoreSlim _gate = new(1); // 엔진 단일 접근
 
         private OcrGrouping _grouping = OcrGrouping.Word;
         private WritingMode _writingMode = WritingMode.Auto;
 
         public double ParagraphGapFactorVertical { get; private set; } = 0.8;
         public double ParagraphGapFactorHorizontal { get; private set; } = 0.8;
-
         public OcrGrouping GroupingMode => _grouping;
         public WritingMode TextWritingMode => _writingMode;
-        public string CurrentLanguage { get; private set; } = "auto"; // 단순 추적용 (엔진 재생성 생략)
+        public string CurrentLanguage { get; private set; } = "auto";
 
         private OcrService() => _ocrEngine = OcrEngine.TryCreateFromUserProfileLanguages();
 
@@ -49,64 +51,123 @@ namespace MangaViewer.Services
         public void ClearCache() { _cache.Clear(); _inflight.Clear(); }
         #endregion
 
-        /// <summary>
-        /// OCR 수행 (캐시 / 중복요청 병합 / 취소 지원)
-        /// </summary>
+        /// <summary>OCR 실행 (mem: 지원, 디스크 임시 파일 금지)</summary>
         public Task<List<BoundingBoxViewModel>> GetOcrAsync(string path, CancellationToken ct)
         {
             if (string.IsNullOrWhiteSpace(path) || _ocrEngine == null)
                 return Task.FromResult(new List<BoundingBoxViewModel>());
-
-            if (_cache.TryGetValue(path, out var cached))
-                return Task.FromResult(cached);
-
-            // 중복 OCR 요청 병합
+            if (_cache.TryGetValue(path, out var cached)) return Task.FromResult(cached);
             return _inflight.GetOrAdd(path, _ => RunOcrInternalAsync(path, ct));
         }
 
         private async Task<List<BoundingBoxViewModel>> RunOcrInternalAsync(string path, CancellationToken ct)
         {
+            var swTotal = Stopwatch.StartNew();
             try
             {
                 ct.ThrowIfCancellationRequested();
-                StorageFile file = await StorageFile.GetFileFromPathAsync(path);
-                using IRandomAccessStream stream = await file.OpenAsync(FileAccessMode.Read);
-                var decoder = await BitmapDecoder.CreateAsync(stream);
+                IRandomAccessStream? stream = null;
+                SoftwareBitmap? decoded = null;
+                SoftwareBitmap? working = null;
+                try
+                {
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][START] {path}");
+                    stream = await OpenImageStreamAsync(path, ct);
+                    if (stream == null) { if (DiagnosticVerbose) Debug.WriteLine($"[OCR][NO-DATA] {path}"); return new List<BoundingBoxViewModel>(); }
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][STREAM] {path} size={stream.Size}");
+                    var decSw = Stopwatch.StartNew();
+                    var decoder = await BitmapDecoder.CreateAsync(stream);
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][DECODER] {path} fmt={decoder.BitmapPixelFormat} w={decoder.PixelWidth} h={decoder.PixelHeight}");
+                    var transform = CreateScaleTransform(decoder.PixelWidth, decoder.PixelHeight);
+                    decoded = await GetSupportedBitmapAsync(decoder, transform, ct);
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][DECODED] {path} fmt={decoded.BitmapPixelFormat} w={decoded.PixelWidth} h={decoded.PixelHeight} durMs={decSw.ElapsedMilliseconds}");
+                    working = SoftwareBitmap.Copy(decoded);
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][CLONE] {path} cloned fmt={working.BitmapPixelFormat} w={working.PixelWidth} h={working.PixelHeight}");
+                }
+                finally
+                {
+                    decoded?.Dispose(); // Keep working only
+                    stream?.Dispose();
+                }
 
-                var transform = CreateScaleTransform(decoder.PixelWidth, decoder.PixelHeight);
-                using var softwareBitmap = await GetSupportedBitmapAsync(decoder, transform, ct);
+                if (working == null) return new List<BoundingBoxViewModel>();
 
-                ct.ThrowIfCancellationRequested();
-                await _gate.WaitAsync(ct);
                 Windows.Media.Ocr.OcrResult ocrRaw;
-                try { ocrRaw = await _ocrEngine!.RecognizeAsync(softwareBitmap); }
-                finally { _gate.Release(); }
+                var swOcr = Stopwatch.StartNew();
+                await _gate.WaitAsync(ct);
+                try
+                {
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][CALL] {path} start");
+                    ocrRaw = await _ocrEngine!.RecognizeAsync(working);
+                    if (DiagnosticVerbose) Debug.WriteLine($"[OCR][CALL-END] {path} durMs={swOcr.ElapsedMilliseconds}");
+                }
+                catch (ObjectDisposedException ode)
+                {
+                    Debug.WriteLine($"[OCR][DISPOSED] During RecognizeAsync path={path} msg={ode.Message} working.IsDisposed?={IsBitmapDisposed(working)}");
+                    throw;
+                }
+                finally
+                {
+                    _gate.Release();
+                }
 
-                int pixelW = (int)softwareBitmap.PixelWidth;
-                int pixelH = (int)softwareBitmap.PixelHeight;
+                int pixelW = (int)working.PixelWidth;
+                int pixelH = (int)working.PixelHeight;
+                var buildSw = Stopwatch.StartNew();
                 var list = _grouping switch
                 {
                     OcrGrouping.Line => BuildLineGroups(ocrRaw, pixelW, pixelH),
                     OcrGrouping.Paragraph => BuildParagraphGroups(ocrRaw, pixelW, pixelH),
                     _ => BuildWordGroups(ocrRaw, pixelW, pixelH)
                 };
-                _cache[path] = list; // 캐시 저장
+                if (DiagnosticVerbose) Debug.WriteLine($"[OCR][BUILT] {path} boxes={list.Count} durMs={buildSw.ElapsedMilliseconds} totalMs={swTotal.ElapsedMilliseconds}");
+                _cache[path] = list;
                 return list;
             }
-            catch (OperationCanceledException)
-            {
-                throw; // 호출측에서 구분 처리
-            }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[OCR] Failed '{path}': {ex.Message}");
+                Debug.WriteLine($"[OCR][FAIL] {path} ex={ex.GetType().Name} msg={ex.Message}\n{ex}");
                 return new List<BoundingBoxViewModel>();
             }
             finally
             {
-                // 완료/실패 후 inflight 제거하여 후속 요청 허용
                 _inflight.TryRemove(path, out _);
+                if (DiagnosticVerbose) Debug.WriteLine($"[OCR][END] {path} totalMs={swTotal.ElapsedMilliseconds}");
             }
+        }
+
+        private static bool IsBitmapDisposed(SoftwareBitmap bmp)
+        {
+            try
+            {
+                _ = bmp.PixelWidth; // access property triggers ObjectDisposedException if disposed
+                return false;
+            }
+            catch (ObjectDisposedException) { return true; }
+            catch { return false; }
+        }
+
+        private static async Task<IRandomAccessStream?> OpenImageStreamAsync(string path, CancellationToken ct)
+        {
+            if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!ImageCacheService.Instance.TryGetMemoryImageBytes(path, out var data) || data == null || data.Length == 0)
+                    return null;
+                var mem = new InMemoryRandomAccessStream();
+                // NOTE: DataWriter.Dispose will also dispose underlying stream if not detached.
+                var writer = new DataWriter(mem);
+                writer.WriteBytes(data);
+                await writer.StoreAsync().AsTask(ct);
+                await writer.FlushAsync().AsTask(ct);
+                writer.DetachStream(); // keep mem alive
+                writer.Dispose(); // safe: stream detached
+                mem.Seek(0);
+                if (DiagnosticVerbose) Debug.WriteLine($"[OCR][MEM] {path} bytes={data.Length}");
+                return mem;
+            }
+            StorageFile file = await StorageFile.GetFileFromPathAsync(path);
+            return await file.OpenAsync(FileAccessMode.Read).AsTask(ct);
         }
 
         private static BitmapTransform CreateScaleTransform(uint width, uint height)
@@ -123,21 +184,42 @@ namespace MangaViewer.Services
 
         private static async Task<SoftwareBitmap> GetSupportedBitmapAsync(BitmapDecoder decoder, BitmapTransform transform, CancellationToken ct)
         {
-            // 1차 Gray8
-            try
+            bool sourceRgbaLike = decoder.BitmapPixelFormat == BitmapPixelFormat.Rgba8 || decoder.BitmapPixelFormat == BitmapPixelFormat.Bgra8;
+
+            // Prefer BGRA8 first for WebP / RGBA sources to avoid unsupported Gray8 direct decode exceptions
+            if (sourceRgbaLike)
             {
-                var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Gray8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
-                if (sb != null) return sb;
+                try
+                {
+                    var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
+                    if (sb != null) return sb;
+                }
+                catch (Exception ex) { Debug.WriteLine("[OCR] Bgra8 primary decode failed: " + ex.Message); }
+                // Fallback attempt Gray8
+                try
+                {
+                    var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Gray8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
+                    if (sb != null) return sb;
+                }
+                catch (Exception ex) { Debug.WriteLine("[OCR] Gray8 secondary decode failed: " + ex.Message); }
             }
-            catch (Exception ex) { Debug.WriteLine("[OCR] Gray8 decode failed -> fallback: " + ex.Message); }
-            // 2차 Bgra8
-            try
+            else
             {
-                var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
-                if (sb != null) return sb;
+                // Non‑RGBA sources: try Gray8 first (often cheapest), then BGRA8
+                try
+                {
+                    var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Gray8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
+                    if (sb != null) return sb;
+                }
+                catch (Exception ex) { Debug.WriteLine("[OCR] Gray8 decode fallback: " + ex.Message); }
+                try
+                {
+                    var sb = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage).AsTask(ct);
+                    if (sb != null) return sb;
+                }
+                catch (Exception ex) { Debug.WriteLine("[OCR] Bgra8 decode fallback: " + ex.Message); }
             }
-            catch (Exception ex) { Debug.WriteLine("[OCR] Bgra8 decode failed: " + ex.Message); }
-            // 3차 원본 후 변환
+            // Last resort: original
             var original = await decoder.GetSoftwareBitmapAsync().AsTask(ct);
             return original.BitmapPixelFormat == BitmapPixelFormat.Bgra8
                 ? original

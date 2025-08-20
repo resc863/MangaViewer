@@ -55,7 +55,7 @@ namespace MangaViewer.ViewModels
         public InfoBarSeverity OcrSeverity { get => _ocrSeverity; private set => SetProperty(ref _ocrSeverity, value); }
         public bool IsStreamingGallery { get => _isStreamingGallery; private set { if (SetProperty(ref _isStreamingGallery, value)) OnPropertyChanged(nameof(IsOpenFolderEnabled)); } }
 
-        public bool IsOpenFolderEnabled => !IsStreamingGallery && IsControlEnabled;
+        public bool IsOpenFolderEnabled => IsControlEnabled; // always allow folder open (streaming mode does not disable)
 
         public int SelectedThumbnailIndex
         {
@@ -141,13 +141,28 @@ namespace MangaViewer.ViewModels
 
         public async Task LoadLocalFilesAsync(IReadOnlyList<string> filePaths)
         {
-            IsStreamingGallery = false; // local load
+            IsStreamingGallery = false; // local load unless mem: detected
             OnPropertyChanged(nameof(IsOpenFolderEnabled));
             if (filePaths == null || filePaths.Count == 0) return;
+
+            // NEW: handle in-memory cached gallery (mem: keys) directly
+            bool allMem = true;
+            for (int i = 0; i < filePaths.Count; i++)
+            {
+                if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
+            }
+            if (allMem)
+            {
+                BeginStreamingGallery(); // reuse streaming pipeline (placeholders + ordered add)
+                SetExpectedTotalPages(filePaths.Count);
+                AddDownloadedFiles(filePaths);
+                return;
+            }
+
             try
             {
                 string? folderPath = System.IO.Path.GetDirectoryName(filePaths[0]);
-                if (folderPath != null)
+                if (!string.IsNullOrWhiteSpace(folderPath))
                 {
                     StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(folderPath);
                     await _mangaManager.LoadFolderAsync(folder);
