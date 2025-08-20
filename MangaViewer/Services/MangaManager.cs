@@ -99,6 +99,72 @@ namespace MangaViewer.Services
             }, token);
         }
 
+        public void Clear()
+        {
+            _pages.Clear();
+            CurrentPageIndex = 0;
+            MangaLoaded?.Invoke();
+            PageChanged?.Invoke();
+        }
+        private int _expectedTotal = 0;
+        public void SetExpectedTotal(int total)
+        {
+            if (total <= 0) return;
+            _expectedTotal = total;
+            if (_pages.Count < total)
+            {
+                for (int i = _pages.Count; i < total; i++)
+                    _pages.Add(new MangaPageViewModel());
+                MangaLoaded?.Invoke();
+                PageChanged?.Invoke();
+            }
+        }
+
+        public void AddDownloadedFiles(IEnumerable<string> filePaths)
+        {
+            var incoming = filePaths?.Where(f => !string.IsNullOrWhiteSpace(f)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new();
+            if (incoming.Count == 0) return;
+
+            // Natural order assumed by file name numeric part
+            foreach (var path in incoming.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            {
+                string name = System.IO.Path.GetFileNameWithoutExtension(path) ?? string.Empty;
+                int index = ExtractNumericIndex(name) - 1; // zero-based
+                if (index < 0) continue;
+                // expand if needed (in case expected not set)
+                if (index >= _pages.Count)
+                {
+                    SetExpectedTotal(index + 1);
+                }
+                var vm = _pages[index];
+                if (vm.FilePath == null)
+                {
+                    vm.FilePath = path;
+                }
+                else if (!string.Equals(vm.FilePath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    // conflict -> append first free slot
+                    bool placed = false;
+                    for (int i = 0; i < _pages.Count; i++)
+                    {
+                        if (_pages[i].FilePath == null) { _pages[i].FilePath = path; placed = true; break; }
+                    }
+                    if (!placed)
+                        _pages.Add(new MangaPageViewModel { FilePath = path });
+                }
+            }
+            PageChanged?.Invoke();
+        }
+
+        private static int ExtractNumericIndex(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return -1;
+            var m = s_digitsRegex.Match(name);
+            if (!m.Success) return -1;
+            if (int.TryParse(m.Value, out int v)) return v;
+            return -1;
+        }
+
         public void GoToPreviousPage()
         {
             if (CurrentPageIndex <= 0) return;
@@ -189,5 +255,14 @@ namespace MangaViewer.Services
 
         private static string ToNaturalSortKey(string name) =>
             s_digitsRegex.Replace(name, m => m.Value.PadLeft(10, '0'));
+        public void CreatePlaceholders(int count)
+        {
+            if (count <= 0) return;
+            if (_pages.Count > 0) return; // only if empty
+            for (int i = 0; i < count; i++)
+                _pages.Add(new MangaPageViewModel());
+            MangaLoaded?.Invoke();
+            PageChanged?.Invoke();
+        }
     }
 }

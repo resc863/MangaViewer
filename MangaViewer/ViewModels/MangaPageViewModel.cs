@@ -14,6 +14,12 @@ namespace MangaViewer.ViewModels
     {
         private string? _filePath;
         private int _version; // FilePath 변경 버전.
+        private bool _isPlaceholder = true;
+        public bool IsPlaceholder
+        {
+            get => _isPlaceholder;
+            private set { if (_isPlaceholder != value) { _isPlaceholder = value; OnPropertyChanged(); } }
+        }
         public string? FilePath
         {
             get => _filePath;
@@ -23,6 +29,7 @@ namespace MangaViewer.ViewModels
                 _filePath = value;
                 unchecked { _version++; }
                 OnPropertyChanged();
+                if (!string.IsNullOrEmpty(_filePath)) IsPlaceholder = false; else IsPlaceholder = true;
                 ThumbnailSource = null; // 지연 로드
             }
         }
@@ -49,6 +56,23 @@ namespace MangaViewer.ViewModels
             if (HasThumbnail || _thumbnailLoading || string.IsNullOrEmpty(_filePath)) return;
             int localVersion = _version;
 
+            // mem: immediate load via cache bytes
+            if (_filePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) && bytes != null)
+                {
+                    try
+                    {
+                        using var ms = new MemoryStream(bytes, writable: false);
+                        var bmp = new BitmapImage { DecodePixelWidth = 150 };
+                        bmp.SetSource(ms.AsRandomAccessStream());
+                        if (localVersion == _version) ThumbnailSource = bmp;
+                    }
+                    catch { }
+                }
+                return;
+            }
+
             // 캐시
             var cached = ThumbnailCacheService.Instance.Get(_filePath);
             if (cached != null)
@@ -64,31 +88,34 @@ namespace MangaViewer.ViewModels
                 await s_decodeGate.WaitAsync();
                 try
                 {
-                    using var fs = File.OpenRead(_filePath);
-                    const int MaxReadBytes = 5 * 1024 * 1024; // 5MB
-                    long len = fs.Length;
-                    if (len <= MaxReadBytes)
+                    if (File.Exists(_filePath))
                     {
-                        buffer = new byte[len];
-                        int readTotal = 0;
-                        while (readTotal < len)
+                        using var fs = File.OpenRead(_filePath);
+                        const int MaxReadBytes = 5 * 1024 * 1024; // 5MB
+                        long len = fs.Length;
+                        if (len <= MaxReadBytes)
                         {
-                            int r = fs.Read(buffer, readTotal, (int)(len - readTotal));
-                            if (r <= 0) break;
-                            readTotal += r;
+                            buffer = new byte[len];
+                            int readTotal = 0;
+                            while (readTotal < len)
+                            {
+                                int r = fs.Read(buffer, readTotal, (int)(len - readTotal));
+                                if (r <= 0) break;
+                                readTotal += r;
+                            }
                         }
-                    }
-                    else
-                    {
-                        buffer = new byte[MaxReadBytes];
-                        int readTotal = 0;
-                        while (readTotal < MaxReadBytes)
+                        else
                         {
-                            int r = fs.Read(buffer, readTotal, MaxReadBytes - readTotal);
-                            if (r <= 0) break;
-                            readTotal += r;
+                            buffer = new byte[MaxReadBytes];
+                            int readTotal = 0;
+                            while (readTotal < MaxReadBytes)
+                            {
+                                int r = fs.Read(buffer, readTotal, MaxReadBytes - readTotal);
+                                if (r <= 0) break;
+                                readTotal += r;
+                            }
+                            if (readTotal < MaxReadBytes) Array.Resize(ref buffer, readTotal);
                         }
-                        if (readTotal < MaxReadBytes) Array.Resize(ref buffer, readTotal);
                     }
                 }
                 finally { s_decodeGate.Release(); }

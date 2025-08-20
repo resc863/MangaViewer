@@ -21,7 +21,7 @@
         <Grid x:Name="AppTitleBar" Grid.Row="0" Height="32" Background="Transparent">
             <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="56,0,0,0">
                 <Button Command="{Binding TogglePaneCommand}" FontFamily="Segoe MDL2 Assets" Content="&#xE70E;" ToolTipService.ToolTip="썸네일 패널"/>
-                <Button Content="폴더 열기" Click="OpenFolder_Click" IsEnabled="{Binding IsControlEnabled}"/>
+                <Button Content="폴더 열기" Click="OpenFolder_Click" IsEnabled="{Binding IsOpenFolderEnabled}" Visibility="{Binding IsOpenFolderEnabled, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                 <Button Content="{Binding DirectionButtonText}" Command="{Binding ToggleDirectionCommand}"/>
                 <Button Content="{Binding CoverButtonText}" Command="{Binding ToggleCoverCommand}"/>
                 <Button Content="OCR" Command="{Binding RunOcrCommand}"/>
@@ -29,11 +29,12 @@
         </Grid>
 
         <!-- Navigation / content area -->
-        <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Collapsed"
+        <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Auto"
                         IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="LeftCompact" OpenPaneLength="240" CompactPaneLength="48"
-                        IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True">
+                        IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested">
             <NavigationView.MenuItems>
                 <NavigationViewItem Content="리더" Icon="Library" Tag="Reader"/>
+                <NavigationViewItem Content="검색" Icon="Find" Tag="Search"/>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
                 <StackPanel Margin="12,12,12,24">

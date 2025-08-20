@@ -6,6 +6,11 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using System;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Linq;
+using Microsoft.UI.Xaml.Media; // for VisualTreeHelper if needed
+using Windows.System.Threading;
 
 namespace MangaViewer.Pages
 {
@@ -13,11 +18,14 @@ namespace MangaViewer.Pages
     {
         public MangaViewModel ViewModel { get; private set; } = null!;
         private Storyboard? _pageSlideStoryboard;
+        private ThreadPoolTimer? _thumbRefreshTimer;
+        private bool _isUnloaded;
 
         public MangaReaderPage()
         {
             InitializeComponent();
             Loaded += MangaReaderPage_Loaded;
+            Unloaded += MangaReaderPage_Unloaded;
         }
 
         private Grid SingleWrapperGrid => SingleWrapper;
@@ -47,6 +55,35 @@ namespace MangaViewer.Pages
             }
         }
 
+        protected override void OnNavigatedFrom(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
+        {
+            base.OnNavigatedFrom(e);
+            Cleanup();
+        }
+
+        private void MangaReaderPage_Unloaded(object sender, RoutedEventArgs e)
+        {
+            Cleanup();
+        }
+
+        private void Cleanup()
+        {
+            if (_isUnloaded) return;
+            _isUnloaded = true;
+            _thumbRefreshTimer?.Cancel();
+            _thumbRefreshTimer = null;
+            if (ViewModel != null)
+            {
+                ViewModel.PageViewChanged -= (_, __) => RedrawAllOcr();
+                ViewModel.OcrCompleted -= (_, __) => RedrawAllOcr();
+                ViewModel.PageSlideRequested -= OnPageSlideRequested;
+                if (ViewModel.Thumbnails is INotifyCollectionChanged incc)
+                    incc.CollectionChanged -= OnThumbsChanged;
+                foreach (var p in ViewModel.Thumbnails)
+                    p.PropertyChanged -= OnPagePropertyChanged;
+            }
+        }
+
         private void HookVm(MangaViewModel vm)
         {
             if (ViewModel == vm) return;
@@ -54,7 +91,86 @@ namespace MangaViewer.Pages
             ViewModel.PageViewChanged += (_, __) => RedrawAllOcr();
             ViewModel.OcrCompleted += (_, __) => RedrawAllOcr();
             ViewModel.PageSlideRequested += OnPageSlideRequested;
+
+            if (ViewModel.Thumbnails is INotifyCollectionChanged incc)
+            {
+                incc.CollectionChanged -= OnThumbsChanged;
+                incc.CollectionChanged += OnThumbsChanged;
+            }
+            foreach (var page in ViewModel.Thumbnails)
+                SubscribePage(page);
+
+            StartThumbnailAutoRefresh();
             RedrawAllOcr();
+        }
+
+        private void StartThumbnailAutoRefresh()
+        {
+            _thumbRefreshTimer?.Cancel();
+            _thumbRefreshTimer = ThreadPoolTimer.CreatePeriodicTimer(_ =>
+            {
+                if (_isUnloaded) return;
+                try { DispatcherQueue.TryEnqueue(KickVisibleThumbnailDecode); } catch { }
+            }, TimeSpan.FromMilliseconds(700));
+        }
+
+        private void KickVisibleThumbnailDecode()
+        {
+            if (_isUnloaded) return;
+            if (ThumbnailsList == null || ViewModel == null || ViewModel.Thumbnails.Count == 0) return;
+            if (!DispatcherQueue.HasThreadAccess) return; // safety
+            var panel = ThumbnailsList.ItemsPanelRoot as Panel;
+            if (panel == null || panel.Children.Count == 0) return;
+            for (int i = 0; i < panel.Children.Count; i++)
+            {
+                if (panel.Children[i] is ListViewItem lvi)
+                {
+                    int index = ThumbnailsList.IndexFromContainer(lvi);
+                    if (index < 0 || index >= ViewModel.Thumbnails.Count) continue;
+                    var vm = ViewModel.Thumbnails[index];
+                    if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
+                    {
+                        Services.ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                    }
+                }
+            }
+        }
+
+        private void OnThumbsChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (e.NewItems != null)
+            {
+                foreach (var item in e.NewItems)
+                {
+                    if (item is MangaPageViewModel m) SubscribePage(m);
+                }
+            }
+            // After changes attempt refresh of visible ones quickly
+            KickVisibleThumbnailDecode();
+        }
+
+        private void SubscribePage(MangaPageViewModel page)
+        {
+            page.PropertyChanged -= OnPagePropertyChanged;
+            page.PropertyChanged += OnPagePropertyChanged;
+        }
+
+        private void OnPagePropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (sender is not MangaPageViewModel vm) return;
+            if (e.PropertyName == nameof(MangaPageViewModel.FilePath))
+            {
+                if (!string.IsNullOrEmpty(vm.FilePath))
+                {
+                    int index = ViewModel.Thumbnails.IndexOf(vm);
+                    if (index >= 0)
+                    {
+                        Services.ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                        // If container not yet realized, timer will catch it later; if realized ensure immediate attempt
+                        KickVisibleThumbnailDecode();
+                    }
+                }
+            }
         }
 
         private void ThumbnailsList_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)

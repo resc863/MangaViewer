@@ -34,6 +34,12 @@
                 </ComboBox>
             </StackPanel>
             <controls:ParagraphGapSliderControl />
+            <!-- Tag font size slider -->
+            <StackPanel Orientation="Horizontal" Spacing="12">
+                <TextBlock Text="태그 글자 크기:" VerticalAlignment="Center"/>
+                <Slider x:Name="TagFontSlider" Minimum="8" Maximum="32" Width="220" ValueChanged="TagFontSlider_ValueChanged"/>
+                <TextBlock x:Name="TagFontValue" VerticalAlignment="Center"/>
+            </StackPanel>
         </StackPanel>
     </ScrollViewer>
 </Page>

@@ -1,6 +1,7 @@
 using MangaViewer.Services;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 
 namespace MangaViewer.Pages
@@ -8,9 +9,12 @@ namespace MangaViewer.Pages
     public sealed partial class SettingsPage : Page
     {
         private readonly OcrService _ocr = OcrService.Instance;
+        private readonly TagSettingsService _tagSettings = TagSettingsService.Instance;
         private ComboBox _langCombo = null!;
         private ComboBox _groupCombo = null!;
         private ComboBox _writingCombo = null!;
+        private Slider _tagFontSlider = null!;
+        private TextBlock _tagFontValue = null!;
 
         public SettingsPage()
         {
@@ -45,8 +49,22 @@ namespace MangaViewer.Pages
             stack.Children.Add(Row("쓰기 방향:", _writingCombo));
 
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
+
+            // Tag font size slider
+            _tagFontSlider = new Slider { Minimum = 8, Maximum = 32, Width = 220, Value = _tagSettings.TagFontSize };
+            _tagFontSlider.ValueChanged += TagFontSlider_ValueChanged;
+            _tagFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateTagFontValue();
+            var fontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            fontRow.Children.Add(new TextBlock { Text = "태그 글자 크기:", VerticalAlignment = VerticalAlignment.Center });
+            fontRow.Children.Add(_tagFontSlider);
+            fontRow.Children.Add(_tagFontValue);
+            stack.Children.Add(fontRow);
+
             Content = new ScrollViewer { Content = stack };
         }
+
+        private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
 
         private static UIElement Row(string label, UIElement inner)
         {
@@ -79,6 +97,12 @@ namespace MangaViewer.Pages
         {
             if (_writingCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag && Enum.TryParse<OcrService.WritingMode>(tag, out var m))
                 _ocr.SetWritingMode(m);
+        }
+
+        private void TagFontSlider_ValueChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+        {
+            _tagSettings.TagFontSize = e.NewValue;
+            UpdateTagFontValue();
         }
     }
 }

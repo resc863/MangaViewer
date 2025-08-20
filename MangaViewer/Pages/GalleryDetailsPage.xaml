@@ -1,0 +1,162 @@
+﻿<Page x:Class="MangaViewer.Pages.GalleryDetailsPage"
+      x:Name="PageRoot"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      xmlns:controls="using:MangaViewer.Controls"
+      xmlns:svc="using:MangaViewer.Services"
+      mc:Ignorable="d">
+    <ScrollViewer Padding="16">
+        <StackPanel Spacing="22">
+            <!-- 헤더 -->
+            <StackPanel Spacing="4">
+                <TextBlock x:Name="TitleBlock" FontSize="26" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
+                <StackPanel Orientation="Horizontal" Spacing="16">
+                    <TextBlock x:Name="IdBlock" FontSize="13" Opacity="0.7"/>
+                    <HyperlinkButton x:Name="OpenLinkButton" Content="원본 열기" FontSize="13" />
+                </StackPanel>
+            </StackPanel>
+
+            <!-- 썸네일 + 메타 -->
+            <Grid ColumnSpacing="20" RowSpacing="8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="240"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Border Grid.Column="0" Width="230" Height="320" CornerRadius="8" Background="#222">
+                    <Image x:Name="ThumbImage" Stretch="UniformToFill"/>
+                </Border>
+                <StackPanel Grid.Column="1" Spacing="14">
+                    <!-- 언어 -->
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="언어" FontSize="16" FontWeight="SemiBold"/>
+                        <ItemsControl x:Name="LangItems">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <controls:TagWrapPanel HorizontalSpacing="6" VerticalSpacing="6" FallbackWrapWidth="1000" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FFCCE4FF" CornerRadius="6" Padding="6,4" Margin="4">
+                                        <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}" />
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                    <!-- 작가 -->
+                    <StackPanel x:Name="ArtistsPanel" Spacing="6" Visibility="Collapsed">
+                        <TextBlock Text="작가" FontSize="16" FontWeight="SemiBold"/>
+                        <ItemsControl x:Name="ArtistsItems">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <controls:TagWrapPanel HorizontalSpacing="6" VerticalSpacing="6" FallbackWrapWidth="1000" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FFD3F1C2" CornerRadius="6" Padding="6,4" Margin="4">
+                                        <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}"/>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                    <!-- 그룹 -->
+                    <StackPanel x:Name="GroupsPanel" Spacing="6" Visibility="Collapsed">
+                        <TextBlock Text="그룹" FontSize="16" FontWeight="SemiBold"/>
+                        <ItemsControl x:Name="GroupsItems">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <controls:TagWrapPanel HorizontalSpacing="6" VerticalSpacing="6" FallbackWrapWidth="1000" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FFFFE1CC" CornerRadius="6" Padding="6,4" Margin="4">
+                                        <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}"/>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                    <!-- 패러디 -->
+                    <StackPanel x:Name="ParodiesPanel" Spacing="6" Visibility="Collapsed">
+                        <TextBlock Text="패러디" FontSize="16" FontWeight="SemiBold"/>
+                        <ItemsControl x:Name="ParodiesItems">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <controls:TagWrapPanel HorizontalSpacing="6" VerticalSpacing="6" FallbackWrapWidth="1000" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FFE1CCFF" CornerRadius="6" Padding="6,4" Margin="4">
+                                        <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}"/>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+
+            <!-- Male 태그 -->
+            <StackPanel x:Name="MaleTagPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock Text="Male 태그" FontSize="18" FontWeight="SemiBold"/>
+                <ItemsControl x:Name="MaleTagItems">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <controls:TagWrapPanel HorizontalSpacing="8" VerticalSpacing="8" FallbackWrapWidth="1200" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="6" Padding="8,5" Margin="4" Background="#FFCDE8FF">
+                                <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}" />
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+            <!-- Female 태그 -->
+            <StackPanel x:Name="FemaleTagPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock Text="Female 태그" FontSize="18" FontWeight="SemiBold"/>
+                <ItemsControl x:Name="FemaleTagItems">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <controls:TagWrapPanel HorizontalSpacing="8" VerticalSpacing="8" FallbackWrapWidth="1200" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="6" Padding="8,5" Margin="4" Background="#FFFFD6E8">
+                                <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}" />
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+            <!-- 기타 태그 -->
+            <StackPanel x:Name="OtherTagPanel" Spacing="8" Visibility="Collapsed">
+                <TextBlock Text="기타 태그" FontSize="18" FontWeight="SemiBold"/>
+                <ItemsControl x:Name="OtherTagItems">
+                    <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                            <controls:TagWrapPanel HorizontalSpacing="8" VerticalSpacing="8" FallbackWrapWidth="1200" />
+                        </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border CornerRadius="6" Padding="8,5" Margin="4" Background="#FFE4E4E4">
+                                <TextBlock Text="{Binding}" Foreground="Black" FontSize="{Binding TagFontSize, ElementName=PageRoot}" />
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>
