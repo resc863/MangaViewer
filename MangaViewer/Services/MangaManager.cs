@@ -14,7 +14,7 @@ namespace MangaViewer.Services
     /// <summary>
     /// 만화 이미지 로드 및 페이지(1~2장 표시) 계산/탐색 관리.
     /// 지정 폴더의 '최상위 파일'만 검사하며 하위 폴더는 재귀적으로 탐색하지 않는다.
-    /// 허용 확장자: .jpg, .jpeg, .png, .bmp, .webp, .avif (대소문자 무시)
+    /// 허용 확장자: .jpg, .jpeg, .png, .bmp, .webp, .avif, .gif (대소문자 무시)
     /// </summary>
     public class MangaManager
     {
