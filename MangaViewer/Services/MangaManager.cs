@@ -1,4 +1,4 @@
-using System;
+ï»¿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -12,15 +12,18 @@ using Microsoft.UI.Dispatching;
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// ¸¸È­ ÀÌ¹ÌÁö ·Îµù ¹× ÆäÀÌÁö(1~2Àå ´ÜÀ§) ±¸¼º/³»ºñ°ÔÀÌ¼Ç ·ÎÁ÷ °ü¸®.
+    /// ë§Œí™” ì´ë¯¸ì§€ ë¡œë“œ ë° í˜ì´ì§€(1~2ì¥ í‘œì‹œ) ê³„ì‚°/íƒìƒ‰ ê´€ë¦¬.
+    /// ì§€ì • í´ë”ì˜ 'ìµœìƒìœ„ íŒŒì¼'ë§Œ ê²€ì‚¬í•˜ë©° í•˜ìœ„ í´ë”ëŠ” ì¬ê·€ì ìœ¼ë¡œ íƒìƒ‰í•˜ì§€ ì•ŠëŠ”ë‹¤.
+    /// í—ˆìš© í™•ì¥ì: .jpg, .jpeg, .png, .bmp, .webp, .avif (ëŒ€ì†Œë¬¸ì ë¬´ì‹œ)
     /// </summary>
     public class MangaManager
     {
         public event Action? MangaLoaded;
         public event Action? PageChanged;
 
+        // Allow-list (case-insensitive). Subâ€‘folders are ignored because we only call folder.GetFilesAsync().
         private static readonly HashSet<string> s_imageExtensions = new(StringComparer.OrdinalIgnoreCase)
-        { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp" };
+        { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
         private static readonly Regex s_digitsRegex = new(@"\d+", RegexOptions.Compiled);
 
         private CancellationTokenSource? _loadCts;
@@ -30,14 +33,14 @@ namespace MangaViewer.Services
 
         public int CurrentPageIndex { get; private set; }
         public bool IsRightToLeft { get; private set; }
-        public bool IsCoverSeparate { get; private set; } = true; // true: Ç¥Áö ´Üµ¶
+        public bool IsCoverSeparate { get; private set; } = true; // true: í‘œì§€ ë¶„ë¦¬
 
         public int TotalImages => _pages.Count;
         public int TotalPages => GetMaxPageIndex() + 1;
 
         public MangaManager() => Pages = new ReadOnlyObservableCollection<MangaPageViewModel>(_pages);
 
-        /// <summary>·ÎÄÃ Æú´õ ÀüÃ¼ ÀÌ¹ÌÁö ·Îµå (ÃÊ±â Ãß°¡)</summary>
+        /// <summary>ì„ íƒ í´ë” ë‚´ í—ˆìš©ëœ ì´ë¯¸ì§€ ì „ì²´ ë¡œë“œ (ì´ˆê¸° ì¶”ê°€)</summary>
         public async Task LoadFolderAsync(StorageFolder folder)
         {
             _loadCts?.Cancel();
@@ -48,12 +51,12 @@ namespace MangaViewer.Services
             CurrentPageIndex = 0;
             var dispatcher = DispatcherQueue.GetForCurrentThread();
 
-            // ÆÄÀÏ ¼öÁı + ÀÚ¿¬ Á¤·Ä (¹é±×¶ó¿îµå)
+            // íŒŒì¼ ìˆ˜ì§‘ + ìì—° ì •ë ¬ (ë¹„ë™ê¸°)
             List<(string Path, string SortKey)> imageFiles = await Task.Run(async () =>
             {
-                var files = await folder.GetFilesAsync();
+                var files = await folder.GetFilesAsync(); // top-level only, no subfolders
                 return files
-                    .Where(f => s_imageExtensions.Contains(f.FileType))
+                    .Where(f => !string.IsNullOrEmpty(f.FileType) && s_imageExtensions.Contains(f.FileType))
                     .Select(f => (f.Path, SortKey: ToNaturalSortKey(System.IO.Path.GetFileNameWithoutExtension(f.Name))))
                     .OrderBy(x => x.SortKey, StringComparer.Ordinal)
                     .ToList();
@@ -68,12 +71,12 @@ namespace MangaViewer.Services
                 return;
             }
 
-            // Ã¹ ÀÌ¹ÌÁö Áï½Ã Ãß°¡ (Ç¥Áö)
+            // ì²« ì´ë¯¸ì§€ ë°”ë¡œ ì¶”ê°€ (í‘œì§€)
             _pages.Add(new MangaPageViewModel { FilePath = imageFiles[0].Path });
             MangaLoaded?.Invoke();
             PageChanged?.Invoke();
 
-            // ³ª¸ÓÁö ºñµ¿±â »ğÀÔ (UI ºÎÇÏ ¿ÏÈ­)
+            // ë‚˜ë¨¸ì§€ ë°°ì¹˜ ì¶”ê°€ (UI ëŠê¹€ ë°©ì§€)
             _ = Task.Run(async () =>
             {
                 const int batchSize = 64;
@@ -121,19 +124,18 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// ½ºÆ®¸®¹Ö/´Ù¿î·ÎµåµÈ ÆÄÀÏ °æ·Î Ãß°¡. mem: Å° ±â¹İ ¼ø¼­ °íÁ¤, Áßº¹/Àç´Ù¿î·Îµå ¹æÁö.
+        /// ìŠ¤íŠ¸ë¦¬ë°/ë‹¤ìš´ë¡œë“œëœ íŒŒì¼ ì¶”ê°€. mem: í‚¤ ê¸°ë°˜ ì´ë¯¸ì§€ í¬í•¨, ì¤‘ë³µ/ì—­ë‹¤ìš´ë¡œë“œ ì²˜ë¦¬.
         /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> filePaths)
         {
             var incoming = filePaths?.Where(f => !string.IsNullOrWhiteSpace(f)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new();
             if (incoming.Count == 0) return;
 
-            // »çÀü Á¤·Ä: ÀÌ¸§¿¡ Æ÷ÇÔµÈ ¼ıÀÚ (mem:gid:####.ext ÀÇ ####) ±âÁØ
+            // ìœ„ì¹˜ ì¶”ì¶œ: ì´ë¦„ì— í¬í•¨ëœ ìˆ«ì(mem:gid:####.ext ëŠ” ####) ê¸°ë°˜
             foreach (var path in incoming.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
             {
                 bool isMem = path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase);
                 string name = System.IO.Path.GetFileNameWithoutExtension(path) ?? string.Empty;
-                // mem:gid:####.ext ÇüÅÂ -> ¸¶Áö¸· Äİ·Ğ µÚ 4ÀÚ¸® ¼ıÀÚ ÃßÃâ
                 int index = -1;
                 if (isMem)
                 {
@@ -151,7 +153,6 @@ namespace MangaViewer.Services
 
                 if (index < 0) continue;
 
-                // ÇÊ¿ä ½Ã placeholder È®Àå
                 if (index >= _pages.Count)
                 {
                     SetExpectedTotal(index + 1);
@@ -160,16 +161,12 @@ namespace MangaViewer.Services
                 var vm = _pages[index];
                 if (vm.FilePath == null)
                 {
-                    vm.FilePath = path; // ÃÖÃÊ Ã¤¿ò
+                    vm.FilePath = path; // ì±„ì›€
                 }
                 else
                 {
-                    // ÀÌ¹Ì ½½·ÔÀÌ Ã¤¿öÁ® ÀÖÀ¸¸é ±ÔÄ¢:
-                    // 1) µÑ ´Ù mem: ÀÌ¸é ÀÌ¹Ì ´Ù¿î·ÎµåµÈ °ÍÀ¸·Î °£ÁÖ -> skip (Áßº¹ ¹æÁö)
                     if (isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) continue;
-                    // 2) ±âÁ¸ÀÌ mem: ÀÌ°í »õ·Î¿î °ÍÀÌ ·ÎÄÃ ÆÄÀÏÀÌ¸é ±³Ã¼ (Ç°Áú Çâ»ó ÄÉÀÌ½º °¡Á¤)
                     if (!isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { vm.FilePath = path; }
-                    // 3) ±× ¿Ü (¼­·Î ´Ù¸¥ ½ÇÁ¦ ÆÄÀÏ Ãæµ¹) -> ¹«½Ã (¼ø¼­ º¸Á¸)
                 }
             }
             PageChanged?.Invoke();
@@ -227,7 +224,6 @@ namespace MangaViewer.Services
         private int GetMaxPageIndex()
         {
             if (_pages.Count == 0) return 0;
-            // Cover ºĞ¸®: ÀüÃ¼ ÆäÀÌÁö = 1(Ç¥Áö) + floor((N-1)/2 + 1) = 1 + (N-1)/2
             int pageCount = IsCoverSeparate ? (1 + (_pages.Count - 1 + 1) / 2) : ((_pages.Count + 1) / 2);
             return pageCount - 1;
         }
