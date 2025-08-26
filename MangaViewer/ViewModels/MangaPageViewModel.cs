@@ -12,152 +12,134 @@ namespace MangaViewer.ViewModels
 {
     public class MangaPageViewModel : BaseViewModel
     {
-        private string? _filePath;
-        private int _version; // FilePath 변경 버전.
-        private bool _isPlaceholder = true;
-        public bool IsPlaceholder
-        {
-            get => _isPlaceholder;
-            private set { if (_isPlaceholder != value) { _isPlaceholder = value; OnPropertyChanged(); } }
-        }
-        public string? FilePath
+    private string? _filePath;
+    private int _version; // FilePath 변경 버전. 비동기 작업이 완료될 때 일치해야 반영.
+    public string? FilePath
         {
             get => _filePath;
             set
             {
-                if (_filePath == value) return;
-                _filePath = value;
-                unchecked { _version++; }
-                OnPropertyChanged();
-                if (!string.IsNullOrEmpty(_filePath)) IsPlaceholder = false; else IsPlaceholder = true;
-                ThumbnailSource = null; // 지연 로드
+                if (_filePath != value)
+                {
+                    _filePath = value;
+                    unchecked { _version++; }
+                    OnPropertyChanged();
+                    // 실제 썸네일 생성은 ListView.ContainerContentChanging 이벤트에서 지연 로딩
+                    ThumbnailSource = null;
+                }
             }
         }
 
-        private BitmapImage? _thumbnailSource;
-        public BitmapImage? ThumbnailSource
+    private BitmapImage? _thumbnailSource;
+    public BitmapImage? ThumbnailSource
         {
             get => _thumbnailSource;
-            private set
+            private set // Setter is private, controlled by the FilePath property
             {
-                if (_thumbnailSource == value) return;
-                _thumbnailSource = value;
-                OnPropertyChanged();
+                if (_thumbnailSource != value)
+                {
+                    _thumbnailSource = value;
+                    OnPropertyChanged();
+                }
             }
         }
 
-        private static readonly SemaphoreSlim s_decodeGate = new(4);
-        private bool _thumbnailLoading;
-        public bool IsThumbnailLoading => _thumbnailLoading;
-        public bool HasThumbnail => _thumbnailSource != null;
+    private static readonly SemaphoreSlim s_decodeGate = new(4); // 동시 디코딩 제한
+    private bool _thumbnailLoading;
+    public bool IsThumbnailLoading => _thumbnailLoading;
+    public bool HasThumbnail => _thumbnailSource != null;
 
-        public async Task EnsureThumbnailAsync(DispatcherQueue dispatcher)
+    public async Task EnsureThumbnailAsync(DispatcherQueue dispatcher)
+    {
+    if (HasThumbnail || IsThumbnailLoading) return;
+    if (string.IsNullOrEmpty(_filePath)) return;
+        int localVersion = _version;
+        // 캐시 조회 우선
+        var cached = ThumbnailCacheService.Instance.Get(_filePath);
+        if (cached != null)
         {
-            if (HasThumbnail || _thumbnailLoading || string.IsNullOrEmpty(_filePath)) return;
-            int localVersion = _version;
-
-            // mem: immediate load via cache bytes
-            if (_filePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-            {
-                if (ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) && bytes != null)
-                {
-                    try
-                    {
-                        using var ms = new MemoryStream(bytes, writable: false);
-                        var bmp = new BitmapImage { DecodePixelWidth = 150 };
-                        bmp.SetSource(ms.AsRandomAccessStream());
-                        if (localVersion == _version) ThumbnailSource = bmp;
-                    }
-                    catch { }
-                }
-                return;
-            }
-
-            // 캐시
-            var cached = ThumbnailCacheService.Instance.Get(_filePath);
-            if (cached != null)
-            {
-                if (localVersion == _version) ThumbnailSource = cached;
-                return;
-            }
-
-            _thumbnailLoading = true;
-            byte[]? buffer = null;
+            // 버전 체크 (중간에 바뀌지 않았는지)
+            if (localVersion == _version) ThumbnailSource = cached;
+            return;
+        }
+        _thumbnailLoading = true;
+        byte[]? bytes = null;
+        try
+        {
+            await s_decodeGate.WaitAsync();
             try
             {
-                await s_decodeGate.WaitAsync();
-                try
+                using var fs = File.OpenRead(_filePath);
+                // 너무 큰 파일은 앞부분만 읽어도 썸네일 생성 가능 (JPEG 헤더 기반) - 5MB 제한 (가변 확장 가능)
+                const int MaxReadBytes = 5 * 1024 * 1024;
+                if (fs.Length <= MaxReadBytes)
                 {
-                    if (File.Exists(_filePath))
+                    using var ms = new MemoryStream();
+                    await fs.CopyToAsync(ms);
+                    bytes = ms.ToArray();
+                }
+                else
+                {
+                    bytes = new byte[MaxReadBytes];
+                    int read = await fs.ReadAsync(bytes, 0, MaxReadBytes);
+                    if (read < MaxReadBytes)
                     {
-                        using var fs = File.OpenRead(_filePath);
-                        const int MaxReadBytes = 5 * 1024 * 1024; // 5MB
-                        long len = fs.Length;
-                        if (len <= MaxReadBytes)
-                        {
-                            buffer = new byte[len];
-                            int readTotal = 0;
-                            while (readTotal < len)
-                            {
-                                int r = fs.Read(buffer, readTotal, (int)(len - readTotal));
-                                if (r <= 0) break;
-                                readTotal += r;
-                            }
-                        }
-                        else
-                        {
-                            buffer = new byte[MaxReadBytes];
-                            int readTotal = 0;
-                            while (readTotal < MaxReadBytes)
-                            {
-                                int r = fs.Read(buffer, readTotal, MaxReadBytes - readTotal);
-                                if (r <= 0) break;
-                                readTotal += r;
-                            }
-                            if (readTotal < MaxReadBytes) Array.Resize(ref buffer, readTotal);
-                        }
+                        Array.Resize(ref bytes, read);
                     }
                 }
-                finally { s_decodeGate.Release(); }
             }
-            catch
+            finally
             {
-                _thumbnailLoading = false;
-                return;
-            }
-
-            if (buffer == null || buffer.Length == 0 || localVersion != _version)
-            {
-                _thumbnailLoading = false;
-                return;
-            }
-
-            if (!dispatcher.TryEnqueue(() =>
-            {
-                try
-                {
-                    if (localVersion != _version || string.IsNullOrEmpty(_filePath)) { _thumbnailLoading = false; return; }
-                    using var ms = new MemoryStream(buffer);
-                    var bmp = new BitmapImage { DecodePixelWidth = 150 };
-                    bmp.SetSource(ms.AsRandomAccessStream());
-                    if (localVersion == _version)
-                    {
-                        ThumbnailSource = bmp;
-                        ThumbnailCacheService.Instance.Add(_filePath, bmp);
-                    }
-                }
-                catch { }
-                finally { _thumbnailLoading = false; }
-            }))
-            {
-                _thumbnailLoading = false; // enqueue 실패
+                s_decodeGate.Release();
             }
         }
-
-        public void UnloadThumbnail()
+        catch
         {
-            if (_thumbnailSource != null)
-                ThumbnailSource = null;
+            _thumbnailLoading = false;
+            return; // 실패 무시
         }
+
+        if (bytes == null || bytes.Length == 0)
+        {
+            _thumbnailLoading = false;
+            return;
+        }
+
+        // UI 스레드에서 BitmapImage 생성 및 Source 설정
+        if (!dispatcher.TryEnqueue(() =>
+        {
+            try
+            {
+                // 항목이 재활용되어 다른 파일로 바뀌었으면 중단
+                if (string.IsNullOrEmpty(_filePath) || localVersion != _version)
+                {
+                    _thumbnailLoading = false; return;
+                }
+                using var ms = new MemoryStream(bytes);
+                var bmp = new BitmapImage();
+                bmp.DecodePixelWidth = 150;
+                bmp.SetSource(ms.AsRandomAccessStream());
+                if (localVersion == _version)
+                {
+                    ThumbnailSource = bmp;
+                    ThumbnailCacheService.Instance.Add(_filePath, bmp);
+                }
+            }
+            catch { }
+            finally { _thumbnailLoading = false; }
+        }))
+        {
+            _thumbnailLoading = false; // 디스패처 큐 enqueue 실패
+        }
+    }
+
+    public void UnloadThumbnail()
+    {
+        // 선택된 항목이 아니고 썸네일이 있다면 메모리 해제 유도 (참조 제거)
+        if (_thumbnailSource != null)
+        {
+            ThumbnailSource = null;
+        }
+    }
     }
 }
