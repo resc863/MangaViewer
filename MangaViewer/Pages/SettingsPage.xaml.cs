@@ -14,11 +14,16 @@ namespace MangaViewer.Pages
     {
         private readonly OcrService _ocr = OcrService.Instance;
         private readonly TagSettingsService _tagSettings = TagSettingsService.Instance;
+        private readonly ThumbnailSettingsService _thumbSettings = ThumbnailSettingsService.Instance;
         private ComboBox _langCombo = null!;
         private ComboBox _groupCombo = null!;
         private ComboBox _writingCombo = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
+
+        private ToggleSwitch _useNativeToggle = null!;
+        private Slider _thumbWidthSlider = null!;
+        private TextBlock _thumbWidthValue = null!;
 
         private ListView _cacheList = null!;
         private TextBlock _cacheSummary = null!;
@@ -35,11 +40,19 @@ namespace MangaViewer.Pages
             Unloaded += SettingsPage_Unloaded;
             // Removed direct OCR auto-run here to avoid duplicate with MangaViewModel subscription
             _ocr.SettingsChanged += Ocr_SettingsChanged; // keep for potential UI sync only
+            _thumbSettings.SettingsChanged += Thumb_SettingsChanged;
         }
 
         private void SettingsPage_Unloaded(object sender, RoutedEventArgs e)
         {
             _ocr.SettingsChanged -= Ocr_SettingsChanged;
+            _thumbSettings.SettingsChanged -= Thumb_SettingsChanged;
+        }
+
+        private void Thumb_SettingsChanged(object? sender, EventArgs e)
+        {
+            // Clear decoded thumbnail cache so new settings apply progressively
+            ThumbnailCacheService.Instance.Clear();
         }
 
         private void Ocr_SettingsChanged(object? sender, EventArgs e)
@@ -99,6 +112,25 @@ namespace MangaViewer.Pages
             fontRow.Children.Add(_tagFontValue);
             stack.Children.Add(fontRow);
 
+            // Thumbnail section header
+            stack.Children.Add(new TextBlock { Text = "썸네일 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            var thumbRow1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            _thumbWidthSlider = new Slider { Minimum = 64, Maximum = 512, Width = 220, Value = _thumbSettings.DecodeWidth };
+            _thumbWidthSlider.ValueChanged += ThumbWidthSlider_ValueChanged;
+            _thumbWidthValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateThumbWidthValue();
+            thumbRow1.Children.Add(new TextBlock { Text = "디코드 너비(px):", VerticalAlignment = VerticalAlignment.Center });
+            thumbRow1.Children.Add(_thumbWidthSlider);
+            thumbRow1.Children.Add(_thumbWidthValue);
+            stack.Children.Add(thumbRow1);
+
+            var thumbRow2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            _useNativeToggle = new ToggleSwitch { OffContent = "Managed", OnContent = "Native", IsOn = _thumbSettings.UseNative };
+            _useNativeToggle.Toggled += UseNativeToggle_Toggled;
+            thumbRow2.Children.Add(new TextBlock { Text = "썸네일 엔진:", VerticalAlignment = VerticalAlignment.Center });
+            thumbRow2.Children.Add(_useNativeToggle);
+            stack.Children.Add(thumbRow2);
+
             stack.Children.Add(new TextBlock { Text = "이미지 캐시", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0,0,0,8) };
             stack.Children.Add(_cacheSummary);
@@ -132,6 +164,20 @@ namespace MangaViewer.Pages
 
             Content = new ScrollViewer { Content = stack };
         }
+
+        private void UseNativeToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            _thumbSettings.UseNative = _useNativeToggle.IsOn;
+            // Factory 토글 적용은 네이티브 구현 추가 시 연결
+        }
+
+        private void ThumbWidthSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            _thumbSettings.DecodeWidth = (int)Math.Round(e.NewValue);
+            UpdateThumbWidthValue();
+        }
+
+        private void UpdateThumbWidthValue() => _thumbWidthValue.Text = _thumbSettings.DecodeWidth.ToString();
 
         private void CacheList_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
         {

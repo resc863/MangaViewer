@@ -1,13 +1,10 @@
 using MangaViewer.Helpers;
-using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Dispatching;
-using System;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Windows.Storage; // added for FileAccessMode
-using Windows.Storage.Streams;
 using MangaViewer.Services;
+using MangaViewer.Services.Thumbnails;
 
 namespace MangaViewer.ViewModels
 {
@@ -31,8 +28,8 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private BitmapImage? _thumbnailSource;
-        public BitmapImage? ThumbnailSource
+        private ImageSource? _thumbnailSource;
+        public ImageSource? ThumbnailSource
         {
             get => _thumbnailSource;
             private set // Setter is private, controlled by the FilePath property
@@ -65,83 +62,40 @@ namespace MangaViewer.ViewModels
             }
             _thumbnailLoading = true;
 
-            // 메모리/파일 별도 경로 준비
-            byte[]? bytes = null;
-            IRandomAccessStream? ras = null;
+            var provider = ThumbnailProviderFactory.Get();
             try
             {
                 await s_decodeGate.WaitAsync();
-                try
+                if (_filePath.StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase))
                 {
-                    if (_filePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                    if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) || bytes == null)
                     {
-                        // In-memory image bytes
-                        if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out bytes) || bytes == null)
-                        {
-                            bytes = null; // fall through -> handled below
-                        }
+                        _thumbnailLoading = false;
+                        return;
                     }
-                    else
+
+                    var src = await provider.GetForBytesAsync(dispatcher, bytes, ThumbnailOptions.DecodePixelWidth, System.Threading.CancellationToken.None);
+                    if (src != null && localVersion == _version)
                     {
-                        // 전체 파일 스트림을 열어 디코더가 필요 데이터만 읽도록 한다 (부분 읽기 금지)
-                        ras = await FileRandomAccessStream.OpenAsync(_filePath, FileAccessMode.Read);
+                        ThumbnailSource = src;
+                        ThumbnailCacheService.Instance.Add(_filePath, src);
                     }
                 }
-                finally
+                else
                 {
-                    s_decodeGate.Release();
+                    var src = await provider.GetForPathAsync(dispatcher, _filePath, ThumbnailOptions.DecodePixelWidth, System.Threading.CancellationToken.None);
+                    if (src != null && localVersion == _version)
+                    {
+                        ThumbnailSource = src;
+                        ThumbnailCacheService.Instance.Add(_filePath, src);
+                    }
                 }
             }
-            catch
+            catch { }
+            finally
             {
                 _thumbnailLoading = false;
-                ras?.Dispose();
-                return; // 실패 무시
-            }
-
-            if ((bytes == null || bytes.Length == 0) && ras == null)
-            {
-                _thumbnailLoading = false;
-                return;
-            }
-
-            // UI 스레드에서 BitmapImage 생성 및 Source 설정
-            if (!dispatcher.TryEnqueue(() =>
-            {
-                try
-                {
-                    // 항목이 재활용되어 다른 파일로 바뀌었으면 중단
-                    if (string.IsNullOrEmpty(_filePath) || localVersion != _version)
-                    {
-                        _thumbnailLoading = false; ras?.Dispose(); return;
-                    }
-
-                    var bmp = new BitmapImage();
-                    bmp.DecodePixelWidth = 150;
-
-                    if (ras != null)
-                    {
-                        bmp.SetSource(ras);
-                        ras.Dispose();
-                    }
-                    else if (bytes != null)
-                    {
-                        using var ms = new MemoryStream(bytes, writable: false);
-                        bmp.SetSource(ms.AsRandomAccessStream());
-                    }
-
-                    if (localVersion == _version)
-                    {
-                        ThumbnailSource = bmp;
-                        ThumbnailCacheService.Instance.Add(_filePath, bmp);
-                    }
-                }
-                catch { }
-                finally { _thumbnailLoading = false; }
-            }))
-            {
-                _thumbnailLoading = false; // 디스패처 큐 enqueue 실패
-                ras?.Dispose();
+                s_decodeGate.Release();
             }
         }
 

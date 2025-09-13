@@ -1,3 +1,4 @@
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
 using System.Collections.Generic;
@@ -15,14 +16,14 @@ namespace MangaViewer.Services
         private static readonly Lazy<ThumbnailCacheService> _instance = new(() => new ThumbnailCacheService(300));
         public static ThumbnailCacheService Instance => _instance.Value;
 
-        private record CacheEntry(string Path, BitmapImage Image);
+        private record CacheEntry(string Path, ImageSource Image);
 
         private ThumbnailCacheService(int capacity) => _capacity = Math.Max(50, capacity);
 
         /// <summary>
         /// 캐시에 존재하면 LRU 갱신 후 반환. 없으면 null.
         /// </summary>
-        public BitmapImage? Get(string path)
+        public ImageSource? Get(string path)
         {
             if (_map.TryGetValue(path, out var node))
             {
@@ -36,7 +37,7 @@ namespace MangaViewer.Services
         /// <summary>
         /// 새 항목 삽입 (중복/공백 경로 무시)
         /// </summary>
-        public void Add(string path, BitmapImage image)
+        public void Add(string path, ImageSource image)
         {
             if (string.IsNullOrWhiteSpace(path) || _map.ContainsKey(path)) return;
             var entry = new CacheEntry(path, image);
@@ -44,6 +45,15 @@ namespace MangaViewer.Services
             _lru.AddFirst(node);
             _map[path] = node;
             Trim();
+        }
+
+        /// <summary>
+        /// 전체 캐시를 비웁니다.
+        /// </summary>
+        public void Clear()
+        {
+            _map.Clear();
+            _lru.Clear();
         }
 
         private void Trim()
