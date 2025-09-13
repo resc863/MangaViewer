@@ -160,17 +160,29 @@ namespace MangaViewer.Services
                         transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                     }
 
-                    // Decode to BGRA8 to maximize decoder support, then convert to Gray8 if possible
-                    using var oriented = await decoder.GetSoftwareBitmapAsync(
-                        BitmapPixelFormat.Bgra8,
-                        BitmapAlphaMode.Premultiplied,
-                        transform,
-                        ExifOrientationMode.RespectExifOrientation,
-                        ColorManagementMode.DoNotColorManage);
-
+                    // Prefer direct Gray8 decode (faster, less memory); fall back to BGRA8 then convert
                     SoftwareBitmap toOcr;
-                    try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
-                    catch { toOcr = oriented; }
+                    try
+                    {
+                        toOcr = await decoder.GetSoftwareBitmapAsync(
+                            BitmapPixelFormat.Gray8,
+                            BitmapAlphaMode.Ignore,
+                            transform,
+                            ExifOrientationMode.RespectExifOrientation,
+                            ColorManagementMode.DoNotColorManage);
+                    }
+                    catch
+                    {
+                        using var oriented = await decoder.GetSoftwareBitmapAsync(
+                            BitmapPixelFormat.Bgra8,
+                            BitmapAlphaMode.Ignore,
+                            transform,
+                            ExifOrientationMode.RespectExifOrientation,
+                            ColorManagementMode.DoNotColorManage);
+
+                        try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
+                        catch { toOcr = oriented; }
+                    }
 
                     var ocr = await engine.RecognizeAsync(toOcr);
 
@@ -227,16 +239,29 @@ namespace MangaViewer.Services
                     transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                 }
 
-                using var oriented = await decoder.GetSoftwareBitmapAsync(
-                    BitmapPixelFormat.Bgra8,
-                    BitmapAlphaMode.Premultiplied,
-                    transform,
-                    ExifOrientationMode.RespectExifOrientation,
-                    ColorManagementMode.DoNotColorManage);
-
+                // Prefer direct Gray8 decode; fall back to BGRA8 then convert
                 SoftwareBitmap toOcr;
-                try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
-                catch { toOcr = oriented; }
+                try
+                {
+                    toOcr = await decoder.GetSoftwareBitmapAsync(
+                        BitmapPixelFormat.Gray8,
+                        BitmapAlphaMode.Ignore,
+                        transform,
+                        ExifOrientationMode.RespectExifOrientation,
+                        ColorManagementMode.DoNotColorManage);
+                }
+                catch
+                {
+                    using var oriented = await decoder.GetSoftwareBitmapAsync(
+                        BitmapPixelFormat.Bgra8,
+                        BitmapAlphaMode.Ignore,
+                        transform,
+                        ExifOrientationMode.RespectExifOrientation,
+                        ColorManagementMode.DoNotColorManage);
+
+                    try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
+                    catch { toOcr = oriented; }
+                }
 
                 cancellationToken.ThrowIfCancellationRequested();
                 var ocr = await engine.RecognizeAsync(toOcr);
@@ -246,8 +271,8 @@ namespace MangaViewer.Services
                 int imgH = toOcr.PixelHeight;
 
                 // Collect base words and per-line rects
-                var wordBoxes = new List<(string Text, Rect Rect, int LineIndex)>();
-                var lineRects = new List<Rect>();
+                var wordBoxes = new List<(string Text, Rect Rect, int LineIndex)>(ocr.Lines.Sum(l => l.Words.Count));
+                var lineRects = new List<Rect>(ocr.Lines.Count);
                 for (int li = 0; li < ocr.Lines.Count; li++)
                 {
                     var line = ocr.Lines[li];
@@ -414,10 +439,8 @@ namespace MangaViewer.Services
                     return null;
                 }
 
-                // Disk file path -> read into memory stream for RandomAccessStream interop
-                byte[] data = await File.ReadAllBytesAsync(path, token);
-                var mem = new MemoryStream(data, writable: false);
-                return mem.AsRandomAccessStream();
+                // Disk file path -> open as IRandomAccessStream without full buffering
+                return await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read);
             }
             catch { return null; }
         }
