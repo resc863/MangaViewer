@@ -5,6 +5,7 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Windows.Storage; // added for FileAccessMode
 using Windows.Storage.Streams;
 using MangaViewer.Services;
 
@@ -63,7 +64,10 @@ namespace MangaViewer.ViewModels
                 return;
             }
             _thumbnailLoading = true;
+
+            // 메모리/파일 별도 경로 준비
             byte[]? bytes = null;
+            IRandomAccessStream? ras = null;
             try
             {
                 await s_decodeGate.WaitAsync();
@@ -79,24 +83,8 @@ namespace MangaViewer.ViewModels
                     }
                     else
                     {
-                        using var fs = File.OpenRead(_filePath);
-                        // 너무 큰 파일은 앞부분만 읽어도 썸네일 생성 가능 (JPEG 헤더 기반) - 5MB 제한 (가변 확장 가능)
-                        const int MaxReadBytes = 5 * 1024 * 1024;
-                        if (fs.Length <= MaxReadBytes)
-                        {
-                            using var ms = new MemoryStream();
-                            await fs.CopyToAsync(ms);
-                            bytes = ms.ToArray();
-                        }
-                        else
-                        {
-                            bytes = new byte[MaxReadBytes];
-                            int read = await fs.ReadAsync(bytes, 0, MaxReadBytes);
-                            if (read < MaxReadBytes)
-                            {
-                                Array.Resize(ref bytes, read);
-                            }
-                        }
+                        // 전체 파일 스트림을 열어 디코더가 필요 데이터만 읽도록 한다 (부분 읽기 금지)
+                        ras = await FileRandomAccessStream.OpenAsync(_filePath, FileAccessMode.Read);
                     }
                 }
                 finally
@@ -107,10 +95,11 @@ namespace MangaViewer.ViewModels
             catch
             {
                 _thumbnailLoading = false;
+                ras?.Dispose();
                 return; // 실패 무시
             }
 
-            if (bytes == null || bytes.Length == 0)
+            if ((bytes == null || bytes.Length == 0) && ras == null)
             {
                 _thumbnailLoading = false;
                 return;
@@ -124,12 +113,23 @@ namespace MangaViewer.ViewModels
                     // 항목이 재활용되어 다른 파일로 바뀌었으면 중단
                     if (string.IsNullOrEmpty(_filePath) || localVersion != _version)
                     {
-                        _thumbnailLoading = false; return;
+                        _thumbnailLoading = false; ras?.Dispose(); return;
                     }
-                    using var ms = new MemoryStream(bytes, writable: false);
+
                     var bmp = new BitmapImage();
                     bmp.DecodePixelWidth = 150;
-                    bmp.SetSource(ms.AsRandomAccessStream());
+
+                    if (ras != null)
+                    {
+                        bmp.SetSource(ras);
+                        ras.Dispose();
+                    }
+                    else if (bytes != null)
+                    {
+                        using var ms = new MemoryStream(bytes, writable: false);
+                        bmp.SetSource(ms.AsRandomAccessStream());
+                    }
+
                     if (localVersion == _version)
                     {
                         ThumbnailSource = bmp;
@@ -141,6 +141,7 @@ namespace MangaViewer.ViewModels
             }))
             {
                 _thumbnailLoading = false; // 디스패처 큐 enqueue 실패
+                ras?.Dispose();
             }
         }
 
