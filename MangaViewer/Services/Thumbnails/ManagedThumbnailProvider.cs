@@ -2,6 +2,7 @@ using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
+using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Graphics.Imaging;
@@ -27,15 +28,41 @@ namespace MangaViewer.Services.Thumbnails
     /// </summary>
     public sealed class ManagedThumbnailProvider : IThumbnailProvider
     {
+        // inflight coalescing only for disk-path source (mem: 바이트 기반은 키가 없어 단순화)
+        private static readonly ConcurrentDictionary<string, Task<ImageSource?>> s_inflightPath = new();
+
         public async Task<ImageSource?> GetForPathAsync(DispatcherQueue dispatcher, string path, int maxDecodeDim, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             if (string.IsNullOrWhiteSpace(path)) return null;
 
+            // 0) 캐시 재확인 (호출측에서도 확인하지만 중복 방지차 이중 확인)
+            var cached = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(path, maxDecodeDim)).ConfigureAwait(false);
+            if (cached != null) return cached;
+
+            string key = ThumbnailCacheService.MakeKey(path, maxDecodeDim);
+            // 공유 태스크 생성 (개별 취소 토큰은 공유 태스크를 중단하지 않음)
+            var task = s_inflightPath.GetOrAdd(key, _ => DecodeCreateAndCachePathAsync(dispatcher, path, maxDecodeDim));
+            try
+            {
+                // 개별 호출 취소는 여기서만 반영
+                using var reg = ct.Register(() => { /* no-op: just allow caller to stop awaiting */ });
+                var result = await task.ConfigureAwait(false);
+                return result;
+            }
+            finally
+            {
+                // 완료/실패 후 inflight 제거 (다음 요청을 새로 생성하도록)
+                s_inflightPath.TryRemove(key, out _);
+            }
+        }
+
+        private static async Task<ImageSource?> DecodeCreateAndCachePathAsync(DispatcherQueue dispatcher, string path, int maxDecodeDim)
+        {
             IRandomAccessStream? ras = null;
             try
             {
-                ras = await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask(ct).ConfigureAwait(false);
+                ras = await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask().ConfigureAwait(false);
             }
             catch
             {
@@ -45,11 +72,11 @@ namespace MangaViewer.Services.Thumbnails
 
             try
             {
-                var sb = await DecodeAsync(ras, maxDecodeDim, ct).ConfigureAwait(false);
+                var sb = await DecodeAsync(ras, maxDecodeDim, CancellationToken.None).ConfigureAwait(false);
                 ras.Dispose();
                 if (sb == null) return null;
 
-                var png = await EncodeToPngAsync(sb, ct).ConfigureAwait(false);
+                var png = await EncodeToPngAsync(sb, CancellationToken.None).ConfigureAwait(false);
                 sb.Dispose();
                 if (png == null) return null;
 
@@ -61,6 +88,7 @@ namespace MangaViewer.Services.Thumbnails
                         var img = new BitmapImage();
                         await img.SetSourceAsync(png);
                         png.Dispose();
+                        ThumbnailCacheService.Instance.Add(path, maxDecodeDim, img);
                         tcs.TrySetResult(img);
                     }
                     catch
@@ -197,6 +225,20 @@ namespace MangaViewer.Services.Thumbnails
             {
                 return null;
             }
+        }
+
+        private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, System.Func<T?> func)
+        {
+            var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!dispatcher.TryEnqueue(() =>
+            {
+                try { tcs.TrySetResult(func()); }
+                catch (System.Exception ex) { tcs.TrySetException(ex); }
+            }))
+            {
+                tcs.TrySetResult(default);
+            }
+            return tcs.Task;
         }
     }
 }

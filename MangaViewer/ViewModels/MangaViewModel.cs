@@ -12,10 +12,11 @@ using Windows.Storage;
 using System.Threading;
 using Microsoft.UI.Xaml.Controls; // InfoBarSeverity
 using MangaViewer.Services.Thumbnails; // Added for ThumbnailDecodeScheduler
+using MangaViewer.Services.Logging;
 
 namespace MangaViewer.ViewModels
 {
-    public partial class MangaViewModel : BaseViewModel
+    public partial class MangaViewModel : BaseViewModel, IDisposable
     {
         private readonly MangaManager _mangaManager = new();
         private readonly ImageCacheService _imageCache = ImageCacheService.Instance;
@@ -80,7 +81,7 @@ namespace MangaViewer.ViewModels
         public string DirectionButtonText => _mangaManager.IsRightToLeft ? "읽기 방향: 역방향" : "읽기 방향: 정방향";
         public string CoverButtonText => _mangaManager.IsCoverSeparate ? "표지: 한 장으로 보기" : "표지: 두 장으로 보기";
 
-        public RelayCommand OpenFolderCommand { get; }
+        public AsyncRelayCommand OpenFolderCommand { get; }
         public RelayCommand NextPageCommand { get; }
         public RelayCommand PrevPageCommand { get; }
         public RelayCommand ToggleDirectionCommand { get; }
@@ -89,7 +90,7 @@ namespace MangaViewer.ViewModels
         public RelayCommand ToggleNavPaneCommand { get; }
         public RelayCommand GoLeftCommand { get; }
         public RelayCommand GoRightCommand { get; }
-        public RelayCommand RunOcrCommand { get; }
+        public AsyncRelayCommand RunOcrCommand { get; }
 
         private readonly ObservableCollection<BoundingBoxViewModel> _leftOcrBoxes = new();
         private readonly ObservableCollection<BoundingBoxViewModel> _rightOcrBoxes = new();
@@ -112,7 +113,7 @@ namespace MangaViewer.ViewModels
             _mangaManager.PageChanged += OnPageChanged;
             _ocrService.SettingsChanged += OnOcrSettingsChanged; // auto refresh
 
-            OpenFolderCommand = new RelayCommand(async p => await OpenFolderAsync(p), _ => IsOpenFolderEnabled);
+            OpenFolderCommand = new AsyncRelayCommand(async p => await OpenFolderAsync(p), _ => IsOpenFolderEnabled);
             NextPageCommand = new RelayCommand(_ => _mangaManager.GoToNextPage(), _ => _mangaManager.TotalImages > 0);
             PrevPageCommand = new RelayCommand(_ => _mangaManager.GoToPreviousPage(), _ => _mangaManager.TotalImages > 0);
             ToggleDirectionCommand = new RelayCommand(_ => { _mangaManager.ToggleDirection(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
@@ -121,16 +122,15 @@ namespace MangaViewer.ViewModels
             ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
-            RunOcrCommand = new RelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
+            RunOcrCommand = new AsyncRelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
         }
 
         private async void OnOcrSettingsChanged(object? sender, EventArgs e)
         {
-            // If current boxes exist, attempt auto rerun (avoid spamming if running)
             if (IsOcrRunning) return;
             if (LeftImageFilePath == null && RightImageFilePath == null) return;
             if (!RunOcrCommand.CanExecute(null)) return;
-            try { await RunOcrAsync(); } catch { }
+            try { await RunOcrAsync(); } catch (Exception ex) { Log.Error(ex, "RunOcrAsync from SettingsChanged failed"); }
         }
 
         public void BeginStreamingGallery()
@@ -205,7 +205,7 @@ namespace MangaViewer.ViewModels
                     await _mangaManager.LoadFolderAsync(folder);
                 }
             }
-            catch (Exception ex) { Debug.WriteLine($"[Folder] Error: {ex.Message}"); }
+            catch (Exception ex) { Log.Error(ex, "[Folder] Error"); }
             finally { IsLoading = false; }
         }
 
@@ -271,7 +271,7 @@ namespace MangaViewer.ViewModels
                 }
                 if (set.Count > 0) _imageCache.Prefetch(set);
             }
-            catch (Exception ex) { Debug.WriteLine($"[Prefetch] Error: {ex.Message}"); }
+            catch (Exception ex) { Log.Error(ex, "[Prefetch] Error"); }
         }
 
         private void NavigateLogicalLeft()
@@ -365,6 +365,7 @@ namespace MangaViewer.ViewModels
             catch (Exception ex)
             {
                 SetOcrStatus("OCR 오류: " + ex.Message, InfoBarSeverity.Error, true);
+                Log.Error(ex, "RunOcrAsync failed");
             }
             finally
             {
@@ -372,6 +373,8 @@ namespace MangaViewer.ViewModels
                 OnPropertyChanged(nameof(IsControlEnabled));
                 OcrCompleted?.Invoke(this, EventArgs.Empty);
                 RunOcrCommand.RaiseCanExecuteChanged();
+                _ocrCts?.Dispose();
+                _ocrCts = null;
             }
         }
 
@@ -394,8 +397,19 @@ namespace MangaViewer.ViewModels
         public void ReplacePlaceholderWithFile(int index, string path)
         {
             if (index < 0) return;
-            _mangaManager.AddDownloadedFiles(new[] { path });
+            _mangaManager.ReplaceFileAtIndex(index, path);
         }
         public void SetExpectedTotalPages(int total) => _mangaManager.SetExpectedTotal(total);
+
+        public void Dispose()
+        {
+            CancelOcr();
+            _ocrCts?.Dispose();
+            _ocrCts = null;
+            _mangaManager.MangaLoaded -= OnMangaLoaded;
+            _mangaManager.PageChanged -= OnPageChanged;
+            _ocrService.SettingsChanged -= OnOcrSettingsChanged;
+            GC.SuppressFinalize(this);
+        }
     }
 }

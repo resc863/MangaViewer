@@ -21,11 +21,6 @@
     <Content Remove="Assets\logo.altform-lightunplated_targetsize-16.png" />
     <Content Remove="Assets\logo.altform-lightunplated_targetsize-24.png" />
     <Content Remove="Assets\logo.altform-lightunplated_targetsize-256.png" />
-    <Content Remove="Assets\logo.altform-lightunplated_targetsize-32.png" />
-    <Content Remove="Assets\logo.altform-lightunplated_targetsize-48.png" />
-    <Content Remove="Assets\logo.altform-unplated_targetsize-16.png" />
-    <Content Remove="Assets\logo.altform-unplated_targetsize-24.png" />
-    <Content Remove="Assets\logo.altform-unplated_targetsize-256.png" />
     <Content Remove="Assets\logo.altform-unplated_targetsize-32.png" />
     <Content Remove="Assets\logo.altform-unplated_targetsize-48.png" />
     <Content Remove="Assets\logo.targetsize-16.png" />
@@ -56,6 +51,8 @@
     <PackageReference Include="HtmlAgilityPack" Version="1.12.2" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4654" />
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.7.250606001" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="9.0.0" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">

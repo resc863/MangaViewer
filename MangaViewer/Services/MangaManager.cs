@@ -21,7 +21,8 @@ namespace MangaViewer.Services
         public event Action? MangaLoaded;
         public event Action? PageChanged;
 
-        // Allow-list (case-insensitive). Sub‑folders are ignored because we only call folder.GetFilesAsync().
+        private readonly DispatcherQueue _dispatcher;
+
         private static readonly HashSet<string> s_imageExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
         private static readonly Regex s_digitsRegex = new(@"\d+", RegexOptions.Compiled);
@@ -38,7 +39,11 @@ namespace MangaViewer.Services
         public int TotalImages => _pages.Count;
         public int TotalPages => GetMaxPageIndex() + 1;
 
-        public MangaManager() => Pages = new ReadOnlyObservableCollection<MangaPageViewModel>(_pages);
+        public MangaManager()
+        {
+            _dispatcher = DispatcherQueue.GetForCurrentThread();
+            Pages = new ReadOnlyObservableCollection<MangaPageViewModel>(_pages);
+        }
 
         /// <summary>선택 폴더 내 허용된 이미지 전체 로드 (초기 추가)</summary>
         public async Task LoadFolderAsync(StorageFolder folder)
@@ -49,7 +54,7 @@ namespace MangaViewer.Services
 
             _pages.Clear();
             CurrentPageIndex = 0;
-            var dispatcher = DispatcherQueue.GetForCurrentThread();
+            var dispatcher = _dispatcher ?? DispatcherQueue.GetForCurrentThread();
 
             // 파일 수집 + 자연 정렬 (비동기)
             List<(string Path, string SortKey)> imageFiles = await Task.Run(async () =>
@@ -66,15 +71,15 @@ namespace MangaViewer.Services
 
             if (imageFiles.Count == 0)
             {
-                MangaLoaded?.Invoke();
-                PageChanged?.Invoke();
+                RaiseMangaLoaded();
+                RaisePageChanged();
                 return;
             }
 
             // 첫 이미지 바로 추가 (표지)
             _pages.Add(new MangaPageViewModel { FilePath = imageFiles[0].Path });
-            MangaLoaded?.Invoke();
-            PageChanged?.Invoke();
+            RaiseMangaLoaded();
+            RaisePageChanged();
 
             // 나머지 배치 추가 (UI 끊김 방지)
             _ = Task.Run(async () =>
@@ -95,6 +100,7 @@ namespace MangaViewer.Services
                         {
                             if (_loadCts.IsCancellationRequested) return;
                             foreach (var vm in toAdd) _pages.Add(vm);
+                            RaisePageChanged();
                         });
                         try { await Task.Delay(8, _loadCts.Token); } catch { return; }
                     }
@@ -106,8 +112,8 @@ namespace MangaViewer.Services
         {
             _pages.Clear();
             CurrentPageIndex = 0;
-            MangaLoaded?.Invoke();
-            PageChanged?.Invoke();
+            RaiseMangaLoaded();
+            RaisePageChanged();
         }
         private int _expectedTotal = 0;
         public void SetExpectedTotal(int total)
@@ -118,8 +124,8 @@ namespace MangaViewer.Services
             {
                 for (int i = _pages.Count; i < total; i++)
                     _pages.Add(new MangaPageViewModel()); // placeholder (FilePath null)
-                MangaLoaded?.Invoke();
-                PageChanged?.Invoke();
+                RaiseMangaLoaded();
+                RaisePageChanged();
             }
         }
 
@@ -169,7 +175,22 @@ namespace MangaViewer.Services
                     if (!isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { vm.FilePath = path; }
                 }
             }
-            PageChanged?.Invoke();
+            RaisePageChanged();
+        }
+
+        /// <summary>
+        /// 주어진 인덱스의 파일을 직접 교체/설정합니다. 필요 시 placeholder를 확장합니다.
+        /// </summary>
+        public void ReplaceFileAtIndex(int index, string path)
+        {
+            if (index < 0 || string.IsNullOrWhiteSpace(path)) return;
+            if (index >= _pages.Count)
+            {
+                SetExpectedTotal(index + 1);
+            }
+            var vm = _pages[index];
+            vm.FilePath = path;
+            RaisePageChanged();
         }
 
         private static int ExtractNumericIndex(string name)
@@ -185,29 +206,29 @@ namespace MangaViewer.Services
         {
             if (CurrentPageIndex <= 0) return;
             CurrentPageIndex--;
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
         public void GoToNextPage()
         {
             if (CurrentPageIndex >= GetMaxPageIndex()) return;
             CurrentPageIndex++;
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
         public void GoToPage(int pageIndex)
         {
             CurrentPageIndex = Math.Clamp(pageIndex, 0, GetMaxPageIndex());
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
         public void SetCurrentPageFromImageIndex(int imageIndex)
         {
             if (imageIndex < 0 || imageIndex >= _pages.Count) return;
             CurrentPageIndex = GetPageIndexFromImageIndex(imageIndex);
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
         public void ToggleDirection()
         {
             IsRightToLeft = !IsRightToLeft;
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
         public void ToggleCover()
         {
@@ -216,7 +237,7 @@ namespace MangaViewer.Services
             IsCoverSeparate = !IsCoverSeparate;
             if (primaryImageIndex >= 0)
                 CurrentPageIndex = GetPageIndexFromImageIndex(primaryImageIndex);
-            PageChanged?.Invoke();
+            RaisePageChanged();
         }
 
         public List<string> GetImagePathsForCurrentPage() => GetImagePathsForPage(CurrentPageIndex);
@@ -276,7 +297,26 @@ namespace MangaViewer.Services
             if (_pages.Count > 0) return; // only if empty
             for (int i = 0; i < count; i++)
                 _pages.Add(new MangaPageViewModel());
+            RaiseMangaLoaded();
+            RaisePageChanged();
+        }
+
+        private void RaiseMangaLoaded()
+        {
+            if (_dispatcher != null)
+            {
+                _dispatcher.TryEnqueue(() => MangaLoaded?.Invoke());
+                return;
+            }
             MangaLoaded?.Invoke();
+        }
+        private void RaisePageChanged()
+        {
+            if (_dispatcher != null)
+            {
+                _dispatcher.TryEnqueue(() => PageChanged?.Invoke());
+                return;
+            }
             PageChanged?.Invoke();
         }
     }

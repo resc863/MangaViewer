@@ -10,6 +10,12 @@ using Windows.Foundation;
 using Microsoft.UI.Xaml.Navigation; // NavigationCacheMode
 using MangaViewer.Services;
 using MangaViewer.Services.Thumbnails; // ensure thumbnails namespace available
+using Microsoft.UI.Input; // Keyboard state
+using Microsoft.UI.Xaml.Input; // PointerRoutedEventArgs
+using Microsoft.UI.Composition; // animations
+using Microsoft.UI.Xaml.Hosting; // ElementCompositionPreview
+using System.Numerics; // Vector3, Vector2
+using Microsoft.UI.Xaml.Media; // CompositionTarget.Rendering
 
 namespace MangaViewer.Pages
 {
@@ -20,6 +26,12 @@ namespace MangaViewer.Pages
             public string Value { get; set; } = string.Empty;
             public string Query { get; set; } = string.Empty;
             public double Width { get; set; } // adaptive width
+        }
+
+        private sealed class TileAnimState
+        {
+            public double LastWidth;
+            public double LastHeight;
         }
 
         internal static SearchPage? LastInstance; // 최근 인스턴스
@@ -34,6 +46,32 @@ namespace MangaViewer.Pages
         private int _streamGeneration;
         private string? _activeGalleryUrl;
 
+        // Zoom smoothing state (vsync-driven)
+        private bool _zoomAnimating;
+        private double _zoomStartWidth;
+        private double _zoomTargetWidth;
+        private DateTimeOffset _zoomStartTime;
+        private TimeSpan _zoomDuration;
+        private const double ZoomMin = 120;
+        private const double ZoomMax = 420;
+
+        // Dynamic tile size properties (default matching previous 180x240)
+        public double TileWidth
+        {
+            get => (double)GetValue(TileWidthProperty);
+            set => SetValue(TileWidthProperty, value);
+        }
+        public static readonly DependencyProperty TileWidthProperty =
+            DependencyProperty.Register(nameof(TileWidth), typeof(double), typeof(SearchPage), new PropertyMetadata(180d));
+
+        public double TileHeight
+        {
+            get => (double)GetValue(TileHeightProperty);
+            set => SetValue(TileHeightProperty, value);
+        }
+        public static readonly DependencyProperty TileHeightProperty =
+            DependencyProperty.Register(nameof(TileHeight), typeof(double), typeof(SearchPage), new PropertyMetadata(240d));
+
         public SearchPage()
         {
             this.InitializeComponent();
@@ -42,6 +80,8 @@ namespace MangaViewer.Pages
             ViewModel.GalleryOpenRequested += OnGalleryOpenRequested;
             Loaded += SearchPage_Loaded;
             LastInstance = this;
+
+            _zoomTargetWidth = TileWidth;
         }
 
         private void SearchPage_Loaded(object sender, RoutedEventArgs e)
@@ -291,6 +331,158 @@ namespace MangaViewer.Pages
                 }
                 return new Size(width, y + lineH);
             }
+        }
+
+        // Ctrl + Mouse Wheel to adjust tile size (vsync-smoothed)
+        private void OnPointerWheelChanged(object sender, PointerRoutedEventArgs e)
+        {
+            try
+            {
+                var props = e.GetCurrentPoint(this).Properties;
+                bool ctrl = InputKeyboardSource.GetKeyStateForCurrentThread(Windows.System.VirtualKey.Control).HasFlag(Windows.UI.Core.CoreVirtualKeyStates.Down);
+                if (!ctrl) return;
+
+                int delta = props.MouseWheelDelta; // positive up, negative down
+                double factor = delta > 0 ? 1.08 : 1.0 / 1.08; // gentle zoom
+                double baseWidth = _zoomAnimating ? _zoomTargetWidth : TileWidth;
+                double target = Math.Clamp(baseWidth * factor, ZoomMin, ZoomMax);
+                StartZoomAnimation(target);
+
+                e.Handled = true;
+            }
+            catch { }
+        }
+
+        private void StartZoomAnimation(double targetWidth)
+        {
+            _zoomStartWidth = TileWidth;
+            _zoomTargetWidth = targetWidth;
+            double diff = Math.Abs(_zoomTargetWidth - _zoomStartWidth);
+            // Duration based on distance (px), clamped 90..300ms
+            double ms = Math.Clamp(diff / 6.0, 90, 300); // ~600 px/s subjective speed
+            _zoomDuration = TimeSpan.FromMilliseconds(ms);
+            _zoomStartTime = DateTimeOffset.UtcNow;
+            if (!_zoomAnimating)
+            {
+                _zoomAnimating = true;
+                CompositionTarget.Rendering += OnRendering;
+            }
+        }
+
+        private static double EaseOutCubic(double t) => 1 - Math.Pow(1 - t, 3);
+
+        private void OnRendering(object? sender, object e)
+        {
+            try
+            {
+                if (!_zoomAnimating) return;
+                var now = DateTimeOffset.UtcNow;
+                double t = (now - _zoomStartTime).TotalMilliseconds / _zoomDuration.TotalMilliseconds;
+                if (t >= 1.0)
+                {
+                    TileWidth = _zoomTargetWidth;
+                    TileHeight = _zoomTargetWidth * (4.0 / 3.0);
+                    _zoomAnimating = false;
+                    CompositionTarget.Rendering -= OnRendering;
+                    return;
+                }
+                double p = EaseOutCubic(Math.Clamp(t, 0, 1));
+                double next = _zoomStartWidth + (_zoomTargetWidth - _zoomStartWidth) * p;
+                TileWidth = next;
+                TileHeight = next * (4.0 / 3.0);
+            }
+            catch { }
+        }
+
+        // Animate tile: implicit translation with light opacity during reflow
+        private void TileRoot_Loaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (sender is not FrameworkElement fe) return;
+                fe.Unloaded -= TileRoot_Unloaded;
+                fe.Unloaded += TileRoot_Unloaded;
+                fe.SizeChanged -= Tile_SizeChanged;
+                fe.SizeChanged += Tile_SizeChanged;
+
+                var visual = ElementCompositionPreview.GetElementVisual(fe);
+                var comp = visual.Compositor;
+
+                // Implicit offset animation when tile is re-laid out (size/position changes)
+                var offsetAnim = comp.CreateVector3KeyFrameAnimation();
+                offsetAnim.Duration = TimeSpan.FromMilliseconds(160);
+                offsetAnim.Target = "Offset";
+                var ease = comp.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.0f), new Vector2(0.0f, 1.0f));
+                offsetAnim.InsertExpressionKeyFrame(1f, "this.FinalValue", ease);
+
+                // Subtle opacity tween during reflow
+                var opacityAnim = comp.CreateScalarKeyFrameAnimation();
+                opacityAnim.Duration = TimeSpan.FromMilliseconds(140);
+                opacityAnim.InsertKeyFrame(0f, 0.96f, ease);
+                opacityAnim.InsertKeyFrame(1f, 1f, ease);
+
+                visual.CenterPoint = new Vector3((float)fe.ActualWidth / 2f, (float)fe.ActualHeight / 2f, 0f);
+                var coll = comp.CreateImplicitAnimationCollection();
+                var group = comp.CreateAnimationGroup();
+                group.Add(offsetAnim);
+                group.Add(opacityAnim);
+                coll["Offset"] = group; // when position changes, run both
+                visual.ImplicitAnimations = coll;
+
+                // Initialize state for size-change scale tween
+                if (fe.Tag is not TileAnimState)
+                    fe.Tag = new TileAnimState { LastWidth = fe.ActualWidth, LastHeight = fe.ActualHeight };
+            }
+            catch { }
+        }
+
+        private void TileRoot_Unloaded(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe)
+            {
+                fe.SizeChanged -= Tile_SizeChanged;
+                fe.Unloaded -= TileRoot_Unloaded;
+                // preserve Tag state
+            }
+        }
+
+        private void Tile_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            try
+            {
+                // Skip extra per-item scale tween while zoom smoothing is driving size every frame
+                if (_zoomAnimating) return;
+
+                if (sender is not FrameworkElement fe) return;
+                if (fe.Tag is not TileAnimState state)
+                {
+                    state = new TileAnimState();
+                    fe.Tag = state;
+                }
+                double prevW = state.LastWidth;
+                double prevH = state.LastHeight;
+                state.LastWidth = e.NewSize.Width;
+                state.LastHeight = e.NewSize.Height;
+
+                if (prevW <= 0 || prevH <= 0) return;
+
+                float sx = (float)(prevW / Math.Max(1e-3, e.NewSize.Width));
+                float sy = (float)(prevH / Math.Max(1e-3, e.NewSize.Height));
+                if (Math.Abs(sx - 1f) < 0.06f && Math.Abs(sy - 1f) < 0.06f) return; // threshold to reduce noise
+
+                var visual = ElementCompositionPreview.GetElementVisual(fe);
+                var comp = visual.Compositor;
+                visual.CenterPoint = new Vector3((float)e.NewSize.Width / 2f, (float)e.NewSize.Height / 2f, 0f);
+
+                // Start from previous-geometry scale and ease to 1
+                visual.Scale = new Vector3(sx, sy, 1f);
+                var anim = comp.CreateVector3KeyFrameAnimation();
+                anim.Duration = TimeSpan.FromMilliseconds(160);
+                var ease = comp.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.0f), new Vector2(0.0f, 1.0f));
+                anim.InsertKeyFrame(1f, new Vector3(1f, 1f, 1f), ease);
+                visual.StartAnimation("Scale", anim);
+            }
+            catch { }
         }
     }
 }

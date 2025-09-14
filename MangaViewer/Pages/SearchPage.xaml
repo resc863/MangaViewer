@@ -6,6 +6,7 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:vm="using:MangaViewer.ViewModels"
     xmlns:controls="using:MangaViewer.Controls"
+    x:Name="SearchPageRoot"
     mc:Ignorable="d" Background="Transparent">
     <Page.Resources>
         <Style x:Key="GalleryTileButtonStyle" TargetType="Button">
@@ -17,7 +18,7 @@
             <controls:TagWrapPanel HorizontalSpacing="4" VerticalSpacing="6" />
         </ItemsPanelTemplate>
     </Page.Resources>
-    <Grid Padding="12" RowSpacing="12" Background="Transparent">
+    <Grid Padding="12" RowSpacing="12" Background="Transparent" PointerWheelChanged="OnPointerWheelChanged">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -36,7 +37,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                     <DataTemplate x:DataType="vm:GalleryItemViewModel">
-                        <Grid Width="180" Margin="4" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                        <Grid Width="{Binding ElementName=SearchPageRoot, Path=TileWidth}" Margin="4" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" Loaded="TileRoot_Loaded" Unloaded="TileRoot_Unloaded">
                             <Grid.ContextFlyout>
                                 <MenuFlyout Opening="MetaFlyout_Opening">
                                     <MenuFlyoutItem Text="불러오기" Command="{x:Bind OpenCommand}"/>
@@ -49,7 +50,7 @@
                             </Grid.ContextFlyout>
                             <Button Command="{x:Bind OpenCommand}" Style="{StaticResource GalleryTileButtonStyle}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
                                 <StackPanel Spacing="4">
-                                    <Image Source="{x:Bind Thumbnail, Mode=OneWay}" Width="180" Height="240" Stretch="UniformToFill" />
+                                    <Image Source="{x:Bind Thumbnail, Mode=OneWay}" Width="{Binding ElementName=SearchPageRoot, Path=TileWidth}" Height="{Binding ElementName=SearchPageRoot, Path=TileHeight}" Stretch="UniformToFill" />
                                     <TextBlock Text="{x:Bind Title}" TextWrapping="WrapWholeWords" MaxLines="2" FontSize="13"/>
                                     <TextBlock Text="{x:Bind Artist}" Foreground="Gray" FontSize="12" TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>

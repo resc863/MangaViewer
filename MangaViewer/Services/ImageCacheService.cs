@@ -1,5 +1,7 @@
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -17,26 +19,32 @@ namespace MangaViewer.Services
 
         private record CacheEntry(string Path, BitmapImage Image);
 
-        // In-memory raw image bytes (mem: keys) with LRU + size limit
+        private readonly object _lruLock = new();
+        private readonly ConcurrentDictionary<string, Task> _inflightPrefetch = new(StringComparer.OrdinalIgnoreCase);
+
+        // UI dispatcher to create XAML objects safely
+        private DispatcherQueue? _dispatcher;
+        public void InitializeUI(DispatcherQueue dispatcher) => _dispatcher = dispatcher;
+
         private static readonly Dictionary<string, byte[]> _memoryImages = new(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, LinkedListNode<string>> _memoryOrderMap = new(StringComparer.OrdinalIgnoreCase);
-        private static readonly LinkedList<string> _memoryOrder = new(); // head = most recent
+        private static readonly LinkedList<string> _memoryOrder = new();
         private static readonly object _memLock = new();
         private static long _memoryTotalBytes;
 
-        // Limits (configurable)
-        private static int _maxMemoryImageCount = 2000;                // default max images
-        private static long _maxMemoryImageBytes = 2L * 1024 * 1024 * 1024; // default 2GB
+        private static int _maxMemoryImageCount = 2000;
+        private static long _maxMemoryImageBytes = 2L * 1024 * 1024 * 1024;
 
         public int MaxMemoryImageCount => _maxMemoryImageCount;
         public long MaxMemoryImageBytes => _maxMemoryImageBytes;
+        public int DecodedCacheCapacity => _capacity;
 
         public void SetMemoryLimits(int? maxCount, long? maxBytes)
         {
             lock (_memLock)
             {
                 if (maxCount.HasValue && maxCount.Value > 0) _maxMemoryImageCount = maxCount.Value;
-                if (maxBytes.HasValue && maxBytes.Value > 10_000_000) _maxMemoryImageBytes = maxBytes.Value; // enforce sane minimum
+                if (maxBytes.HasValue && maxBytes.Value > 10_000_000) _maxMemoryImageBytes = maxBytes.Value;
                 EvictMemory_NoLock();
             }
         }
@@ -48,7 +56,6 @@ namespace MangaViewer.Services
 
         public Dictionary<string, int> GetPerGalleryCounts()
         {
-            // mem:gid:####.ext -> group by gid
             var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             lock (_memLock)
             {
@@ -76,7 +83,10 @@ namespace MangaViewer.Services
                     if (_memoryImages.TryGetValue(k, out var bytes)) _memoryTotalBytes -= bytes.LongLength;
                     _memoryImages.Remove(k);
                     if (_memoryOrderMap.TryGetValue(k, out var node)) { _memoryOrder.Remove(node); _memoryOrderMap.Remove(k); }
-                    if (_map.TryGetValue(k, out var lruNode)) { _lru.Remove(lruNode); _map.Remove(k); }
+                    lock (_lruLock)
+                    {
+                        if (_map.TryGetValue(k, out var lruNode)) { _lru.Remove(lruNode); _map.Remove(k); }
+                    }
                 }
             }
         }
@@ -86,7 +96,7 @@ namespace MangaViewer.Services
         public void SetDecodedCacheCapacity(int capacity)
         {
             _capacity = Math.Max(4, capacity);
-            Trim();
+            lock (_lruLock) Trim_NoLock();
         }
 
         public void AddMemoryImage(string key, byte[] data)
@@ -128,10 +138,13 @@ namespace MangaViewer.Services
                 _memoryImages.Remove(k);
                 _memoryOrder.RemoveLast();
                 _memoryOrderMap.Remove(k);
-                if (_map.TryGetValue(k, out var node))
+                lock (_lruLock)
                 {
-                    _lru.Remove(node);
-                    _map.Remove(k);
+                    if (_map.TryGetValue(k, out var node))
+                    {
+                        _lru.Remove(node);
+                        _map.Remove(k);
+                    }
                 }
             }
         }
@@ -145,18 +158,21 @@ namespace MangaViewer.Services
                 _memoryOrderMap.Clear();
                 _memoryTotalBytes = 0;
             }
-            var toRemove = new List<string>();
-            foreach (var kv in _map)
+            lock (_lruLock)
             {
-                if (kv.Key.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-                    toRemove.Add(kv.Key);
-            }
-            foreach (var k in toRemove)
-            {
-                if (_map.TryGetValue(k, out var node))
+                var toRemove = new List<string>();
+                foreach (var kv in _map)
                 {
-                    _lru.Remove(node);
-                    _map.Remove(k);
+                    if (kv.Key.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                        toRemove.Add(kv.Key);
+                }
+                foreach (var k in toRemove)
+                {
+                    if (_map.TryGetValue(k, out var node))
+                    {
+                        _lru.Remove(node);
+                        _map.Remove(k);
+                    }
                 }
             }
         }
@@ -194,11 +210,14 @@ namespace MangaViewer.Services
         public BitmapImage? Get(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
-            if (_map.TryGetValue(path, out var node))
+            lock (_lruLock)
             {
-                _lru.Remove(node);
-                _lru.AddFirst(node);
-                return node.Value.Image;
+                if (_map.TryGetValue(path, out var node))
+                {
+                    _lru.Remove(node);
+                    _lru.AddFirst(node);
+                    return node.Value.Image;
+                }
             }
 
             BitmapImage? bmp = null;
@@ -206,23 +225,30 @@ namespace MangaViewer.Services
             {
                 if (TryGetMemoryBytes(path, out var memBytes) && memBytes != null)
                 {
-                    using var ms = new MemoryStream(memBytes, writable: false);
-                    bmp = new BitmapImage();
-                    bmp.SetSource(ms.AsRandomAccessStream());
+                    bmp = CreateBitmapOnUi(() =>
+                    {
+                        var img = new BitmapImage();
+                        using var ms = new MemoryStream(memBytes, writable: false);
+                        img.SetSource(ms.AsRandomAccessStream());
+                        return img;
+                    });
                 }
                 else if (File.Exists(path))
                 {
-                    bmp = new BitmapImage(new Uri(path));
+                    bmp = CreateBitmapOnUi(() => new BitmapImage(new Uri(path)));
                 }
             }
             catch { return null; }
 
             if (bmp == null) return null;
-            var entry = new CacheEntry(path, bmp);
-            var newNode = new LinkedListNode<CacheEntry>(entry);
-            _lru.AddFirst(newNode);
-            _map[path] = newNode;
-            Trim();
+            lock (_lruLock)
+            {
+                var entry = new CacheEntry(path, bmp);
+                var newNode = new LinkedListNode<CacheEntry>(entry);
+                _lru.AddFirst(newNode);
+                _map[path] = newNode;
+                Trim_NoLock();
+            }
             return bmp;
         }
 
@@ -230,12 +256,43 @@ namespace MangaViewer.Services
         {
             foreach (var p in paths)
             {
-                if (_map.ContainsKey(p)) continue;
-                _ = Get(p);
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
+                _inflightPrefetch.GetOrAdd(p, key => Task.Run(() =>
+                {
+                    try { _ = Get(key); }
+                    finally { _inflightPrefetch.TryRemove(key, out _); }
+                }));
             }
         }
 
-        private void Trim()
+        private BitmapImage? CreateBitmapOnUi(Func<BitmapImage> factory)
+        {
+            // If we have a dispatcher and are on UI thread, create directly
+            if (_dispatcher != null && _dispatcher.HasThreadAccess)
+            {
+                try { return factory(); } catch { return null; }
+            }
+
+            if (_dispatcher == null)
+            {
+                // No dispatcher known: best effort (may crash on non-UI thread)
+                try { return factory(); } catch { return null; }
+            }
+
+            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!_dispatcher.TryEnqueue(() =>
+            {
+                try { tcs.TrySetResult(factory()); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
+            }))
+            {
+                tcs.TrySetResult(null);
+            }
+            try { return tcs.Task.GetAwaiter().GetResult(); } catch { return null; }
+        }
+
+        private void Trim_NoLock()
         {
             while (_lru.Count > _capacity)
             {

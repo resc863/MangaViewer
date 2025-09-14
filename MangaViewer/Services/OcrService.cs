@@ -12,6 +12,7 @@ using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
 using Windows.Storage;
 using Windows.Storage.Streams;
+using MangaViewer.Services.Logging;
 
 namespace MangaViewer.Services
 {
@@ -45,10 +46,16 @@ namespace MangaViewer.Services
         // Simple OCR results cache (per-path + settings key)
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
 
+        private EventHandler? _settingsChangedDebounced;
+        private readonly SynchronizationContext? _syncContext;
+        private TimeSpan _debounceDelay = TimeSpan.FromMilliseconds(250);
+
         private OcrService()
         {
             // warm up default engine
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
+            _syncContext = SynchronizationContext.Current; // capture UI context if created on UI thread
+            RebuildDebouncedHandler();
         }
 
         public void SetLanguage(string languageTag)
@@ -107,7 +114,45 @@ namespace MangaViewer.Services
         {
             // settings affect layout -> invalidate OCR cache
             ClearCache();
-            SettingsChanged?.Invoke(this, EventArgs.Empty);
+            try { _settingsChangedDebounced?.Invoke(this, EventArgs.Empty); }
+            catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
+        }
+
+        // Allow caller to customize debounce window
+        public void SetSettingsChangedDebounce(TimeSpan delay)
+        {
+            _debounceDelay = delay;
+            RebuildDebouncedHandler();
+        }
+
+        private void RebuildDebouncedHandler()
+        {
+            _settingsChangedDebounced = DebounceOnContext((s, e) => SettingsChanged?.Invoke(s, e), _debounceDelay, _syncContext);
+        }
+
+        // Static debounce utility for simple event handlers
+        public static EventHandler DebounceOnContext(EventHandler handler, TimeSpan delay, SynchronizationContext? context)
+        {
+            object gate = new();
+            System.Threading.Timer? timer = null;
+            return (s, e) =>
+            {
+                lock (gate)
+                {
+                    timer?.Dispose();
+                    timer = new System.Threading.Timer(_ =>
+                    {
+                        try
+                        {
+                            if (context != null)
+                                context.Post(_ => handler(s, e), null);
+                            else
+                                handler(s, e);
+                        }
+                        catch { }
+                    }, null, delay, Timeout.InfiniteTimeSpan);
+                }
+            };
         }
 
         private OcrEngine? TryCreateEngineForLanguage(string tag)
@@ -116,7 +161,7 @@ namespace MangaViewer.Services
             {
                 if (string.Equals(tag, "auto", StringComparison.OrdinalIgnoreCase))
                     return OcrEngine.TryCreateFromUserProfileLanguages();
-                var lang = new Language(tag);
+                var lang = new Windows.Globalization.Language(tag);
                 return OcrEngine.TryCreateFromLanguage(lang);
             }
             catch { return null; }
@@ -130,10 +175,6 @@ namespace MangaViewer.Services
             return e;
         }
 
-        /// <summary>
-        /// 이미지 파일에서 OCR 수행. 내부적으로 지원 포맷(Gray8)으로 변환 및 EXIF Orientation 적용.
-        /// 매우 큰 이미지는 최대 한 변 4000px 로 스케일 다운하여 성능/메모리 사용을 줄입니다.
-        /// </summary>
         public async Task<List<OcrResult>> RecognizeAsync(StorageFile imageFile)
         {
             var engine = GetActiveEngine();
@@ -148,7 +189,6 @@ namespace MangaViewer.Services
                 {
                     var decoder = await BitmapDecoder.CreateAsync(stream);
 
-                    // 스케일 결정 (너비/높이 중 큰 값이 4000 초과면 축소)
                     var transform = new BitmapTransform();
                     uint width = decoder.PixelWidth;
                     uint height = decoder.PixelHeight;
@@ -160,7 +200,6 @@ namespace MangaViewer.Services
                         transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                     }
 
-                    // Prefer direct Gray8 decode (faster, less memory); fall back to BGRA8 then convert
                     SoftwareBitmap toOcr;
                     try
                     {
@@ -203,12 +242,11 @@ namespace MangaViewer.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[OCR] Failed for file '{imageFile.Path}': {ex}");
+                Log.Error(ex, $"[OCR] Failed for file '{imageFile.Path}'");
                 return new List<OcrResult>();
             }
         }
 
-        // New API used by MangaViewModel
         public async Task<List<BoundingBoxViewModel>> GetOcrAsync(string imagePath, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(imagePath)) return new List<BoundingBoxViewModel>();
@@ -239,7 +277,6 @@ namespace MangaViewer.Services
                     transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                 }
 
-                // Prefer direct Gray8 decode; fall back to BGRA8 then convert
                 SoftwareBitmap toOcr;
                 try
                 {
@@ -270,7 +307,6 @@ namespace MangaViewer.Services
                 int imgW = toOcr.PixelWidth;
                 int imgH = toOcr.PixelHeight;
 
-                // Collect base words and per-line rects
                 var wordBoxes = new List<(string Text, Rect Rect, int LineIndex)>(ocr.Lines.Sum(l => l.Words.Count));
                 var lineRects = new List<Rect>(ocr.Lines.Count);
                 for (int li = 0; li < ocr.Lines.Count; li++)
@@ -320,7 +356,7 @@ namespace MangaViewer.Services
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[OCR] GetOcrAsync error: {ex.Message}\n\n{ex} ");
+                Log.Error(ex, "[OCR] GetOcrAsync error");
                 return new List<BoundingBoxViewModel>();
             }
         }
@@ -351,10 +387,9 @@ namespace MangaViewer.Services
             bool vertical = TextWritingMode == WritingMode.Vertical;
             if (TextWritingMode == WritingMode.Auto)
             {
-                // simple heuristic: if average width < height -> horizontal text
                 double avgW = lineRects.Where(r => !IsEmpty(r)).DefaultIfEmpty(new Rect()).Average(r => r.Width);
                 double avgH = lineRects.Where(r => !IsEmpty(r)).DefaultIfEmpty(new Rect()).Average(r => r.Height);
-                vertical = avgH > avgW * 1.5; // crude guess
+                vertical = avgH > avgW * 1.5;
             }
 
             var indices = Enumerable.Range(0, lineRects.Count).Where(i => !IsEmpty(lineRects[i])).ToList();
@@ -362,7 +397,6 @@ namespace MangaViewer.Services
 
             if (!vertical)
             {
-                // horizontal paragraph grouping by Y gaps
                 indices.Sort((a, b) => lineRects[a].Y != lineRects[b].Y ? lineRects[a].Y.CompareTo(lineRects[b].Y) : lineRects[a].X.CompareTo(lineRects[b].X));
                 double avgHeight = indices.Average(i => lineRects[i].Height);
                 double threshold = avgHeight * ParagraphGapFactorHorizontal;
@@ -384,8 +418,7 @@ namespace MangaViewer.Services
             }
             else
             {
-                // vertical paragraph grouping by X gaps (columns)
-                indices.Sort((a, b) => lineRects[a].X != lineRects[b].X ? lineRects[b].X.CompareTo(lineRects[a].X) : lineRects[a].Y.CompareTo(lineRects[b].Y)); // right->left then top->bottom
+                indices.Sort((a, b) => lineRects[a].X != lineRects[b].X ? lineRects[b].X.CompareTo(lineRects[a].X) : lineRects[a].Y.CompareTo(lineRects[b].Y));
                 double avgWidth = indices.Average(i => lineRects[i].Width);
                 double threshold = avgWidth * ParagraphGapFactorVertical;
                 var current = new List<int> { indices[0] };
@@ -393,7 +426,7 @@ namespace MangaViewer.Services
                 {
                     var prev = lineRects[indices[k - 1]];
                     var cur = lineRects[indices[k]];
-                    double gap = prev.X - (cur.X + cur.Width); // distance between columns (right-to-left)
+                    double gap = prev.X - (cur.X + cur.Width);
                     if (gap <= threshold)
                         current.Add(indices[k]);
                     else
@@ -428,7 +461,6 @@ namespace MangaViewer.Services
         {
             try
             {
-                // Support in-memory images (mem: keys)
                 if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
                 {
                     if (ImageCacheService.Instance.TryGetMemoryImageBytes(path, out var bytes) && bytes != null)
@@ -439,8 +471,7 @@ namespace MangaViewer.Services
                     return null;
                 }
 
-                // Disk file path -> open as IRandomAccessStream without full buffering
-                return await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read);
+                return await Windows.Storage.Streams.FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask(token);
             }
             catch { return null; }
         }
