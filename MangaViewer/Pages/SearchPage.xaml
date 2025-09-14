@@ -32,7 +32,7 @@
             <ItemsControl x:Name="ResultsList" IsTabStop="False">
                 <ItemsControl.ItemsPanel>
                     <ItemsPanelTemplate>
-                        <ItemsWrapGrid Orientation="Horizontal" MaximumRowsOrColumns="0" />
+                        <controls:AnimatedWrapPanel HorizontalSpacing="8" VerticalSpacing="8" />
                     </ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>

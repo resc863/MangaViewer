@@ -46,12 +46,7 @@ namespace MangaViewer.Pages
         private int _streamGeneration;
         private string? _activeGalleryUrl;
 
-        // Zoom smoothing state (vsync-driven)
-        private bool _zoomAnimating;
-        private double _zoomStartWidth;
-        private double _zoomTargetWidth;
-        private DateTimeOffset _zoomStartTime;
-        private TimeSpan _zoomDuration;
+        // Zoom settings
         private const double ZoomMin = 120;
         private const double ZoomMax = 420;
 
@@ -80,8 +75,6 @@ namespace MangaViewer.Pages
             ViewModel.GalleryOpenRequested += OnGalleryOpenRequested;
             Loaded += SearchPage_Loaded;
             LastInstance = this;
-
-            _zoomTargetWidth = TileWidth;
         }
 
         private void SearchPage_Loaded(object sender, RoutedEventArgs e)
@@ -143,14 +136,13 @@ namespace MangaViewer.Pages
         {
             if (_mangaViewModel == null || item.GalleryUrl == null) return;
 
-            // Increase generation for new request (used to discard stale batches)
+            // streaming state
             _streamGeneration++;
             int localGen = _streamGeneration;
             string newGalleryUrl = item.GalleryUrl;
 
             BusyRing.IsActive = true;
 
-            // Cancel previous streaming (token + background session) if switching gallery
             if (_activeGalleryUrl != null && !string.Equals(_activeGalleryUrl, newGalleryUrl, StringComparison.OrdinalIgnoreCase))
             {
                 try { _streamCts?.Cancel(); } catch { }
@@ -158,7 +150,6 @@ namespace MangaViewer.Pages
             }
             _activeGalleryUrl = newGalleryUrl;
 
-            // Create new CTS
             try { _streamCts?.Cancel(); } catch { }
             _streamCts?.Dispose();
             _streamCts = new CancellationTokenSource();
@@ -170,7 +161,6 @@ namespace MangaViewer.Pages
                 var cached = Services.EhentaiService.TryGetCachedGallery(newGalleryUrl);
                 if (cached != null && cached.Count > 0)
                 {
-                    // Cached: load immediately (ignore if user already switched again)
                     if (localGen == _streamGeneration)
                     {
                         await _mangaViewModel.LoadLocalFilesAsync(cached);
@@ -179,7 +169,6 @@ namespace MangaViewer.Pages
                     return;
                 }
 
-                // Fetch all page URLs
                 var (pageUrls, _) = await service.GetAllPageUrlsAsync(newGalleryUrl, token);
                 if (localGen != _streamGeneration || token.IsCancellationRequested) return;
 
@@ -333,7 +322,7 @@ namespace MangaViewer.Pages
             }
         }
 
-        // Ctrl + Mouse Wheel to adjust tile size (vsync-smoothed)
+        // Ctrl + Mouse Wheel to adjust tile size (instant, no per-tile scale animation)
         private void OnPointerWheelChanged(object sender, PointerRoutedEventArgs e)
         {
             try
@@ -344,52 +333,13 @@ namespace MangaViewer.Pages
 
                 int delta = props.MouseWheelDelta; // positive up, negative down
                 double factor = delta > 0 ? 1.08 : 1.0 / 1.08; // gentle zoom
-                double baseWidth = _zoomAnimating ? _zoomTargetWidth : TileWidth;
-                double target = Math.Clamp(baseWidth * factor, ZoomMin, ZoomMax);
-                StartZoomAnimation(target);
+                double target = Math.Clamp(TileWidth * factor, ZoomMin, ZoomMax);
+
+                // apply instantly; layout will animate tiles' positions via implicit Offset animations
+                TileWidth = target;
+                TileHeight = target * (4.0 / 3.0);
 
                 e.Handled = true;
-            }
-            catch { }
-        }
-
-        private void StartZoomAnimation(double targetWidth)
-        {
-            _zoomStartWidth = TileWidth;
-            _zoomTargetWidth = targetWidth;
-            double diff = Math.Abs(_zoomTargetWidth - _zoomStartWidth);
-            // Duration based on distance (px), clamped 90..300ms
-            double ms = Math.Clamp(diff / 6.0, 90, 300); // ~600 px/s subjective speed
-            _zoomDuration = TimeSpan.FromMilliseconds(ms);
-            _zoomStartTime = DateTimeOffset.UtcNow;
-            if (!_zoomAnimating)
-            {
-                _zoomAnimating = true;
-                CompositionTarget.Rendering += OnRendering;
-            }
-        }
-
-        private static double EaseOutCubic(double t) => 1 - Math.Pow(1 - t, 3);
-
-        private void OnRendering(object? sender, object e)
-        {
-            try
-            {
-                if (!_zoomAnimating) return;
-                var now = DateTimeOffset.UtcNow;
-                double t = (now - _zoomStartTime).TotalMilliseconds / _zoomDuration.TotalMilliseconds;
-                if (t >= 1.0)
-                {
-                    TileWidth = _zoomTargetWidth;
-                    TileHeight = _zoomTargetWidth * (4.0 / 3.0);
-                    _zoomAnimating = false;
-                    CompositionTarget.Rendering -= OnRendering;
-                    return;
-                }
-                double p = EaseOutCubic(Math.Clamp(t, 0, 1));
-                double next = _zoomStartWidth + (_zoomTargetWidth - _zoomStartWidth) * p;
-                TileWidth = next;
-                TileHeight = next * (4.0 / 3.0);
             }
             catch { }
         }
@@ -402,13 +352,11 @@ namespace MangaViewer.Pages
                 if (sender is not FrameworkElement fe) return;
                 fe.Unloaded -= TileRoot_Unloaded;
                 fe.Unloaded += TileRoot_Unloaded;
-                fe.SizeChanged -= Tile_SizeChanged;
-                fe.SizeChanged += Tile_SizeChanged;
 
                 var visual = ElementCompositionPreview.GetElementVisual(fe);
                 var comp = visual.Compositor;
 
-                // Implicit offset animation when tile is re-laid out (size/position changes)
+                // Implicit offset animation when tile is re-laid out (position changes)
                 var offsetAnim = comp.CreateVector3KeyFrameAnimation();
                 offsetAnim.Duration = TimeSpan.FromMilliseconds(160);
                 offsetAnim.Target = "Offset";
@@ -428,10 +376,6 @@ namespace MangaViewer.Pages
                 group.Add(opacityAnim);
                 coll["Offset"] = group; // when position changes, run both
                 visual.ImplicitAnimations = coll;
-
-                // Initialize state for size-change scale tween
-                if (fe.Tag is not TileAnimState)
-                    fe.Tag = new TileAnimState { LastWidth = fe.ActualWidth, LastHeight = fe.ActualHeight };
             }
             catch { }
         }
@@ -440,49 +384,8 @@ namespace MangaViewer.Pages
         {
             if (sender is FrameworkElement fe)
             {
-                fe.SizeChanged -= Tile_SizeChanged;
                 fe.Unloaded -= TileRoot_Unloaded;
-                // preserve Tag state
             }
-        }
-
-        private void Tile_SizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            try
-            {
-                // Skip extra per-item scale tween while zoom smoothing is driving size every frame
-                if (_zoomAnimating) return;
-
-                if (sender is not FrameworkElement fe) return;
-                if (fe.Tag is not TileAnimState state)
-                {
-                    state = new TileAnimState();
-                    fe.Tag = state;
-                }
-                double prevW = state.LastWidth;
-                double prevH = state.LastHeight;
-                state.LastWidth = e.NewSize.Width;
-                state.LastHeight = e.NewSize.Height;
-
-                if (prevW <= 0 || prevH <= 0) return;
-
-                float sx = (float)(prevW / Math.Max(1e-3, e.NewSize.Width));
-                float sy = (float)(prevH / Math.Max(1e-3, e.NewSize.Height));
-                if (Math.Abs(sx - 1f) < 0.06f && Math.Abs(sy - 1f) < 0.06f) return; // threshold to reduce noise
-
-                var visual = ElementCompositionPreview.GetElementVisual(fe);
-                var comp = visual.Compositor;
-                visual.CenterPoint = new Vector3((float)e.NewSize.Width / 2f, (float)e.NewSize.Height / 2f, 0f);
-
-                // Start from previous-geometry scale and ease to 1
-                visual.Scale = new Vector3(sx, sy, 1f);
-                var anim = comp.CreateVector3KeyFrameAnimation();
-                anim.Duration = TimeSpan.FromMilliseconds(160);
-                var ease = comp.CreateCubicBezierEasingFunction(new Vector2(0.2f, 0.0f), new Vector2(0.0f, 1.0f));
-                anim.InsertKeyFrame(1f, new Vector3(1f, 1f, 1f), ease);
-                visual.StartAnimation("Scale", anim);
-            }
-            catch { }
         }
     }
 }
