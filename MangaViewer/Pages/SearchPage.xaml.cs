@@ -8,6 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using Windows.Foundation;
 using Microsoft.UI.Xaml.Navigation; // NavigationCacheMode
+using MangaViewer.Services;
+using MangaViewer.Services.Thumbnails; // ensure thumbnails namespace available
 
 namespace MangaViewer.Pages
 {

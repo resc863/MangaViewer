@@ -7,6 +7,7 @@ using System.Linq;
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
+using MangaViewer.Services.Thumbnails; // moved thumbnail services
 
 namespace MangaViewer.Pages
 {
@@ -21,7 +22,6 @@ namespace MangaViewer.Pages
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
-        private ToggleSwitch _useNativeToggle = null!;
         private Slider _thumbWidthSlider = null!;
         private TextBlock _thumbWidthValue = null!;
 
@@ -84,8 +84,8 @@ namespace MangaViewer.Pages
 
             _groupCombo = new ComboBox { Width = 160 };
             _groupCombo.Items.Add(new ComboBoxItem { Content = "단어", Tag = OcrService.OcrGrouping.Word.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "행", Tag = OcrService.OcrGrouping.Line.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "단락", Tag = OcrService.OcrGrouping.Paragraph.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = "줄", Tag = OcrService.OcrGrouping.Line.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = "문단", Tag = OcrService.OcrGrouping.Paragraph.ToString() });
             _groupCombo.SelectionChanged += GroupCombo_SelectionChanged;
             stack.Children.Add(Row("그룹:", _groupCombo));
 
@@ -94,7 +94,7 @@ namespace MangaViewer.Pages
             _writingCombo.Items.Add(new ComboBoxItem { Content = "가로", Tag = OcrService.WritingMode.Horizontal.ToString() });
             _writingCombo.Items.Add(new ComboBoxItem { Content = "세로", Tag = OcrService.WritingMode.Vertical.ToString() });
             _writingCombo.SelectionChanged += WritingCombo_SelectionChanged;
-            stack.Children.Add(Row("쓰기 방향:", _writingCombo));
+            stack.Children.Add(Row("텍스트 방향:", _writingCombo));
 
             // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
@@ -119,17 +119,10 @@ namespace MangaViewer.Pages
             _thumbWidthSlider.ValueChanged += ThumbWidthSlider_ValueChanged;
             _thumbWidthValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateThumbWidthValue();
-            thumbRow1.Children.Add(new TextBlock { Text = "디코드 너비(px):", VerticalAlignment = VerticalAlignment.Center });
+            thumbRow1.Children.Add(new TextBlock { Text = "디코드 폭(px):", VerticalAlignment = VerticalAlignment.Center });
             thumbRow1.Children.Add(_thumbWidthSlider);
             thumbRow1.Children.Add(_thumbWidthValue);
             stack.Children.Add(thumbRow1);
-
-            var thumbRow2 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            _useNativeToggle = new ToggleSwitch { OffContent = "Managed", OnContent = "Native", IsOn = _thumbSettings.UseNative };
-            _useNativeToggle.Toggled += UseNativeToggle_Toggled;
-            thumbRow2.Children.Add(new TextBlock { Text = "썸네일 엔진:", VerticalAlignment = VerticalAlignment.Center });
-            thumbRow2.Children.Add(_useNativeToggle);
-            stack.Children.Add(thumbRow2);
 
             stack.Children.Add(new TextBlock { Text = "이미지 캐시", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0,0,0,8) };
@@ -163,12 +156,6 @@ namespace MangaViewer.Pages
             stack.Children.Add(_cacheList);
 
             Content = new ScrollViewer { Content = stack };
-        }
-
-        private void UseNativeToggle_Toggled(object sender, RoutedEventArgs e)
-        {
-            _thumbSettings.UseNative = _useNativeToggle.IsOn;
-            // Factory 토글 적용은 네이티브 구현 추가 시 연결
         }
 
         private void ThumbWidthSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
@@ -236,7 +223,7 @@ namespace MangaViewer.Pages
             var per = ImageCacheService.Instance.GetPerGalleryCounts().OrderByDescending(k=>k.Value).ToList();
             foreach (var kv in per) _cacheEntries.Add(new CacheEntryView { GalleryId = kv.Key, Count = kv.Value });
             var (cnt, bytes) = ImageCacheService.Instance.GetMemoryUsage();
-            _cacheSummary.Text = $"총계: {cnt} images, {(bytes/1024d/1024d):F1} MB";
+            _cacheSummary.Text = $"합계: {cnt} images, {(bytes/1024d/1024d):F1} MB";
         }
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();

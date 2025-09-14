@@ -4,10 +4,10 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 
-namespace MangaViewer.Services
+namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// ì¸ë„¤ì¼ ë””ì½”ë”© ìš°ì„ ìˆœìœ„ ìŠ¤ì¼€ì¤„ëŸ¬ (ì„ íƒ ì¸ë±ìŠ¤ ì¸ê·¼ ìš°ì„ ).
+    /// ½æ³×ÀÏ µğÄÚµù ¿ì¼±¼øÀ§ ½ºÄÉÁÙ·¯ (¼±ÅÃ ÀÎµ¦½º ÀÎ±Ù ¿ì¼±).
     /// </summary>
     public sealed class ThumbnailDecodeScheduler
     {
@@ -36,7 +36,7 @@ namespace MangaViewer.Services
         private ThumbnailDecodeScheduler() { }
 
         /// <summary>
-        /// í•­ëª©ì´ ì‹¤ì œë¡œ í™”ë©´ì— ë“±ì¥(ì»¨í…Œì´ë„ˆ ìƒì„±)í•  ë•Œ íì‰.
+        /// Ç×¸ñÀÌ ½ÇÁ¦·Î È­¸é¿¡ µîÀå(ÄÁÅ×ÀÌ³Ê »ı¼º)ÇÒ ¶§ Å¥À×.
         /// </summary>
         public void Enqueue(MangaPageViewModel vm, string path, int index, int selectedIndex, DispatcherQueue dispatcher)
         {
@@ -61,8 +61,8 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// ì„ íƒ ì¸ë±ìŠ¤ ë³€ê²½ -> ëª¨ë“  ëŒ€ê¸° ìš”ì²­ ìš°ì„ ìˆœìœ„ ê°±ì‹ .
-        /// ë©€ë¦¬ ë–¨ì–´ì§„(>200) í•­ëª©ì€ ë“œë¡­í•˜ì—¬ ë‚­ë¹„ ìµœì†Œí™”.
+        /// ¼±ÅÃ ÀÎµ¦½º º¯°æ -> ¸ğµç ´ë±â ¿äÃ» ¿ì¼±¼øÀ§ °»½Å.
+        /// ¸Ö¸® ¶³¾îÁø(>200) Ç×¸ñÀº µå·ÓÇÏ¿© ³¶ºñ ÃÖ¼ÒÈ­.
         /// </summary>
         public void UpdateSelectedIndex(int selectedIndex)
         {
@@ -75,7 +75,7 @@ namespace MangaViewer.Services
                     var req = _pending[i];
                     req.Priority = selectedIndex >= 0 ? Math.Abs(req.Index - selectedIndex) : req.Index;
                 }
-                // ë¨¼ í•­ëª© ì œê±°
+                // ¸Õ Ç×¸ñ Á¦°Å
                 for (int i = _pending.Count - 1; i >= 0; i--)
                 {
                     if (_pending[i].Priority > 200)

@@ -14,6 +14,11 @@ using Windows.System.Threading;
 using Windows.ApplicationModel.DataTransfer; // Clipboard
 using Microsoft.UI.Input; // Pointer identifiers
 using Microsoft.UI.Xaml.Input; // Tapped
+using Microsoft.UI.Xaml.Input; // Tapped, PointerRoutedEventArgs
+using Windows.Storage; // LocalSettings
+using Microsoft.UI.Xaml.Controls.Primitives; // DragDeltaEventArgs
+using Services = MangaViewer.Services; // alias root services if needed
+using MangaViewer.Services.Thumbnails; // moved scheduler
 
 namespace MangaViewer.Pages
 {
@@ -23,12 +28,34 @@ namespace MangaViewer.Pages
         private Storyboard? _pageSlideStoryboard;
         private ThreadPoolTimer? _thumbRefreshTimer;
         private bool _isUnloaded;
+        private ScrollViewer? _thumbScrollViewer;
+        private bool? _preferredPaneOpen; // persisted preferred state
+        private DispatcherTimer? _resizeDebounceTimer; // debounce resize
+        private bool _suppressPersistDuringResize; // suppress persisting IsPaneOpen while resizing
+        private const double PaneMinWidth = 120;
+        private const double PaneMaxWidth = 420;
 
         public MangaReaderPage()
         {
             InitializeComponent();
             Loaded += MangaReaderPage_Loaded;
             Unloaded += MangaReaderPage_Unloaded;
+
+            // Initialize resize debounce timer
+            _resizeDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            _resizeDebounceTimer.Tick += (_, __) =>
+            {
+                _resizeDebounceTimer!.Stop();
+                _suppressPersistDuringResize = false;
+                // Reapply preferred state after resize settles
+                if (_preferredPaneOpen.HasValue && ViewModel != null)
+                {
+                    if (ViewModel.IsPaneOpen != _preferredPaneOpen.Value)
+                    {
+                        ViewModel.IsPaneOpen = _preferredPaneOpen.Value;
+                    }
+                }
+            };
         }
 
         private Grid SingleWrapperGrid => SingleWrapper;
@@ -46,6 +73,19 @@ namespace MangaViewer.Pages
             {
                 HookVm(vm);
             }
+            HookThumbScrollViewer();
+
+            // Load saved pane width
+            try
+            {
+                var settings = ApplicationData.Current.LocalSettings;
+                if (settings.Values.TryGetValue("ReaderPaneWidth", out var v) && v is not null)
+                {
+                    var d = Convert.ToDouble(v);
+                    ReaderSplitView.OpenPaneLength = Math.Clamp(d, PaneMinWidth, PaneMaxWidth);
+                }
+            }
+            catch { }
         }
 
         protected override void OnNavigatedTo(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -56,6 +96,7 @@ namespace MangaViewer.Pages
                 DataContext = vm;
                 HookVm(vm);
             }
+            HookThumbScrollViewer();
         }
 
         protected override void OnNavigatedFrom(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -75,6 +116,16 @@ namespace MangaViewer.Pages
             _isUnloaded = true;
             _thumbRefreshTimer?.Cancel();
             _thumbRefreshTimer = null;
+            if (_thumbScrollViewer != null)
+            {
+                _thumbScrollViewer.ViewChanged -= OnThumbsViewChanged;
+                _thumbScrollViewer = null;
+            }
+            if (_resizeDebounceTimer != null)
+            {
+                _resizeDebounceTimer.Stop();
+                _resizeDebounceTimer = null;
+            }
             if (ViewModel != null)
             {
                 ViewModel.PageViewChanged -= (_, __) => RedrawAllOcr();
@@ -84,6 +135,7 @@ namespace MangaViewer.Pages
                     incc.CollectionChanged -= OnThumbsChanged;
                 foreach (var p in ViewModel.Thumbnails)
                     p.PropertyChanged -= OnPagePropertyChanged;
+                ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             }
         }
 
@@ -94,6 +146,25 @@ namespace MangaViewer.Pages
             ViewModel.PageViewChanged += (_, __) => RedrawAllOcr();
             ViewModel.OcrCompleted += (_, __) => RedrawAllOcr();
             ViewModel.PageSlideRequested += OnPageSlideRequested;
+            ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
+            ViewModel.PropertyChanged += OnViewModelPropertyChanged;
+
+            // Load preferred pane state from settings and apply once
+            try
+            {
+                var settings = ApplicationData.Current.LocalSettings;
+                if (settings.Values.TryGetValue("ReaderPaneOpenPreferred", out var v) && v is bool b)
+                {
+                    _preferredPaneOpen = b;
+                    if (ViewModel.IsPaneOpen != b)
+                        ViewModel.IsPaneOpen = b;
+                }
+                else
+                {
+                    _preferredPaneOpen = ViewModel.IsPaneOpen;
+                }
+            }
+            catch { _preferredPaneOpen = ViewModel.IsPaneOpen; }
 
             if (ViewModel.Thumbnails is INotifyCollectionChanged incc)
             {
@@ -107,14 +178,108 @@ namespace MangaViewer.Pages
             RedrawAllOcr();
         }
 
+        private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+        {
+            if (sender is not MangaViewModel vm) return;
+            if (e.PropertyName == nameof(MangaViewModel.IsPaneOpen))
+            {
+                if (_suppressPersistDuringResize) return; // ignore auto close/open during resize
+
+                // Update preferred state and persist
+                _preferredPaneOpen = vm.IsPaneOpen;
+                try
+                {
+                    ApplicationData.Current.LocalSettings.Values["ReaderPaneOpenPreferred"] = _preferredPaneOpen;
+                }
+                catch { }
+            }
+        }
+
+        private void HookThumbScrollViewer()
+        {
+            try
+            {
+                if (ThumbnailsList != null && _thumbScrollViewer == null)
+                {
+                    _thumbScrollViewer = FindDescendant<ScrollViewer>(ThumbnailsList);
+                    if (_thumbScrollViewer != null)
+                    {
+                        _thumbScrollViewer.ViewChanged -= OnThumbsViewChanged;
+                        _thumbScrollViewer.ViewChanged += OnThumbsViewChanged;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static T? FindDescendant<T>(DependencyObject root) where T : DependencyObject
+        {
+            if (root == null) return null;
+            int count = VisualTreeHelper.GetChildrenCount(root);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is T t) return t;
+                var r = FindDescendant<T>(child);
+                if (r != null) return r;
+            }
+            return null;
+        }
+
         private void StartThumbnailAutoRefresh()
         {
             _thumbRefreshTimer?.Cancel();
             _thumbRefreshTimer = ThreadPoolTimer.CreatePeriodicTimer(_ =>
             {
                 if (_isUnloaded) return;
-                try { DispatcherQueue.TryEnqueue(KickVisibleThumbnailDecode); } catch { }
+                try { DispatcherQueue.TryEnqueue(() => { UpdatePriorityByViewport(); KickVisibleThumbnailDecode(); }); } catch { }
             }, TimeSpan.FromMilliseconds(700));
+        }
+
+        private void OnThumbsViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
+        {
+            if (_isUnloaded) return;
+            UpdatePriorityByViewport();
+            KickVisibleThumbnailDecode();
+        }
+
+        private void UpdatePriorityByViewport()
+        {
+            if (ThumbnailsList == null || ViewModel == null) return;
+            var panel = ThumbnailsList.ItemsPanelRoot as Panel;
+            if (panel == null || panel.Children.Count == 0) return;
+
+            int minIndex = int.MaxValue;
+            int maxIndex = -1;
+            for (int i = 0; i < panel.Children.Count; i++)
+            {
+                if (panel.Children[i] is ListViewItem lvi)
+                {
+                    int idx = ThumbnailsList.IndexFromContainer(lvi);
+                    if (idx >= 0)
+                    {
+                        if (idx < minIndex) minIndex = idx;
+                        if (idx > maxIndex) maxIndex = idx;
+                    }
+                }
+            }
+            if (minIndex == int.MaxValue || maxIndex < 0) return;
+            int pivot = (minIndex + maxIndex) / 2;
+
+            // 우선순위 재정렬(대기 큐) 및 근접 항목 프리페치
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
+
+            int radius = 24; // 프리페치 반경
+            int start = Math.Max(0, pivot - radius);
+            int end = Math.Min(ViewModel.Thumbnails.Count - 1, pivot + radius);
+            for (int i = start; i <= end; i++)
+            {
+                var vm = ViewModel.Thumbnails[i];
+                if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
+                {
+                    ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, i, pivot, DispatcherQueue);
+                }
+            }
         }
 
         private void KickVisibleThumbnailDecode()
@@ -124,18 +289,30 @@ namespace MangaViewer.Pages
             if (!DispatcherQueue.HasThreadAccess) return; // safety
             var panel = ThumbnailsList.ItemsPanelRoot as Panel;
             if (panel == null || panel.Children.Count == 0) return;
+
+            int minIndex = int.MaxValue;
+            int maxIndex = -1;
+
             for (int i = 0; i < panel.Children.Count; i++)
             {
                 if (panel.Children[i] is ListViewItem lvi)
                 {
                     int index = ThumbnailsList.IndexFromContainer(lvi);
                     if (index < 0 || index >= ViewModel.Thumbnails.Count) continue;
+                    if (index < minIndex) minIndex = index;
+                    if (index > maxIndex) maxIndex = index;
                     var vm = ViewModel.Thumbnails[index];
                     if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
                     {
-                        Services.ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
                     }
                 }
+            }
+
+            if (minIndex != int.MaxValue && maxIndex >= 0)
+            {
+                int pivot = (minIndex + maxIndex) / 2;
+                ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
             }
         }
 
@@ -168,7 +345,7 @@ namespace MangaViewer.Pages
                     int index = ViewModel.Thumbnails.IndexOf(vm);
                     if (index >= 0)
                     {
-                        Services.ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
                         // If container not yet realized, timer will catch it later; if realized ensure immediate attempt
                         KickVisibleThumbnailDecode();
                     }
@@ -187,7 +364,7 @@ namespace MangaViewer.Pages
             else
             {
                 var path = vm.FilePath ?? string.Empty;
-                Services.ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
             }
         }
 
@@ -315,6 +492,38 @@ namespace MangaViewer.Pages
             Storyboard.SetTargetProperty(anim, "X");
             _pageSlideStoryboard.Children.Add(anim);
             _pageSlideStoryboard.Begin();
+        }
+
+        private void PaneResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+        {
+            // Right-side overlay pane: dragging left (HorizontalChange < 0) expands pane width; dragging right shrinks it.
+            double newLen = ReaderSplitView.OpenPaneLength - e.HorizontalChange;
+            newLen = Math.Clamp(newLen, PaneMinWidth, PaneMaxWidth);
+            ReaderSplitView.OpenPaneLength = newLen;
+            try { ApplicationData.Current.LocalSettings.Values["ReaderPaneWidth"] = newLen; } catch { }
+        }
+
+        private void PaneResizeThumb_PointerEntered(object sender, PointerRoutedEventArgs e) { }
+        private void PaneResizeThumb_PointerMoved(object sender, PointerRoutedEventArgs e) { }
+        private void PaneResizeThumb_PointerExited(object sender, PointerRoutedEventArgs e) { }
+        private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
+
+        private void ReaderSplitView_SizeChanged(object sender, SizeChangedEventArgs e)
+        {
+            // Debounce resize and avoid persisting control-driven auto-close.
+            _suppressPersistDuringResize = true;
+
+            // If preferred to be open, force it open immediately during resizing
+            if (_preferredPaneOpen == true)
+            {
+                if (!ReaderSplitView.IsPaneOpen)
+                    ReaderSplitView.IsPaneOpen = true;
+                if (ViewModel != null && !ViewModel.IsPaneOpen)
+                    ViewModel.IsPaneOpen = true; // will be ignored for persistence while suppress flag is set
+            }
+
+            _resizeDebounceTimer?.Stop();
+            _resizeDebounceTimer?.Start();
         }
     }
 }

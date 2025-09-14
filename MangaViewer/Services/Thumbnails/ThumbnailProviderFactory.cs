@@ -9,13 +9,6 @@ namespace MangaViewer.Services.Thumbnails
         public static IThumbnailProvider Get()
         {
             if (_instance != null) return _instance;
-
-            // TODO: Wire native provider when available
-            if (ThumbnailOptions.UseNativeProvider)
-            {
-                // _instance = new NativeThumbnailProvider(); // to be implemented later
-            }
-
             _instance = new ManagedThumbnailProvider();
             return _instance;
         }

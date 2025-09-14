@@ -1,12 +1,12 @@
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Media.Imaging;
 using System;
 using System.Collections.Generic;
 
-namespace MangaViewer.Services
+namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// ì¸ë„¤ì¼ ì „ìš© LRU ìºì‹œ (DecodePixelWidth=150 ê°€ì •). UI ìŠ¤ë ˆë“œ ì‚¬ìš© ê°€ì •.
+    /// ½æ³×ÀÏ Àü¿ë LRU Ä³½Ã. Decode ÆøÀ» Å°¿¡ Æ÷ÇÔÇÏ¿© ¼³Á¤ º¯°æ ½Ã Ãæµ¹À» ¹æÁöÇÕ´Ï´Ù.
+    /// UI ½º·¹µå¿¡¼­¸¸ »ç¿ëÇØ¾ß ÇÕ´Ï´Ù.
     /// </summary>
     public sealed class ThumbnailCacheService
     {
@@ -16,16 +16,19 @@ namespace MangaViewer.Services
         private static readonly Lazy<ThumbnailCacheService> _instance = new(() => new ThumbnailCacheService(300));
         public static ThumbnailCacheService Instance => _instance.Value;
 
-        private record CacheEntry(string Path, ImageSource Image);
+        private record CacheEntry(string Key, ImageSource Image);
 
         private ThumbnailCacheService(int capacity) => _capacity = Math.Max(50, capacity);
 
+        public static string MakeKey(string path, int decodeWidth) => $"{path}|w={decodeWidth}";
+
         /// <summary>
-        /// ìºì‹œì— ì¡´ì¬í•˜ë©´ LRU ê°±ì‹  í›„ ë°˜í™˜. ì—†ìœ¼ë©´ null.
+        /// Ä³½Ã¿¡ Á¸ÀçÇÏ¸é LRU °»½Å ÈÄ ¹İÈ¯. ¾øÀ¸¸é null.
         /// </summary>
-        public ImageSource? Get(string path)
+        public ImageSource? Get(string path, int decodeWidth)
         {
-            if (_map.TryGetValue(path, out var node))
+            string key = MakeKey(path, decodeWidth);
+            if (_map.TryGetValue(key, out var node))
             {
                 _lru.Remove(node);
                 _lru.AddFirst(node);
@@ -35,20 +38,22 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// ìƒˆ í•­ëª© ì‚½ì… (ì¤‘ë³µ/ê³µë°± ê²½ë¡œ ë¬´ì‹œ)
+        /// »õ Ç×¸ñ »ğÀÔ (Áßº¹/°ø¹é °æ·Î ¹«½Ã)
         /// </summary>
-        public void Add(string path, ImageSource image)
+        public void Add(string path, int decodeWidth, ImageSource image)
         {
-            if (string.IsNullOrWhiteSpace(path) || _map.ContainsKey(path)) return;
-            var entry = new CacheEntry(path, image);
+            if (string.IsNullOrWhiteSpace(path)) return;
+            string key = MakeKey(path, decodeWidth);
+            if (_map.ContainsKey(key)) return;
+            var entry = new CacheEntry(key, image);
             var node = new LinkedListNode<CacheEntry>(entry);
             _lru.AddFirst(node);
-            _map[path] = node;
+            _map[key] = node;
             Trim();
         }
 
         /// <summary>
-        /// ì „ì²´ ìºì‹œë¥¼ ë¹„ì›ë‹ˆë‹¤.
+        /// ÀüÃ¼ Ä³½Ã¸¦ ºñ¿ó´Ï´Ù.
         /// </summary>
         public void Clear()
         {
@@ -62,7 +67,7 @@ namespace MangaViewer.Services
             {
                 var last = _lru.Last; if (last == null) break;
                 _lru.RemoveLast();
-                _map.Remove(last.Value.Path);
+                _map.Remove(last.Value.Key);
             }
         }
     }

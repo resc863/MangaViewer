@@ -9,22 +9,64 @@
     mc:Ignorable="d" Background="Transparent">
     <Page.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+        <!-- Acrylic brush for the thumbnails pane -->
+        <AcrylicBrush x:Key="PaneAcrylicBrush"
+                      TintColor="{ThemeResource SystemAccentColor}"
+                      TintOpacity="0.3"
+                      TintLuminosityOpacity="0.0" />
     </Page.Resources>
     <Grid Background="Transparent">
-        <SplitView DisplayMode="Inline" OpenPaneLength="160" IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}" PanePlacement="Right" Background="Transparent">
+        <SplitView x:Name="ReaderSplitView"
+                   DisplayMode="Overlay"
+                   OpenPaneLength="160"
+                   IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}"
+                   PanePlacement="Right"
+                   PaneBackground="{StaticResource PaneAcrylicBrush}"
+                   Background="Transparent"
+                   SizeChanged="ReaderSplitView_SizeChanged">
             <SplitView.Pane>
-                <ListView x:Name="ThumbnailsList"
-                          Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"
-                          ItemsSource="{Binding Thumbnails}"
-                          SelectedIndex="{Binding SelectedThumbnailIndex, Mode=TwoWay}"
-                          SelectionMode="Single"
-                          ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
-                    <ListView.ItemTemplate>
-                        <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
-                            <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
-                        </DataTemplate>
-                    </ListView.ItemTemplate>
-                </ListView>
+                <!-- Resizable pane: left grip thumb + content listview -->
+                <Grid Background="Transparent">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="8"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <!-- Drag grip -->
+                    <Thumb x:Name="PaneResizeThumb"
+                           Grid.Column="0"
+                           Background="Transparent"
+                           DragDelta="PaneResizeThumb_DragDelta"
+                           DragCompleted="PaneResizeThumb_DragCompleted"
+                           PointerEntered="PaneResizeThumb_PointerEntered"
+                           PointerMoved="PaneResizeThumb_PointerMoved"
+                           PointerExited="PaneResizeThumb_PointerExited">
+                        <Thumb.Template>
+                            <ControlTemplate TargetType="Thumb">
+                                <Grid Background="Transparent">
+                                    <!-- visual handle line -->
+                                    <Border Width="1"
+                                            HorizontalAlignment="Right"
+                                            Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+                                </Grid>
+                            </ControlTemplate>
+                        </Thumb.Template>
+                    </Thumb>
+
+                    <!-- Thumbnails list -->
+                    <ListView x:Name="ThumbnailsList"
+                              Grid.Column="1"
+                              Background="Transparent"
+                              ItemsSource="{Binding Thumbnails}"
+                              SelectedIndex="{Binding SelectedThumbnailIndex, Mode=TwoWay}"
+                              SelectionMode="Single"
+                              ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
+                                <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
             </SplitView.Pane>
             <SplitView.Content>
                 <Grid x:Name="PageSlideHost" Background="Transparent">

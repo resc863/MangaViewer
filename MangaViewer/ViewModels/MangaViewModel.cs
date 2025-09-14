@@ -11,6 +11,7 @@ using Windows.Storage.Pickers;
 using Windows.Storage;
 using System.Threading;
 using Microsoft.UI.Xaml.Controls; // InfoBarSeverity
+using MangaViewer.Services.Thumbnails; // Added for ThumbnailDecodeScheduler
 
 namespace MangaViewer.ViewModels
 {
@@ -159,7 +160,7 @@ namespace MangaViewer.ViewModels
             bool allMem = true;
             for (int i = 0; i < filePaths.Count; i++)
             {
-                if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
+                if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
             }
             if (allMem)
             {
