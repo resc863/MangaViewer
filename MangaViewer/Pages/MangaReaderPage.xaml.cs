@@ -22,6 +22,13 @@ using MangaViewer.Services.Thumbnails; // moved scheduler
 
 namespace MangaViewer.Pages
 {
+    /// <summary>
+    /// 리더 페이지 코드비하인드.
+    /// - 썸네일 컨테이너(realized) 감지 시 디코드 스케줄러 큐잉
+    /// - 현재 뷰포트 기준 우선순위 갱신 및 근접 프리페치
+    /// - OCR 결과 박스 캔버스 렌더링/클립보드 복사/하이라이트 효과
+    /// - 우측 패널 폭/열림 상태 저장 및 리사이즈 디바운스 처리
+    /// </summary>
     public sealed partial class MangaReaderPage : Page
     {
         public MangaViewModel ViewModel { get; private set; } = null!;
@@ -110,6 +117,9 @@ namespace MangaViewer.Pages
             Cleanup();
         }
 
+        /// <summary>
+        /// 이벤트 핸들러/타이머 등을 해제하고 스크롤 뷰어 구독을 정리합니다.
+        /// </summary>
         private void Cleanup()
         {
             if (_isUnloaded) return;
@@ -226,6 +236,9 @@ namespace MangaViewer.Pages
             return null;
         }
 
+        /// <summary>
+        /// 주기적으로 뷰포트에 가까운 항목을 갱신하고 디코딩을 킥합니다.
+        /// </summary>
         private void StartThumbnailAutoRefresh()
         {
             _thumbRefreshTimer?.Cancel();
@@ -243,6 +256,9 @@ namespace MangaViewer.Pages
             KickVisibleThumbnailDecode();
         }
 
+        /// <summary>
+        /// 현재 가시 영역의 항목 인덱스를 추정하고, 우선순위 및 프리페치를 갱신합니다.
+        /// </summary>
         private void UpdatePriorityByViewport()
         {
             if (ThumbnailsList == null || ViewModel == null) return;
@@ -282,6 +298,9 @@ namespace MangaViewer.Pages
             }
         }
 
+        /// <summary>
+        /// 화면에 실재로 그려진 컨테이너들만 대상으로 즉시 디코드를 큐잉합니다.
+        /// </summary>
         private void KickVisibleThumbnailDecode()
         {
             if (_isUnloaded) return;
@@ -382,22 +401,28 @@ namespace MangaViewer.Pages
             RedrawRight();
         }
 
+        /// <summary>단일 페이지 모드의 OCR 박스 렌더링.</summary>
         private void RedrawSingle()
         {
             if (SingleWrapperGrid == null || SingleOverlayCanvas == null || ViewModel.LeftImageSource == null) { SingleOverlayCanvas?.Children?.Clear(); return; }
             DrawBoxes(SingleWrapperGrid, SingleOverlayCanvas, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource.PixelWidth, ViewModel.LeftImageSource.PixelHeight, true);
         }
+        /// <summary>좌측 페이지 OCR 박스 렌더링(양면 모드).</summary>
         private void RedrawLeft()
         {
             if (LeftWrapperGrid == null || LeftOverlayCanvas == null || ViewModel.LeftImageSource == null || !ViewModel.IsTwoPageMode) { LeftOverlayCanvas?.Children?.Clear(); return; }
             DrawBoxes(LeftWrapperGrid, LeftOverlayCanvas, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource.PixelWidth, ViewModel.LeftImageSource.PixelHeight, true);
         }
+        /// <summary>우측 페이지 OCR 박스 렌더링.</summary>
         private void RedrawRight()
         {
             if (RightWrapperGrid == null || RightOverlayCanvas == null || ViewModel.RightImageSource == null) { RightOverlayCanvas?.Children?.Clear(); return; }
             DrawBoxes(RightWrapperGrid, RightOverlayCanvas, ViewModel.RightOcrBoxes, ViewModel.RightImageSource.PixelWidth, ViewModel.RightImageSource.PixelHeight, false);
         }
 
+        /// <summary>
+        /// 원본 픽셀 좌표 기반 박스들을 현재 컨테이너에 맞춰 스케일링해 그립니다.
+        /// </summary>
         private void DrawBoxes(Grid wrapper, Canvas overlay, System.Collections.Generic.IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
             overlay.Children.Clear();
@@ -508,6 +533,9 @@ namespace MangaViewer.Pages
         private void PaneResizeThumb_PointerExited(object sender, PointerRoutedEventArgs e) { }
         private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
 
+        /// <summary>
+        /// SplitView 크기 변경 시 패널 자동 열림/상태 저장을 디바운스 처리합니다.
+        /// </summary>
         private void ReaderSplitView_SizeChanged(object sender, SizeChangedEventArgs e)
         {
             // Debounce resize and avoid persisting control-driven auto-close.

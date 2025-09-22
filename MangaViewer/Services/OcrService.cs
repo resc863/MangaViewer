@@ -16,16 +16,26 @@ using MangaViewer.Services.Logging;
 
 namespace MangaViewer.Services
 {
+    /// <summary>
+    /// OCR(Windows.Media.Ocr) 래퍼 서비스.
+    /// - 언어/그룹핑/쓰기 방향/문단 간격 등의 설정을 관리하고 변경 이벤트를 발행합니다.
+    /// - StorageFile 또는 파일 경로/메모리 스트림에서 이미지를 로드해 OCR을 수행합니다.
+    /// - 단어/라인/문단 단위로 결과 바운딩 박스를 계산해 ViewModel로 제공합니다.
+    /// </summary>
     public class OcrResult
     {
         public string? Text { get; set; }
         public Windows.Foundation.Rect BoundingBox { get; set; }
     }
 
+    /// <summary>
+    /// OCR 엔진과 결과 그룹핑/캐시를 관리하는 싱글톤 서비스.
+    /// </summary>
     public class OcrService
     {
         // Singleton
         private static readonly Lazy<OcrService> _instance = new(() => new OcrService());
+        /// <summary>전역 인스턴스.</summary>
         public static OcrService Instance => _instance.Value;
 
         // Settings enums (nested to match call sites like OcrService.OcrGrouping)
@@ -33,11 +43,17 @@ namespace MangaViewer.Services
         public enum WritingMode { Auto = 0, Horizontal = 1, Vertical = 2 }
 
         // Settings + event
+        /// <summary>설정 변경 이벤트(디바운스 적용).</summary>
         public event EventHandler? SettingsChanged;
+        /// <summary>현재 언어 태그("auto", "ja", "ko", "en" 등).</summary>
         public string CurrentLanguage { get; private set; } = "auto"; // "auto", "ja", "ko", "en", ...
+        /// <summary>결과 그룹핑 모드(단어/줄/문단).</summary>
         public OcrGrouping GroupingMode { get; private set; } = OcrGrouping.Word;
+        /// <summary>쓰기 방향(자동/가로/세로).</summary>
         public WritingMode TextWritingMode { get; private set; } = WritingMode.Auto;
+        /// <summary>문단 그룹핑 임계값(세로 문자 기준 가로 간격 배수).</summary>
         public double ParagraphGapFactorVertical { get; private set; } = 1.50;   // heuristic
+        /// <summary>문단 그룹핑 임계값(가로 문자 기준 세로 간격 배수).</summary>
         public double ParagraphGapFactorHorizontal { get; private set; } = 1.25; // heuristic
 
         // OCR engine cache per language code ("auto" uses user profile)
@@ -58,6 +74,9 @@ namespace MangaViewer.Services
             RebuildDebouncedHandler();
         }
 
+        /// <summary>
+        /// OCR 언어를 변경합니다. "auto"는 사용자 프로필 언어를 사용합니다.
+        /// </summary>
         public void SetLanguage(string languageTag)
         {
             languageTag ??= "auto";
@@ -70,6 +89,9 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
+        /// <summary>
+        /// OCR 결과 그룹핑 모드를 변경합니다(단어/줄/문단).
+        /// </summary>
         public void SetGrouping(OcrGrouping grouping)
         {
             if (GroupingMode != grouping)
@@ -78,6 +100,9 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
+        /// <summary>
+        /// 텍스트 쓰기 방향을 변경합니다(자동/가로/세로).
+        /// </summary>
         public void SetWritingMode(WritingMode mode)
         {
             if (TextWritingMode != mode)
@@ -86,6 +111,9 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
+        /// <summary>
+        /// 세로 문단 그룹핑 간격 계수를 설정합니다.
+        /// </summary>
         public void SetParagraphGapFactorVertical(double value)
         {
             value = Math.Clamp(value, 0.05, 10.0);
@@ -95,6 +123,9 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
+        /// <summary>
+        /// 가로 문단 그룹핑 간격 계수를 설정합니다.
+        /// </summary>
         public void SetParagraphGapFactorHorizontal(double value)
         {
             value = Math.Clamp(value, 0.05, 10.0);
@@ -105,6 +136,9 @@ namespace MangaViewer.Services
             }
         }
 
+        /// <summary>
+        /// OCR 결과 캐시를 초기화합니다(설정 변경 시 호출).
+        /// </summary>
         public void ClearCache()
         {
             _ocrCache.Clear();
@@ -118,7 +152,9 @@ namespace MangaViewer.Services
             catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
         }
 
-        // Allow caller to customize debounce window
+        /// <summary>
+        /// SettingsChanged 디바운스 간격을 설정합니다.
+        /// </summary>
         public void SetSettingsChangedDebounce(TimeSpan delay)
         {
             _debounceDelay = delay;
@@ -130,7 +166,9 @@ namespace MangaViewer.Services
             _settingsChangedDebounced = DebounceOnContext((s, e) => SettingsChanged?.Invoke(s, e), _debounceDelay, _syncContext);
         }
 
-        // Static debounce utility for simple event handlers
+        /// <summary>
+        /// 간단한 이벤트 핸들러용 디바운스 유틸리티. 주어진 컨텍스트(UI)에서 실행합니다.
+        /// </summary>
         public static EventHandler DebounceOnContext(EventHandler handler, TimeSpan delay, SynchronizationContext? context)
         {
             object gate = new();
@@ -175,6 +213,9 @@ namespace MangaViewer.Services
             return e;
         }
 
+        /// <summary>
+        /// StorageFile 입력으로 단순 OCR을 수행합니다(라인-단어 단위 결과 반환).
+        /// </summary>
         public async Task<List<OcrResult>> RecognizeAsync(StorageFile imageFile)
         {
             var engine = GetActiveEngine();
@@ -247,6 +288,10 @@ namespace MangaViewer.Services
             }
         }
 
+        /// <summary>
+        /// 경로(파일/메모리 키) 기반으로 OCR을 수행하고, 설정에 따라 단어/라인/문단 단위의 박스를 계산합니다.
+        /// 결과는 캐시에 저장되며 동일 설정/경로 요청 시 재사용됩니다.
+        /// </summary>
         public async Task<List<BoundingBoxViewModel>> GetOcrAsync(string imagePath, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(imagePath)) return new List<BoundingBoxViewModel>();
@@ -379,6 +424,10 @@ namespace MangaViewer.Services
         }
         private static bool IsEmpty(Rect r) => r.Width <= 0 || r.Height <= 0;
 
+        /// <summary>
+        /// 라인 직사각형 목록과 OCR 결과를 이용해 문단 단위 바운딩 박스를 생성합니다.
+        /// 가로/세로 쓰기 방향을 고려해 간격 임계값을 적용합니다.
+        /// </summary>
         private IEnumerable<BoundingBoxViewModel> GroupParagraphs(List<Rect> lineRects, Windows.Media.Ocr.OcrResult ocr, int imgW, int imgH)
         {
             var results = new List<BoundingBoxViewModel>();
@@ -441,6 +490,9 @@ namespace MangaViewer.Services
             return results;
         }
 
+        /// <summary>
+        /// 라인 인덱스 묶음을 하나의 문단 박스로 결합합니다.
+        /// </summary>
         private BoundingBoxViewModel BuildParagraph(List<int> lineIndexes, List<Rect> lineRects, Windows.Media.Ocr.OcrResult ocr, int imgW, int imgH)
         {
             Rect rect = new Rect();
@@ -457,6 +509,9 @@ namespace MangaViewer.Services
             return new BoundingBoxViewModel(paraText, rect, imgW, imgH);
         }
 
+        /// <summary>
+        /// 파일 경로 또는 mem: 키로부터 읽기 전용 RandomAccessStream을 생성합니다.
+        /// </summary>
         private static async Task<IRandomAccessStream?> OpenAsRandomAccessStreamAsync(string path, CancellationToken token)
         {
             try

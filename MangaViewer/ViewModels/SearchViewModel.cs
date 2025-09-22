@@ -1,3 +1,8 @@
+// Project: MangaViewer
+// File: ViewModels/SearchViewModel.cs
+// Purpose: Defines search-related view models and HTML parsers for gallery results. Handles
+//          HTTP fetching, parsing list/detail pages, incremental loading, and thumbnail binding.
+
 using HtmlAgilityPack;
 using MangaViewer.Helpers;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -16,10 +21,22 @@ using System.Collections.Generic;
 namespace MangaViewer.ViewModels;
 
 #region Parser Abstractions
+/// <summary>
+/// 갤러리 상세 페이지 HTML에서 타이틀/태그를 파싱하는 파서 인터페이스.
+/// </summary>
 public interface IGalleryDetailParser { void Parse(GalleryItemViewModel item, string html); }
 
+/// <summary>
+/// E-Hentai 갤러리 상세 페이지용 파서 구현.
+/// - <h1> 타이틀과 태그 테이블(#taglist)을 분석하여 ViewModel에 반영합니다.
+/// </summary>
 public sealed class EhentaiGalleryDetailParser : IGalleryDetailParser
 {
+    /// <summary>
+    /// 상세 페이지 HTML을 파싱하여 항목의 타이틀과 태그를 채웁니다.
+    /// </summary>
+    /// <param name="item">대상 뷰모델</param>
+    /// <param name="html">상세 페이지 HTML 문자열</param>
     public void Parse(GalleryItemViewModel item, string html)
     {
         try
@@ -62,10 +79,14 @@ public sealed class EhentaiGalleryDetailParser : IGalleryDetailParser
 }
 #endregion
 
+/// <summary>
+/// 검색 결과의 단일 갤러리 항목을 표현하는 ViewModel.
+/// - 태그 카테고리화, 썸네일 바인딩, 상세 로딩 상태 등을 포함합니다.
+/// </summary>
 public class GalleryItemViewModel : BaseViewModel
 {
     // Precompiled regex for title cleaning
-    private static readonly Regex _cleanTitleRegex = new(@"^(?:[\[(][^\])]+[\])]\s*)+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex _cleanTitleRegex = new(@"^(?:[\[(][^\])]++[\])]\s*)+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public string? GalleryId { get; set; }
     public string? GalleryUrl { get; set; }
@@ -89,6 +110,9 @@ public class GalleryItemViewModel : BaseViewModel
 
     private string _tagsJoined = string.Empty; public string TagsJoined { get => _tagsJoined; private set => SetProperty(ref _tagsJoined, value); }
 
+    /// <summary>
+    /// 검색 가능한 태그(artist/group/parody/language/male/female 접두사는 제외).
+    /// </summary>
     public IEnumerable<string> SearchableTags => Tags.Where(t => !(t.StartsWith("artist:") || t.StartsWith("group:") || t.StartsWith("parody:") || t.StartsWith("language:") || t.StartsWith("male:") || t.StartsWith("female:")));
 
     private bool _detailsLoaded; public bool DetailsLoaded { get => _detailsLoaded; private set => SetProperty(ref _detailsLoaded, value); }
@@ -112,6 +136,11 @@ public class GalleryItemViewModel : BaseViewModel
     }
     private void OnTagsChanged(object? sender, NotifyCollectionChangedEventArgs e) => RebuildDerived();
 
+    /// <summary>
+    /// 상세 페이지를 필요 시 로드하여 파서로 반영합니다(1회).
+    /// </summary>
+    /// <param name="htmlFetcher">URL을 받아 HTML을 반환하는 비동기 함수</param>
+    /// <param name="parser">상세 파서</param>
     internal async Task EnsureDetailsAsync(Func<string, Task<string>> htmlFetcher, IGalleryDetailParser parser)
     {
         if (DetailsLoaded || IsDetailsLoading || string.IsNullOrEmpty(GalleryUrl)) return;
@@ -126,6 +155,11 @@ public class GalleryItemViewModel : BaseViewModel
         finally { IsDetailsLoading = false; }
     }
 
+    /// <summary>
+    /// 태그를 카테고리에 따라 분류하여 내부 컬렉션에 추가하고, <see cref="Tags"/> 집합에도 접두사와 함께 추가합니다.
+    /// </summary>
+    /// <param name="category">태그 카테고리(artist/group/parody/language/male/female/기타)</param>
+    /// <param name="tag">태그 텍스트</param>
     public void ApplyTag(string category, string tag)
     {
         switch (category)
@@ -149,14 +183,31 @@ public class GalleryItemViewModel : BaseViewModel
         if (!Tags.Contains(full)) Tags.Add(full);
     }
 
+    /// <summary>
+    /// 파생 속성(결합 문자열, 검색 태그 변경 알림)을 갱신합니다.
+    /// </summary>
     public void RebuildDerived() { TagsJoined = string.Join(", ", Tags); OnPropertyChanged(nameof(SearchableTags)); }
+
+    /// <summary>
+    /// 흔한 접두 대괄호/소괄호 블록([Artist], (Group) 등)을 제거하여 타이틀을 정리합니다.
+    /// </summary>
+    /// <param name="title">원본 타이틀</param>
+    /// <returns>정리된 타이틀</returns>
     public static string CleanTitle(string title)
     {
         if (string.IsNullOrWhiteSpace(title)) return title;
         return _cleanTitleRegex.Replace(title, string.Empty).Trim();
     }
 
+    /// <summary>
+    /// 카테고리별 태그 섹션 모델을 생성합니다(뷰에서 목록 섹션 렌더링용).
+    /// </summary>
     public record Section(string Key, string Header, IReadOnlyList<string> Items, string? SearchPrefix, int Order);
+
+    /// <summary>
+    /// 현재 태그 상태를 바탕으로 정렬된 섹션들을 생성합니다.
+    /// </summary>
+    /// <returns>섹션 열거</returns>
     public IEnumerable<Section> GetSections()
     {
         string HeaderFor(string key) => key switch { "artist" => "작가", "group" => "그룹", "parody" => "패러디", "language" => "언어", "male" => "Male 태그", "female" => "Female 태그", _ => key + " 태그" };
@@ -172,6 +223,9 @@ public class GalleryItemViewModel : BaseViewModel
     }
 }
 
+/// <summary>
+/// E-Hentai 검색 뷰모델. 검색 요청/페이징/썸네일 로드 및 상세 파싱을 담당합니다.
+/// </summary>
 public class SearchViewModel : BaseViewModel
 {
     private static readonly HttpClient _http = CreateClient();
@@ -187,6 +241,9 @@ public class SearchViewModel : BaseViewModel
     // Precompiled regex (gallery id) reused across parsers
     private static readonly Regex _galleryIdRegex = new(@"/(\d+)/(?:[0-9a-f]+)/?", RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    /// <summary>
+    /// HTTP 클라이언트 생성(압축/쿠키/헤더 설정 포함).
+    /// </summary>
     private static HttpClient CreateClient()
     {
         var handler = new HttpClientHandler
@@ -205,6 +262,10 @@ public class SearchViewModel : BaseViewModel
 
     private static string BuildFirstPageUrl(string query) => $"https://e-hentai.org/?f_search={Uri.EscapeDataString(query)}";
 
+    /// <summary>
+    /// 새 검색을 시작합니다(결과 초기화 후 첫 페이지 로드, 필요 시 두 번째 페이지 프리페치).
+    /// </summary>
+    /// <param name="query">검색 쿼리</param>
     public async Task SearchAsync(string query)
     {
         Results.Clear();
@@ -217,12 +278,18 @@ public class SearchViewModel : BaseViewModel
         if (HasMore) await LoadMoreInternalAsync(reset: false); // optional prefetch second page
     }
 
+    /// <summary>
+    /// 다음 페이지를 비동기로 로드합니다(무한 스크롤 등에서 호출).
+    /// </summary>
     public Task LoadMoreAsync()
     {
         if (!HasMore || IsLoadingMore || string.IsNullOrWhiteSpace(_lastQuery)) return Task.CompletedTask;
         return LoadMoreInternalAsync(reset: false);
     }
 
+    /// <summary>
+    /// 내부 페이징 로더. reset=true이면 첫 페이지부터 다시 시작합니다.
+    /// </summary>
     private async Task LoadMoreInternalAsync(bool reset)
     {
         try
@@ -245,6 +312,11 @@ public class SearchViewModel : BaseViewModel
         finally { IsLoadingMore = false; }
     }
 
+    /// <summary>
+    /// 다음 페이지의 URL을 HTML에서 추출합니다.
+    /// </summary>
+    /// <param name="html">검색 결과 페이지 HTML</param>
+    /// <returns>다음 페이지 URL 또는 null</returns>
     private string? ExtractNextPageUrl(string html)
     {
         try
@@ -262,8 +334,14 @@ public class SearchViewModel : BaseViewModel
         return null;
     }
 
+    /// <summary>
+    /// 갤러리 상세(태그/타이틀)를 필요 시 로드합니다.
+    /// </summary>
     public Task LoadItemDetailsAsync(GalleryItemViewModel item) => item.EnsureDetailsAsync(url => _http.GetStringAsync(url), _detailParser);
 
+    /// <summary>
+    /// 표준 테이블 뷰(itg) 기반 빠른 파서.
+    /// </summary>
     private void ParseSimple(string html)
     {
         try
@@ -288,6 +366,9 @@ public class SearchViewModel : BaseViewModel
         catch (Exception ex) { Debug.WriteLine("[ParseSimple] " + ex.Message); }
     }
 
+    /// <summary>
+    /// HTML 구조가 변했을 때 대비한 느슨한 파서(모든 링크에서 /g/ 포함을 탐색).
+    /// </summary>
     private void ParseLoose(string html)
     {
         try
@@ -311,12 +392,18 @@ public class SearchViewModel : BaseViewModel
         catch (Exception ex) { Debug.WriteLine("[ParseLoose] " + ex.Message); }
     }
 
+    /// <summary>
+    /// 결과 행 노드에서 썸네일 이미지 URL을 추출합니다.
+    /// </summary>
     private static string ExtractThumbFromNode(HtmlNode node)
     {
         var thumbImg = node.SelectSingleNode(".//td[2]//img") ?? node.SelectSingleNode(".//img");
         return thumbImg?.GetAttributeValue("data-src", null) ?? thumbImg?.GetAttributeValue("src", string.Empty) ?? string.Empty;
     }
 
+    /// <summary>
+    /// 갤러리 URL에서 ID를 정규식으로 추출합니다.
+    /// </summary>
     private static string ExtractId(string galleryUrl)
     {
         var m = _galleryIdRegex.Match(galleryUrl);
@@ -325,6 +412,9 @@ public class SearchViewModel : BaseViewModel
 
     private bool Exists(string id) => id.Length > 0 && Results.Any(r => r.GalleryId == id);
 
+    /// <summary>
+    /// 결과 목록에 새 항목을 추가합니다(중복 방지 포함).
+    /// </summary>
     private void AddResult(string id, string url, string title, string thumb)
     {
         if (Exists(id)) return;
@@ -339,6 +429,9 @@ public class SearchViewModel : BaseViewModel
         Results.Add(item);
     }
 
+    /// <summary>
+    /// 썸네일 이미지 소스를 점진적으로 로드합니다(느린 네트워크 대비, UI 부하 완화).
+    /// </summary>
     private async Task LoadThumbnailsAsync(int startIndex = 0)
     {
         for (int i = startIndex; i < Results.Count; i++)
@@ -354,6 +447,9 @@ public class SearchViewModel : BaseViewModel
         }
     }
 
+    /// <summary>
+    /// 타일 클릭 등으로 갤러리 열기가 요청되었을 때 발생하는 이벤트를 전파합니다.
+    /// </summary>
     public event EventHandler<GalleryItemViewModel>? GalleryOpenRequested;
     private void OnOpenRequested(object? sender, GalleryItemViewModel e) => GalleryOpenRequested?.Invoke(this, e);
 }

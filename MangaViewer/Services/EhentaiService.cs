@@ -14,17 +14,30 @@ using System.Text;
 
 namespace MangaViewer.Services;
 
+/// <summary>
+/// E-Hentai 서비스 클라이언트.
+/// - 갤러리 페이지 URL 수집(전 페이지), 이미지 페이지 스트리밍 다운로드(메모리 캐시만) 지원
+/// - 완성 갤러리는 순서가 보장된 mem: 키 리스트로 캐시, 미완성 세션은 부분 캐시를 유지해 재개 가능
+/// - 전역 동시성/세션 수명/배치 전송을 관리합니다.
+/// </summary>
 public class EhentaiService
 {
     private static readonly HttpClient _http = new(new HttpClientHandler { AutomaticDecompression = System.Net.DecompressionMethods.All });
 
-    // Completed galleries -> ordered in?memory keys (mem:gid:####.ext)
+    // Completed galleries -> ordered in-memory keys (mem:gid:####.ext)
     private static readonly ConcurrentDictionary<string, List<string>> _galleryCache = new(StringComparer.OrdinalIgnoreCase);
 
-    // NEW: Partial per-file cache (index -> key) for interrupted sessions (memory only, survives within app lifetime)
+    // Partial per-file cache (index -> key) for interrupted sessions (in-memory only)
     private static readonly ConcurrentDictionary<string, ConcurrentDictionary<int, string>> _partialGalleryCache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// 완료된 갤러리 캐시를 반환합니다.
+    /// </summary>
     public static List<string>? TryGetCachedGallery(string url) => _galleryCache.TryGetValue(url, out var list) ? list : null;
+
+    /// <summary>
+    /// 진행 중 또는 중단된 갤러리의 부분 캐시(index->key)를 반환합니다.
+    /// </summary>
     public static bool TryGetPartialGallery(string url, out IReadOnlyDictionary<int, string> dict)
     {
         if (_partialGalleryCache.TryGetValue(url, out var d)) { dict = d; return true; }
@@ -68,6 +81,9 @@ public class EhentaiService
     }
 
     #region Public Session Utilities
+    /// <summary>
+    /// 주어진 갤러리의 스트리밍 세션을 취소합니다. 완료 전이라면 부분 결과를 스냅샷 해 재개에 활용합니다.
+    /// </summary>
     public static void CancelDownload(string galleryUrl)
     {
         if (_sessions.TryRemove(galleryUrl, out var s))
@@ -88,12 +104,18 @@ public class EhentaiService
         }
     }
 
+    /// <summary>
+    /// keepUrls에 포함되지 않은 모든 세션을 취소합니다.
+    /// </summary>
     public static void CancelAllExcept(IEnumerable<string> keepUrls)
     {
         var keep = new HashSet<string>(keepUrls ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
         foreach (var kv in _sessions.ToArray()) if (!keep.Contains(kv.Key)) CancelDownload(kv.Key);
     }
 
+    /// <summary>
+    /// 완료된 지 오래된 세션을 정리합니다(메모리 누수 예방).
+    /// </summary>
     public static void CleanupSessions()
     {
         var now = DateTime.UtcNow;
@@ -106,6 +128,9 @@ public class EhentaiService
     #endregion
 
     #region Page URL Fetch
+    /// <summary>
+    /// 갤러리의 모든 이미지 페이지 URL을 수집합니다. 첫 페이지에서 네비게이션 링크를 따라가며 병합합니다.
+    /// </summary>
     public async Task<(List<string> pageUrls, string? title)> GetAllPageUrlsAsync(string galleryUrl, CancellationToken token)
     {
         string html = await _http.GetStringAsync(galleryUrl, token);
@@ -113,9 +138,15 @@ public class EhentaiService
     }
     #endregion
 
-    #region Streaming Download (memory only ? NO DISK PERSISTENCE)
+    #region Streaming Download (memory only)
+    /// <summary>
+    /// 스트리밍 배치 전송 모델.
+    /// </summary>
     public record GalleryBatch(IReadOnlyList<string> Files, int Completed, int Total);
 
+    /// <summary>
+    /// 진행 중/부분/완성 리스트를 최신 순서로 반환합니다(가능한 경우).
+    /// </summary>
     public static IReadOnlyList<string>? TryGetInProgressOrdered(string galleryUrl)
     {
         if (_galleryCache.TryGetValue(galleryUrl, out var done)) return done;
@@ -124,6 +155,11 @@ public class EhentaiService
         return null;
     }
 
+    /// <summary>
+    /// 페이지 URL 목록을 받아 이미지를 병렬로 스트리밍 다운로드합니다.
+    /// 새로운 키(mem:gid:####.ext)들이 준비될 때마다 델타 배치를 내보냅니다.
+    /// 완료 시 전체 순서 목록을 한 번 더 내보내고 종료합니다.
+    /// </summary>
     public async IAsyncEnumerable<GalleryBatch> DownloadPagesStreamingOrderedAsync(
         string galleryUrl,
         List<string> pages,
@@ -461,11 +497,17 @@ public class EhentaiService
     }
     #endregion
 
+    /// <summary>
+    /// 갤러리의 예상 페이지 수를 간단히 추정합니다.
+    /// </summary>
     public async Task<int> GetEstimatedPageCountAsync(string galleryUrl, CancellationToken token)
     {
         try { var (pages, _) = await GetAllPageUrlsAsync(galleryUrl, token); return pages.Count; } catch { return 0; }
     }
 
-    [Obsolete("갤러리 전환시 전체 메모리 이미지 초기화는 더 이상 필요하지 않습니다. 세션별 고유 키 사용. 디스크 캐싱 금지.")]
+    /// <summary>
+    /// (Obsolete) 새 갤러리 시작 시 메모리 이미지 캐시를 초기화합니다.
+    /// </summary>
+    [Obsolete("스트리밍과 순서 유지가 자체적으로 초기화되므로 더 이상 필요하지 않습니다. 유지 호환용.")]
     public static void ClearInMemoryCacheForNewGallery() => ImageCacheService.Instance.ClearMemoryImages();
 }

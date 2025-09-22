@@ -16,6 +16,12 @@ using MangaViewer.Services.Logging;
 
 namespace MangaViewer.ViewModels
 {
+    /// <summary>
+    /// 앱의 핵심 ViewModel.
+    /// - 폴더 로드/스트리밍 추가/페이지 내비게이션/양면 표시/캐시 프리페치
+    /// - OCR 실행 및 상태 표시
+    /// - 썸네일 선택 연동 및 화면 전환 애니메이션 요청
+    /// </summary>
     public partial class MangaViewModel : BaseViewModel, IDisposable
     {
         private readonly MangaManager _mangaManager = new();
@@ -59,6 +65,9 @@ namespace MangaViewer.ViewModels
 
         public bool IsOpenFolderEnabled => IsControlEnabled; // always allow folder open (streaming mode does not disable)
 
+        /// <summary>
+        /// 썸네일 선택 인덱스. 변경 시 스케줄러에 알리고 현재 페이지로 동기화합니다.
+        /// </summary>
         public int SelectedThumbnailIndex
         {
             get => _selectedThumbnailIndex;
@@ -81,6 +90,7 @@ namespace MangaViewer.ViewModels
         public string DirectionButtonText => _mangaManager.IsRightToLeft ? "읽기 방향: 역방향" : "읽기 방향: 정방향";
         public string CoverButtonText => _mangaManager.IsCoverSeparate ? "표지: 한 장으로 보기" : "표지: 두 장으로 보기";
 
+        // Commands
         public AsyncRelayCommand OpenFolderCommand { get; }
         public RelayCommand NextPageCommand { get; }
         public RelayCommand PrevPageCommand { get; }
@@ -133,6 +143,9 @@ namespace MangaViewer.ViewModels
             try { await RunOcrAsync(); } catch (Exception ex) { Log.Error(ex, "RunOcrAsync from SettingsChanged failed"); }
         }
 
+        /// <summary>
+        /// 스트리밍 갤러리 모드를 시작합니다(플레이스홀더/상태 초기화).
+        /// </summary>
         public void BeginStreamingGallery()
         {
             IsStreamingGallery = true;
@@ -144,12 +157,18 @@ namespace MangaViewer.ViewModels
             SelectedThumbnailIndex = -1;
         }
 
+        /// <summary>
+        /// 스트리밍으로 다운로드된 파일 키(또는 경로)를 순서에 따라 추가합니다.
+        /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> files)
         {
             _mangaManager.AddDownloadedFiles(files);
             UpdateCommandStates();
         }
 
+        /// <summary>
+        /// 로컬 파일 집합을 로드합니다(첫 파일의 폴더를 전체 로드). mem: 키로만 주어지면 스트리밍 파이프라인 재사용.
+        /// </summary>
         public async Task LoadLocalFilesAsync(IReadOnlyList<string> filePaths)
         {
             IsStreamingGallery = false; // local load unless mem: detected
@@ -186,6 +205,9 @@ namespace MangaViewer.ViewModels
         }
 
         #region Folder/Page Loading
+        /// <summary>
+        /// 폴더 선택 대화상자를 열어 이미지를 로드합니다.
+        /// </summary>
         private async Task OpenFolderAsync(object? windowHandle)
         {
             if (IsLoading || windowHandle is null) return;
@@ -216,6 +238,9 @@ namespace MangaViewer.ViewModels
             UpdateCommandStates();
         }
 
+        /// <summary>
+        /// 페이지 인덱스 변경 시 호출되어 표시 이미지/선택/프리페치를 업데이트합니다.
+        /// </summary>
         private void OnPageChanged()
         {
             int newIndex = _mangaManager.CurrentPageIndex;
@@ -257,6 +282,9 @@ namespace MangaViewer.ViewModels
         }
         #endregion
 
+        /// <summary>
+        /// 다음 페이지들의 이미지 경로를 미리 수집하여 디코드 캐시에 프리페치합니다.
+        /// </summary>
         private void TryPrefetchAhead()
         {
             try
@@ -321,6 +349,9 @@ namespace MangaViewer.ViewModels
             IsInfoBarOpen = open;
         }
 
+        /// <summary>
+        /// 현재 표시 중인 좌/우 이미지에 대해 OCR을 실행하고 박스들을 생성합니다.
+        /// </summary>
         private async Task RunOcrAsync()
         {
             if (IsOcrRunning) return;

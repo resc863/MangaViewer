@@ -1,3 +1,8 @@
+// Project: MangaViewer
+// File: Services/Logging/Log.cs
+// Purpose: Centralized logging helper that wraps App.LoggerFactory to obtain an ILogger and
+//          exposes simple static methods for common log levels. Keeps call sites concise.
+
 using System;
 using Microsoft.Extensions.Logging;
 

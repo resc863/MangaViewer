@@ -5,8 +5,9 @@ using System.Collections.Generic;
 namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// 썸네일 전용 LRU 캐시. Decode 폭을 키에 포함하여 설정 변경 시 충돌을 방지합니다.
-    /// UI 스레드에서만 사용해야 합니다.
+    /// 썸네일 ImageSource LRU 캐시.
+    /// - 키는 "{path}|w={decodeWidth}" 형식입니다.
+    /// - UI 스레드에서만 접근하도록 설계되었습니다(생성/바인딩 안전).
     /// </summary>
     public sealed class ThumbnailCacheService
     {
@@ -20,10 +21,13 @@ namespace MangaViewer.Services.Thumbnails
 
         private ThumbnailCacheService(int capacity) => _capacity = Math.Max(50, capacity);
 
+        /// <summary>
+        /// 캐시 키 생성: 경로와 디코드 너비를 조합.
+        /// </summary>
         public static string MakeKey(string path, int decodeWidth) => $"{path}|w={decodeWidth}";
 
         /// <summary>
-        /// 캐시에 존재하면 LRU 갱신 후 반환. 없으면 null.
+        /// 키가 존재하면 LRU 갱신 후 이미지 반환, 없으면 null.
         /// </summary>
         public ImageSource? Get(string path, int decodeWidth)
         {
@@ -38,7 +42,7 @@ namespace MangaViewer.Services.Thumbnails
         }
 
         /// <summary>
-        /// 새 항목 삽입 (중복/공백 경로 무시)
+        /// 새 항목을 추가합니다(중복/용량 초과 자동 처리).
         /// </summary>
         public void Add(string path, int decodeWidth, ImageSource image)
         {

@@ -1,3 +1,8 @@
+// Project: MangaViewer
+// File: MainWindow.xaml.cs
+// Purpose: Top-level window hosting the app frame and left navigation. Sets up Mica backdrop,
+//          wires navigation, keyboard shortcuts, and delegates to the main MangaViewModel.
+
 using MangaViewer.ViewModels;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;

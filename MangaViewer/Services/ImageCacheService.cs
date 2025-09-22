@@ -9,6 +9,12 @@ using System.Threading.Tasks;
 
 namespace MangaViewer.Services
 {
+    /// <summary>
+    /// 원본 이미지 캐시 서비스.
+    /// - 메모리 원본 바이트(mem: 키) LRU + 용량(개수/바이트) 기반 캐시
+    /// - 디코드된 BitmapImage LRU 캐시(경로 단위)
+    /// - UI 스레드에서 BitmapImage를 생성하기 위해 DispatcherQueue를 초기화해야 합니다.
+    /// </summary>
     public sealed class ImageCacheService
     {
         private int _capacity;
@@ -24,8 +30,12 @@ namespace MangaViewer.Services
 
         // UI dispatcher to create XAML objects safely
         private DispatcherQueue? _dispatcher;
+        /// <summary>
+        /// UI 스레드 디스패처를 초기화합니다(반드시 앱 시작 시 호출).
+        /// </summary>
         public void InitializeUI(DispatcherQueue dispatcher) => _dispatcher = dispatcher;
 
+        // In-memory byte cache for streaming galleries (mem:gid:####.ext)
         private static readonly Dictionary<string, byte[]> _memoryImages = new(StringComparer.OrdinalIgnoreCase);
         private static readonly Dictionary<string, LinkedListNode<string>> _memoryOrderMap = new(StringComparer.OrdinalIgnoreCase);
         private static readonly LinkedList<string> _memoryOrder = new();
@@ -39,6 +49,9 @@ namespace MangaViewer.Services
         public long MaxMemoryImageBytes => _maxMemoryImageBytes;
         public int DecodedCacheCapacity => _capacity;
 
+        /// <summary>
+        /// 메모리 원본 캐시 상한(개수/바이트)을 설정합니다. 즉시 초과분을 축출합니다.
+        /// </summary>
         public void SetMemoryLimits(int? maxCount, long? maxBytes)
         {
             lock (_memLock)
@@ -54,6 +67,9 @@ namespace MangaViewer.Services
             lock (_memLock) return (_memoryImages.Count, _memoryTotalBytes);
         }
 
+        /// <summary>
+        /// 갤러리별(mem:gid:####.ext) 이미지 개수 집계를 반환합니다.
+        /// </summary>
         public Dictionary<string, int> GetPerGalleryCounts()
         {
             var dict = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -72,6 +88,10 @@ namespace MangaViewer.Services
             return dict;
         }
 
+        /// <summary>
+        /// 특정 갤러리 ID(mem:gid:*)에 해당하는 모든 항목을 제거합니다.
+        /// 디코드 캐시의 같은 키도 함께 제거합니다.
+        /// </summary>
         public void ClearGalleryMemory(string galleryId)
         {
             if (string.IsNullOrWhiteSpace(galleryId)) return;
@@ -93,12 +113,18 @@ namespace MangaViewer.Services
 
         private ImageCacheService(int capacity) => _capacity = Math.Max(4, capacity);
 
+        /// <summary>
+        /// 디코드된(BitmapImage) 캐시의 최대 보관 개수를 설정합니다.
+        /// </summary>
         public void SetDecodedCacheCapacity(int capacity)
         {
             _capacity = Math.Max(4, capacity);
             lock (_lruLock) Trim_NoLock();
         }
 
+        /// <summary>
+        /// 메모리 원본 바이트(mem: 키)를 추가합니다(LRU 갱신 및 초과분 축출 포함).
+        /// </summary>
         public void AddMemoryImage(string key, byte[] data)
         {
             if (string.IsNullOrWhiteSpace(key) || data == null || data.Length == 0) return;
@@ -149,6 +175,9 @@ namespace MangaViewer.Services
             }
         }
 
+        /// <summary>
+        /// 모든 메모리 원본을 비우고, 해당 mem: 항목에 대한 디코드 캐시도 제거합니다.
+        /// </summary>
         public void ClearMemoryImages()
         {
             lock (_memLock)
@@ -207,6 +236,9 @@ namespace MangaViewer.Services
             return false;
         }
 
+        /// <summary>
+        /// 경로(파일 또는 mem:)에서 BitmapImage를 가져오거나 필요 시 생성 후 LRU에 저장합니다.
+        /// </summary>
         public BitmapImage? Get(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
@@ -252,6 +284,9 @@ namespace MangaViewer.Services
             return bmp;
         }
 
+        /// <summary>
+        /// 주어진 경로들을 비동기로 미리 로드해 디코드 캐시에 준비합니다(중복/동시성 제어).
+        /// </summary>
         public void Prefetch(IEnumerable<string> paths)
         {
             foreach (var p in paths)

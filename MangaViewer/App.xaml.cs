@@ -1,4 +1,9 @@
-﻿using Microsoft.Extensions.Logging;
+﻿// Project: MangaViewer
+// File: App.xaml.cs
+// Purpose: Application entry and lifetime management. Configures logging and initializes
+//          services that require a UI DispatcherQueue.
+
+using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Dispatching;
 using MangaViewer.Services;

@@ -1,4 +1,9 @@
-﻿using System;
+﻿// Project: MangaViewer
+// File: Services/MangaManager.cs
+// Purpose: Loads images from a folder (top-level only), maintains logical page layout (single/two-page),
+//          and exposes navigation and mapping between image indices and page indices.
+
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -202,6 +207,7 @@ namespace MangaViewer.Services
             return -1;
         }
 
+        // Navigation helpers
         public void GoToPreviousPage()
         {
             if (CurrentPageIndex <= 0) return;
