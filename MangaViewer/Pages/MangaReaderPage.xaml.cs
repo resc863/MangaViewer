@@ -19,6 +19,7 @@ using Windows.Storage; // LocalSettings
 using Microsoft.UI.Xaml.Controls.Primitives; // DragDeltaEventArgs
 using Services = MangaViewer.Services; // alias root services if needed
 using MangaViewer.Services.Thumbnails; // moved scheduler
+using System.Collections.Generic; // for viewport seed list
 
 namespace MangaViewer.Pages
 {
@@ -93,6 +94,9 @@ namespace MangaViewer.Pages
                 }
             }
             catch { }
+
+            // 최초 로드 직후: 현재 뷰포트 중심부터 위/아래 확장 순서로 대기열 재구성 시도
+            _ = DispatcherQueue.TryEnqueue(() => RebuildViewportThumbnailQueue(radius: 48));
         }
 
         protected override void OnNavigatedTo(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -252,8 +256,16 @@ namespace MangaViewer.Pages
         private void OnThumbsViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
         {
             if (_isUnloaded) return;
+
+            // 진행 중(관성 포함) 스크롤 동안에도 호출
             UpdatePriorityByViewport();
             KickVisibleThumbnailDecode();
+
+            // 스크롤이 끝났을 때만: 대기열을 뷰포트 중심 우선으로 갈아끼움
+            if (!e.IsIntermediate)
+            {
+                RebuildViewportThumbnailQueue(radius: 48);
+            }
         }
 
         /// <summary>
@@ -344,8 +356,8 @@ namespace MangaViewer.Pages
                     if (item is MangaPageViewModel m) SubscribePage(m);
                 }
             }
-            // After changes attempt refresh of visible ones quickly
-            KickVisibleThumbnailDecode();
+            // 초기/대량 추가 중에도 현재 뷰포트 기준으로 대기열을 재구성
+            RebuildViewportThumbnailQueue(radius: 48);
         }
 
         private void SubscribePage(MangaPageViewModel page)
@@ -552,6 +564,58 @@ namespace MangaViewer.Pages
 
             _resizeDebounceTimer?.Stop();
             _resizeDebounceTimer?.Start();
+        }
+
+        /// <summary>
+        /// 현재 뷰포트 중심부터 위/아래로 확장하며 썸네일 요청 대기열을 재구성합니다.
+        /// 실행 중인 요청은 유지하고, 대기 중 요청만 교체합니다.
+        /// </summary>
+        private void RebuildViewportThumbnailQueue(int radius = 48)
+        {
+            if (_isUnloaded || ThumbnailsList == null || ViewModel == null || ViewModel.Thumbnails.Count == 0) return;
+            var panel = ThumbnailsList.ItemsPanelRoot as Panel;
+            if (panel == null || panel.Children.Count == 0) return;
+
+            // 가시 범위 기반 피벗 계산
+            int minIndex = int.MaxValue, maxIndex = -1;
+            for (int i = 0; i < panel.Children.Count; i++)
+            {
+                if (panel.Children[i] is ListViewItem lvi)
+                {
+                    int idx = ThumbnailsList.IndexFromContainer(lvi);
+                    if (idx >= 0)
+                    {
+                        if (idx < minIndex) minIndex = idx;
+                        if (idx > maxIndex) maxIndex = idx;
+                    }
+                }
+            }
+            if (minIndex == int.MaxValue || maxIndex < 0) return;
+            int pivot = (minIndex + maxIndex) / 2;
+
+            // pivot, pivot-1, pivot+1, ... 순으로 시드 생성
+            var seeds = new List<(MangaPageViewModel Vm, string Path, int Index)>();
+            int count = ViewModel.Thumbnails.Count;
+
+            void TryAdd(int i)
+            {
+                if (i < 0 || i >= count) return;
+                var vm = ViewModel.Thumbnails[i];
+                var path = vm.FilePath;
+                if (string.IsNullOrEmpty(path)) return;
+                if (vm.HasThumbnail) return; // 이미 썸네일 있으면 제외
+                seeds.Add((vm, path!, i));
+            }
+
+            TryAdd(pivot);
+            for (int step = 1; step <= radius; step++)
+            {
+                TryAdd(pivot - step);
+                TryAdd(pivot + step);
+            }
+
+            // 대기열 교체(거리 > 200 제외는 스케줄러에서 처리)
+            ThumbnailDecodeScheduler.Instance.ReplacePendingWithViewportFirst(seeds, pivot, DispatcherQueue);
         }
     }
 }

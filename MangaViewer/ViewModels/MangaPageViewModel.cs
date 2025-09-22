@@ -46,7 +46,7 @@ namespace MangaViewer.ViewModels
         }
 
         // 동시 디코딩 수를 장치에 맞춰 설정 (디스크 캐시 없이 메모리/CPU 밸런스)
-        private static readonly SemaphoreSlim s_decodeGate = new(Math.Clamp(Environment.ProcessorCount / 2, 2, 4));
+        private static readonly SemaphoreSlim s_decodeGate = new(Math.Clamp(Environment.ProcessorCount / 2, 4, 8));
         private bool _thumbnailLoading;
         public bool IsThumbnailLoading => _thumbnailLoading;
         public bool HasThumbnail => _thumbnailSource != null;

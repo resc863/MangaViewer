@@ -10,7 +10,7 @@ namespace MangaViewer.Services.Thumbnails
     /// 썸네일 디코딩 요청을 관리하는 우선순위 스케줄러.
     /// - 화면에 가까운 인덱스(선택 인덱스 기준 거리)가 우선 실행됩니다.
     /// - 동일 경로(path)의 중복 요청은 병합(coalescing)하여 불필요한 디코딩을 줄입니다.
-    /// - 동시 실행 최대 개수(<see cref="MaxConcurrency"/>)를 제한해 CPU/메모리 사용량을 제어합니다.
+    /// - 동시 실행 최대 개수(<see cref="_maxConcurrency"/>)를 제한해 CPU/메모리 사용량을 제어합니다.
     /// </summary>
     public sealed class ThumbnailDecodeScheduler
     {
@@ -46,10 +46,14 @@ namespace MangaViewer.Services.Thumbnails
         private readonly object _lock = new();
         private long _orderCounter;
         private int _running;
-        private const int MaxConcurrency = 4;
+        private readonly int _maxConcurrency;
         private int _selectedIndex = -1;
 
-        private ThumbnailDecodeScheduler() { }
+        private ThumbnailDecodeScheduler()
+        {
+            // 동시 실행 수: 8C/16T 기준으로 /2 => 8, 최소 4, 최대 8
+            _maxConcurrency = Math.Clamp(Environment.ProcessorCount / 2, 4, 8);
+        }
 
         /// <summary>
         /// 항목이 화면에 나타나 컨테이너가 생성될 때 호출되어 디코딩 요청을 큐에 추가합니다.
@@ -116,6 +120,52 @@ namespace MangaViewer.Services.Thumbnails
         }
 
         /// <summary>
+        /// 현재 대기 중인 요청을 모두 비우고(실행 중은 유지), 뷰포트 중심 우선으로 주어진 시드 목록으로 재구성합니다.
+        /// - 이미 실행 중인 경로는 제외하여 중복 실행을 방지합니다.
+        /// - 이미 썸네일이 있거나 로딩 중인 항목은 제외합니다.
+        /// - 기존 정책(거리 &gt; 200 제거)도 동일하게 적용합니다.
+        /// </summary>
+        public void ReplacePendingWithViewportFirst(
+            System.Collections.Generic.IReadOnlyList<(MangaViewer.ViewModels.MangaPageViewModel Vm, string Path, int Index)> seeds,
+            int pivot,
+            DispatcherQueue dispatcher)
+        {
+            lock (_lock)
+            {
+                _selectedIndex = pivot;
+                _pending.Clear();
+                _pendingKeys.Clear();
+
+                foreach (var s in seeds)
+                {
+                    if (string.IsNullOrEmpty(s.Path)) continue;
+                    if (_runningKeys.Contains(s.Path)) continue; // 실행 중 유지
+                    if (s.Vm.HasThumbnail || s.Vm.IsThumbnailLoading) continue;
+
+                    int priority = pivot >= 0 ? Math.Abs(s.Index - pivot) : s.Index;
+                    var req = new Request
+                    {
+                        Vm = s.Vm,
+                        Path = s.Path,
+                        Index = s.Index,
+                        Priority = priority,
+                        Dispatcher = dispatcher,
+                        Order = _orderCounter++
+                    };
+
+                    // 거리>200은 넣지 않음(자연 정리)
+                    if (req.Priority > 200) continue;
+
+                    _pending.Add(req);
+                    _pendingKeys.Add(req.Path);
+                }
+
+                SortPending_NoLock();
+                TrySchedule_NoLock();
+            }
+        }
+
+        /// <summary>
         /// 대기열을 우선순위(오름차순) → 입력순서(오름차순) 기준으로 정렬합니다.
         /// </summary>
         private void SortPending_NoLock() => _pending.Sort((a, b) =>
@@ -125,11 +175,11 @@ namespace MangaViewer.Services.Thumbnails
         });
 
         /// <summary>
-        /// 현재 실행 중 개수가 <see cref="MaxConcurrency"/> 미만인 동안 대기 요청을 꺼내 실행합니다.
+        /// 현재 실행 중 개수가 <see cref="_maxConcurrency"/> 미만인 동안 대기 요청을 꺼내 실행합니다.
         /// </summary>
         private void TrySchedule_NoLock()
         {
-            while (_running < MaxConcurrency && _pending.Count > 0)
+            while (_running < _maxConcurrency && _pending.Count > 0)
             {
                 var req = _pending[0];
                 _pending.RemoveAt(0);
