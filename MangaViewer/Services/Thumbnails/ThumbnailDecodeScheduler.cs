@@ -46,13 +46,23 @@ namespace MangaViewer.Services.Thumbnails
         private readonly object _lock = new();
         private long _orderCounter;
         private int _running;
-        private readonly int _maxConcurrency;
-        private int _selectedIndex = -1;
-
+        private int _maxConcurrency;
+        public int MaxConcurrency => _maxConcurrency;
         private ThumbnailDecodeScheduler()
         {
-            // 동시 실행 수: 8C/16T 기준으로 /2 => 8, 최소 4, 최대 8
-            _maxConcurrency = Math.Clamp(Environment.ProcessorCount / 2, 4, 8);
+            // 동시성 상한을 2~4로 보수적으로 조정 (초기값)
+            _maxConcurrency = Math.Clamp(Environment.ProcessorCount / 3, 2, 4);
+        }
+        /// <summary>
+        /// 동시 실행 최대 개수를 동적으로 조정합니다. (예: 스크롤 중 2, idle 시 6~8)
+        /// </summary>
+        public void SetMaxConcurrency(int value)
+        {
+            lock (_lock)
+            {
+                _maxConcurrency = Math.Clamp(value, 1, 16);
+                TrySchedule_NoLock();
+            }
         }
 
         /// <summary>
@@ -98,8 +108,6 @@ namespace MangaViewer.Services.Thumbnails
         {
             lock (_lock)
             {
-                if (_selectedIndex == selectedIndex) return;
-                _selectedIndex = selectedIndex;
                 for (int i = 0; i < _pending.Count; i++)
                 {
                     var req = _pending[i];
@@ -132,7 +140,6 @@ namespace MangaViewer.Services.Thumbnails
         {
             lock (_lock)
             {
-                _selectedIndex = pivot;
                 _pending.Clear();
                 _pendingKeys.Clear();
 

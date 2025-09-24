@@ -45,8 +45,8 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        // 동시 디코딩 수를 장치에 맞춰 설정 (디스크 캐시 없이 메모리/CPU 밸런스)
-        private static readonly SemaphoreSlim s_decodeGate = new(Math.Clamp(Environment.ProcessorCount / 2, 4, 8));
+        // 동시 디코딩 수 제한 제거(스케줄러에서만 제한)
+        // private static readonly SemaphoreSlim s_decodeGate = new(Math.Clamp(Environment.ProcessorCount / 2, 4, 8));
         private bool _thumbnailLoading;
         public bool IsThumbnailLoading => _thumbnailLoading;
         public bool HasThumbnail => _thumbnailSource != null;
@@ -59,37 +59,32 @@ namespace MangaViewer.ViewModels
             int decodeWidthHi = ThumbnailOptions.DecodePixelWidth;
             int decodeWidthLo = Math.Max(64, decodeWidthHi / 2);
 
-            // 1) 캐시 우선 (고품질 → 저품질)
-            var cachedHi = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi)).ConfigureAwait(false);
-            if (cachedHi != null)
-            {
-                if (localVersion == _version)
-                    await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedHi; }).ConfigureAwait(false);
-                return;
-            }
-            var cachedLo = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthLo)).ConfigureAwait(false);
-            if (cachedLo != null && localVersion == _version)
-            {
-                await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedLo; }).ConfigureAwait(false);
-                // 나중에 고품질 업그레이드 시도 (아래에서 수행)
-            }
-
             _thumbnailLoading = true;
             var provider = ThumbnailProviderFactory.Get();
-
             CancellationTokenSource cts = new();
             _thumbCts = cts; // 최신 요청 토큰 저장
-            bool acquired = false;
             try
             {
+                // 1) 캐시 우선 (고품질 → 저품질) - UI 전환 없이 백그라운드에서 조회
+                var cachedHi = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi);
+                if (cachedHi != null)
+                {
+                    if (localVersion == _version)
+                        await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedHi; });
+                    return;
+                }
+                var cachedLo = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthLo);
+                if (cachedLo != null && localVersion == _version)
+                {
+                    await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedLo; });
+                    // 나중에 고품질 업그레이드 시도 (아래에서 수행)
+                }
+
                 // 2) 저품질 빠른 디코드 (이미 저품질 캐시 없음 또는 표시가 필요한 경우)
                 if (cachedLo == null)
                 {
-                    await s_decodeGate.WaitAsync(cts.Token).ConfigureAwait(false);
-                    acquired = true;
-
-                    ImageSource? loSrc;
-                    if (_filePath!.StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase))
+                    ImageSource? loSrc = null;
+                    if (_filePath!.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
                     {
                         if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) || bytes == null)
                             return;
@@ -105,32 +100,27 @@ namespace MangaViewer.ViewModels
                     {
                         await RunOnUiAsync(dispatcher, () =>
                         {
-                            // 먼저 저품질 표시
-                            ThumbnailSource = ThumbnailSource ?? loSrc; // 이미 캐시로 세팅됐으면 유지
+                            ThumbnailSource = ThumbnailSource ?? loSrc;
                             ThumbnailCacheService.Instance.Add(_filePath!, decodeWidthLo, loSrc);
-                        }).ConfigureAwait(false);
+                        });
                     }
-
-                    s_decodeGate.Release();
-                    acquired = false;
                 }
 
-                // 3) 잠깐 대기하여 스크롤 idle 유도 후 고품질 업그레이드
-                try { await Task.Delay(140, cts.Token).ConfigureAwait(false); } catch { if (cts.IsCancellationRequested) return; }
-                await s_decodeGate.WaitAsync(cts.Token).ConfigureAwait(false);
-                acquired = true;
+                // 3) 적응형 딜레이: 스크롤 idle 감지(간단히 140ms, 추후 개선 가능)
+                try { await Task.Delay(140, cts.Token); } catch { if (cts.IsCancellationRequested) return; }
 
-                // 재확인: 이미 고품질 캐시가 생겼는지
-                var againCachedHi = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi)).ConfigureAwait(false);
+                // 재확인: 이미 고품질 캐시가 생겼는지 (UI 전환 없이)
+                var againCachedHi = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi);
                 if (againCachedHi != null)
                 {
                     if (localVersion == _version)
-                        await RunOnUiAsync(dispatcher, () => { ThumbnailSource = againCachedHi; }).ConfigureAwait(false);
+                        await RunOnUiAsync(dispatcher, () => { ThumbnailSource = againCachedHi; });
                     return;
                 }
 
-                ImageSource? hiSrc;
-                if (_filePath!.StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase))
+                // 4) 고품질 디코드
+                ImageSource? hiSrc = null;
+                if (_filePath!.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
                 {
                     if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) || bytes == null)
                         return;
@@ -146,15 +136,15 @@ namespace MangaViewer.ViewModels
                 {
                     await RunOnUiAsync(dispatcher, () =>
                     {
-                        ThumbnailSource = hiSrc; // 업그레이드
+                        ThumbnailSource = hiSrc;
                         ThumbnailCacheService.Instance.Add(_filePath!, decodeWidthHi, hiSrc);
-                    }).ConfigureAwait(false);
+                        ThumbnailCacheService.Instance.Remove(_filePath!, decodeWidthLo);
+                    });
                 }
             }
             catch (OperationCanceledException) { /* ignore */ }
             finally
             {
-                if (acquired) s_decodeGate.Release();
                 _thumbnailLoading = false;
                 if (_thumbCts == cts)
                 {

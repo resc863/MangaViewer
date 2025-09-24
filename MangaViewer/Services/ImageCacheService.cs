@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Threading; // 추가
 
 namespace MangaViewer.Services
 {
@@ -284,20 +285,72 @@ namespace MangaViewer.Services
             return bmp;
         }
 
+        // 프리페치 동시성 제한용 큐 및 토큰
+        private readonly SemaphoreSlim _prefetchGate = new(2); // 동시 2개 제한
+        private readonly Queue<string> _prefetchQueue = new();
+        private bool _isPrefetching = false;
+
         /// <summary>
-        /// 주어진 경로들을 비동기로 미리 로드해 디코드 캐시에 준비합니다(중복/동시성 제어).
+        /// 지정된 경로들의 이미지를 미리 읽어둡니다. (동시성 제한 및 스로틀 적용)
         /// </summary>
         public void Prefetch(IEnumerable<string> paths)
         {
-            foreach (var p in paths)
+            lock (_prefetchQueue)
             {
-                if (string.IsNullOrWhiteSpace(p)) continue;
-                lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
-                _inflightPrefetch.GetOrAdd(p, key => Task.Run(() =>
+                foreach (var p in paths)
                 {
-                    try { _ = Get(key); }
-                    finally { _inflightPrefetch.TryRemove(key, out _); }
-                }));
+                    if (string.IsNullOrWhiteSpace(p)) continue;
+                    lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
+                    if (!_prefetchQueue.Contains(p))
+                        _prefetchQueue.Enqueue(p);
+                }
+                if (!_isPrefetching)
+                {
+                    _isPrefetching = true;
+                    _ = Task.Run(() => PrefetchWorker());
+                }
+            }
+        }
+
+        private async Task PrefetchWorker()
+        {
+            while (true)
+            {
+                string? path = null;
+                lock (_prefetchQueue)
+                {
+                    if (_prefetchQueue.Count > 0)
+                        path = _prefetchQueue.Dequeue();
+                    else
+                    {
+                        _isPrefetching = false;
+                        return;
+                    }
+                }
+                await _prefetchGate.WaitAsync();
+                try
+                {
+                    // 프리페치 시에는 BitmapImage 생성 대신 원시 바이트만 미리 읽어둠
+                    if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        TryGetMemoryImageBytes(path, out _); // 메모리 이미지는 이미 캐시됨
+                    }
+                    else if (File.Exists(path))
+                    {
+                        // 파일을 미리 읽어 LRU에 추가하지 않고, 실제 디코드 시에만 LRU에 추가
+                        // (필요시 여기서 바이트 버퍼 캐시 추가 가능)
+                        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                        var buffer = new byte[Math.Min(4096, fs.Length)];
+                        await fs.ReadAsync(buffer, 0, buffer.Length);
+                        // 실제 디코드/바인딩 시점에만 BitmapImage 생성
+                    }
+                }
+                catch { /* ignore */ }
+                finally
+                {
+                    _prefetchGate.Release();
+                    await Task.Delay(16); // 스로틀: 16ms
+                }
             }
         }
 

@@ -30,7 +30,8 @@ namespace MangaViewer
             this.InitializeComponent();
             Title = "Manga Viewer";
             ExtendsContentIntoTitleBar = true;
-            SetTitleBar(AppTitleBar);
+            // Use only the right-side transparent DragRegion as the draggable title bar area
+            SetTitleBar(DragRegion);
 
             ViewModel = new MangaViewModel();
             RootViewModel = ViewModel;

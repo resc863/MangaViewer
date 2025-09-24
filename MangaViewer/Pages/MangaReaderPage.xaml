@@ -9,11 +9,6 @@
     mc:Ignorable="d" Background="Transparent">
     <Page.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-        <!-- Acrylic brush for the thumbnails pane -->
-        <AcrylicBrush x:Key="PaneAcrylicBrush"
-                      TintColor="{ThemeResource SystemAccentColor}"
-                      TintOpacity="0.3"
-                      TintLuminosityOpacity="0.0" />
     </Page.Resources>
     <Grid Background="Transparent">
         <SplitView x:Name="ReaderSplitView"
@@ -21,7 +16,7 @@
                    OpenPaneLength="160"
                    IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}"
                    PanePlacement="Right"
-                   PaneBackground="{StaticResource PaneAcrylicBrush}"
+                   PaneBackground="Transparent"
                    Background="Transparent"
                    SizeChanged="ReaderSplitView_SizeChanged">
             <SplitView.Pane>

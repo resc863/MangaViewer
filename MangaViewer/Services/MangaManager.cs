@@ -61,15 +61,23 @@ namespace MangaViewer.Services
             CurrentPageIndex = 0;
             var dispatcher = _dispatcher ?? DispatcherQueue.GetForCurrentThread();
 
-            // 파일 수집 + 자연 정렬 (비동기)
+            // 파일 수집 + 자연 정렬 (비동기, LINQ 체인 제거)
             List<(string Path, string SortKey)> imageFiles = await Task.Run(async () =>
             {
-                var files = await folder.GetFilesAsync(); // top-level only, no subfolders
-                return files
-                    .Where(f => !string.IsNullOrEmpty(f.FileType) && s_imageExtensions.Contains(f.FileType))
-                    .Select(f => (f.Path, SortKey: ToNaturalSortKey(System.IO.Path.GetFileNameWithoutExtension(f.Name))))
-                    .OrderBy(x => x.SortKey, StringComparer.Ordinal)
-                    .ToList();
+                var files = await folder.GetFilesAsync();
+                var result = new List<(string Path, string SortKey)>(files.Count);
+                foreach (var f in files)
+                {
+                    if (!string.IsNullOrEmpty(f.FileType) && s_imageExtensions.Contains(f.FileType))
+                    {
+                        string name = System.IO.Path.GetFileNameWithoutExtension(f.Name);
+                        string sortKey = ToNaturalSortKey(name);
+                        result.Add((f.Path, sortKey));
+                    }
+                }
+                // 자연 정렬 키 기준 정렬
+                result.Sort((a, b) => StringComparer.Ordinal.Compare(a.SortKey, b.SortKey));
+                return result;
             }, token);
 
             if (token.IsCancellationRequested) return;

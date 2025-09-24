@@ -11,30 +11,77 @@
     <Grid x:Name="RootGrid" Background="Transparent">
         <Grid.Resources>
             <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-            <!-- Transparent NavView Pane style -->
+            <!-- NavigationView content background transparent so Mica shows in content -->
             <Style TargetType="NavigationView">
                 <Setter Property="Background" Value="Transparent"/>
             </Style>
+            <!-- Make NavigationView pane backgrounds transparent to let Mica show through -->
+            <SolidColorBrush x:Key="NavigationViewDefaultPaneBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewExpandedPaneBackground" Color="Transparent"/>
+            <SolidColorBrush x:Key="NavigationViewTopPaneBackground" Color="Transparent"/>
         </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
 
-        <!-- Custom top title / command bar -->
-        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="32" Background="Transparent">
-            <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center" Margin="56,0,0,0">
-                <Button Command="{Binding TogglePaneCommand}" FontFamily="Segoe MDL2 Assets" Content="&#xE70E;" ToolTipService.ToolTip="썸네일 패널"/>
-                <Button Content="폴더 열기" Click="OpenFolder_Click" IsEnabled="{Binding IsOpenFolderEnabled}" Visibility="{Binding IsOpenFolderEnabled, Converter={StaticResource BooleanToVisibilityConverter}}"/>
-                <Button Content="{Binding DirectionButtonText}" Command="{Binding ToggleDirectionCommand}"/>
-                <Button Content="{Binding CoverButtonText}" Command="{Binding ToggleCoverCommand}"/>
-                <Button Content="OCR" Command="{Binding RunOcrCommand}"/>
-            </StackPanel>
+        <!-- Top title / command bar using WinUI 3 CommandBar + AppBarButtons -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Height="40" Background="Transparent">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <CommandBar Grid.Column="0"
+                        DefaultLabelPosition="Right"
+                        Background="Transparent"
+                        IsDynamicOverflowEnabled="True"
+                        Margin="12,0,0,0"
+                        VerticalAlignment="Center"
+                        HorizontalAlignment="Left">
+                <CommandBar.PrimaryCommands>
+                    <AppBarToggleButton ToolTipService.ToolTip="썸네일 패널"
+                                         IsChecked="{Binding IsPaneOpen, Mode=TwoWay}">
+                        <AppBarToggleButton.Icon>
+                            <FontIcon Glyph="&#xE70e;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarToggleButton.Icon>
+                    </AppBarToggleButton>
+                    <AppBarSeparator/>
+                    <AppBarButton Label="폴더 열기"
+                                  Click="OpenFolder_Click"
+                                  IsEnabled="{Binding IsOpenFolderEnabled}"
+                                  Visibility="{Binding IsOpenFolderEnabled, Converter={StaticResource BooleanToVisibilityConverter}}">
+                        <AppBarButton.Icon>
+                            <SymbolIcon Symbol="Folder"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
+                    <AppBarSeparator/>
+                    <AppBarButton Label="{Binding DirectionButtonText}"
+                                  Command="{Binding ToggleDirectionCommand}">
+                        <AppBarButton.Icon>
+                            <FontIcon Glyph="&#xE8AB;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
+                    <AppBarButton Label="{Binding CoverButtonText}"
+                                  Command="{Binding ToggleCoverCommand}">
+                        <AppBarButton.Icon>
+                            <FontIcon Glyph="&#xE170;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
+                    <AppBarSeparator/>
+                    <AppBarButton Label="OCR" Command="{Binding RunOcrCommand}">
+                        <AppBarButton.Icon>
+                            <FontIcon Glyph="&#xE8C3;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
+                </CommandBar.PrimaryCommands>
+            </CommandBar>
+            <!-- Drag region for system title bar behaviors -->
+            <Grid x:Name="DragRegion" Grid.Column="1" Background="Transparent"/>
         </Grid>
 
         <!-- Navigation / content area -->
         <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Auto"
-                        IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="LeftCompact" OpenPaneLength="240" CompactPaneLength="48"
+                        IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="Left" OpenPaneLength="240" CompactPaneLength="48"
                         IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested"
                         Background="Transparent">
             <NavigationView.MenuItems>

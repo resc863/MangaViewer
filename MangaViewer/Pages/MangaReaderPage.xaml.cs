@@ -43,6 +43,10 @@ namespace MangaViewer.Pages
         private const double PaneMinWidth = 120;
         private const double PaneMaxWidth = 420;
 
+        private int _prefetchRadius = 24;
+        private int _prefetchRadiusIdle = 48;
+        private DateTime _lastScrollTime = DateTime.MinValue;
+
         public MangaReaderPage()
         {
             InitializeComponent();
@@ -241,6 +245,37 @@ namespace MangaViewer.Pages
         }
 
         /// <summary>
+        /// 현재 뷰포트 중심 인덱스를 계산합니다. 컨테이너가 아직 실현되지 않았다면 SelectedThumbnailIndex로 폴백합니다.
+        /// </summary>
+        private int GetCurrentViewportPivot()
+        {
+            if (ThumbnailsList == null)
+                return ViewModel?.SelectedThumbnailIndex ?? -1;
+
+            if (ThumbnailsList.ItemsPanelRoot is not Panel panel || panel.Children.Count == 0)
+                return ViewModel?.SelectedThumbnailIndex ?? -1;
+
+            int minIndex = int.MaxValue;
+            int maxIndex = -1;
+            for (int i = 0; i < panel.Children.Count; i++)
+            {
+                if (panel.Children[i] is ListViewItem lvi)
+                {
+                    int idx = ThumbnailsList.IndexFromContainer(lvi);
+                    if (idx >= 0)
+                    {
+                        if (idx < minIndex) minIndex = idx;
+                        if (idx > maxIndex) maxIndex = idx;
+                    }
+                }
+            }
+            if (minIndex == int.MaxValue || maxIndex < 0)
+                return ViewModel?.SelectedThumbnailIndex ?? -1;
+
+            return (minIndex + maxIndex) / 2;
+        }
+
+        /// <summary>
         /// 주기적으로 뷰포트에 가까운 항목을 갱신하고 디코딩을 킥합니다.
         /// </summary>
         private void StartThumbnailAutoRefresh()
@@ -256,15 +291,13 @@ namespace MangaViewer.Pages
         private void OnThumbsViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
         {
             if (_isUnloaded) return;
-
-            // 진행 중(관성 포함) 스크롤 동안에도 호출
+            _lastScrollTime = DateTime.Now;
             UpdatePriorityByViewport();
             KickVisibleThumbnailDecode();
-
             // 스크롤이 끝났을 때만: 대기열을 뷰포트 중심 우선으로 갈아끼움
             if (!e.IsIntermediate)
             {
-                RebuildViewportThumbnailQueue(radius: 48);
+                RebuildViewportThumbnailQueue(radius: _prefetchRadiusIdle);
             }
         }
 
@@ -294,10 +327,10 @@ namespace MangaViewer.Pages
             if (minIndex == int.MaxValue || maxIndex < 0) return;
             int pivot = (minIndex + maxIndex) / 2;
 
-            // 우선순위 재정렬(대기 큐) 및 근접 항목 프리페치
             ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
 
-            int radius = 24; // 프리페치 반경
+            // 스크롤 직후에는 반경 축소, 일정 시간(500ms) 이상 정지 시 확장
+            int radius = (DateTime.Now - _lastScrollTime).TotalMilliseconds > 500 ? _prefetchRadiusIdle : _prefetchRadius;
             int start = Math.Max(0, pivot - radius);
             int end = Math.Min(ViewModel.Thumbnails.Count - 1, pivot + radius);
             for (int i = start; i <= end; i++)
@@ -321,8 +354,9 @@ namespace MangaViewer.Pages
             var panel = ThumbnailsList.ItemsPanelRoot as Panel;
             if (panel == null || panel.Children.Count == 0) return;
 
-            int minIndex = int.MaxValue;
-            int maxIndex = -1;
+            // 먼저 현재 뷰포트 기반 pivot을 계산하고 스케줄러에 반영
+            int pivot = GetCurrentViewportPivot();
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
 
             for (int i = 0; i < panel.Children.Count; i++)
             {
@@ -330,20 +364,13 @@ namespace MangaViewer.Pages
                 {
                     int index = ThumbnailsList.IndexFromContainer(lvi);
                     if (index < 0 || index >= ViewModel.Thumbnails.Count) continue;
-                    if (index < minIndex) minIndex = index;
-                    if (index > maxIndex) maxIndex = index;
                     var vm = ViewModel.Thumbnails[index];
                     if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
                     {
-                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                        // SelectedThumbnailIndex 대신 계산된 pivot 기준으로 Enqueue
+                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, pivot, DispatcherQueue);
                     }
                 }
-            }
-
-            if (minIndex != int.MaxValue && maxIndex >= 0)
-            {
-                int pivot = (minIndex + maxIndex) / 2;
-                ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
             }
         }
 
@@ -376,7 +403,9 @@ namespace MangaViewer.Pages
                     int index = ViewModel.Thumbnails.IndexOf(vm);
                     if (index >= 0)
                     {
-                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                        int pivot = GetCurrentViewportPivot();
+                        ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
+                        ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, pivot, DispatcherQueue);
                         // If container not yet realized, timer will catch it later; if realized ensure immediate attempt
                         KickVisibleThumbnailDecode();
                     }
@@ -395,7 +424,9 @@ namespace MangaViewer.Pages
             else
             {
                 var path = vm.FilePath ?? string.Empty;
-                ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index, ViewModel.SelectedThumbnailIndex, DispatcherQueue);
+                int pivot = GetCurrentViewportPivot();
+                ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
+                ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index, pivot, DispatcherQueue);
             }
         }
 

@@ -26,6 +26,14 @@ namespace MangaViewer.Services.Thumbnails
         /// </summary>
         public static string MakeKey(string path, int decodeWidth) => $"{path}|w={decodeWidth}";
 
+        // 바이트 단위 캐시 상한
+        private readonly long _maxBytes = 128 * 1024 * 1024; // 128MB
+        private long _currentBytes = 0;
+        private static long EstimateImageBytes(ImageSource image, int decodeWidth)
+        {
+            // BitmapImage는 PixelWidth/PixelHeight를 알 수 있으나, 안전하게 decodeWidth^2*4로 추정
+            return decodeWidth * decodeWidth * 4;
+        }
         /// <summary>
         /// 키가 존재하면 LRU 갱신 후 이미지 반환, 없으면 null.
         /// </summary>
@@ -53,7 +61,22 @@ namespace MangaViewer.Services.Thumbnails
             var node = new LinkedListNode<CacheEntry>(entry);
             _lru.AddFirst(node);
             _map[key] = node;
+            _currentBytes += EstimateImageBytes(image, decodeWidth);
             Trim();
+        }
+
+        /// <summary>
+        /// 저해상도/고해상도 썸네일 제거 지원 (고해상도 업그레이드 시 메모리 절감)
+        /// </summary>
+        public void Remove(string path, int decodeWidth)
+        {
+            string key = MakeKey(path, decodeWidth);
+            if (_map.TryGetValue(key, out var node))
+            {
+                _lru.Remove(node);
+                _map.Remove(key);
+                _currentBytes -= EstimateImageBytes(node.Value.Image, decodeWidth);
+            }
         }
 
         /// <summary>
@@ -67,11 +90,16 @@ namespace MangaViewer.Services.Thumbnails
 
         private void Trim()
         {
-            while (_lru.Count > _capacity)
+            while (_lru.Count > _capacity || _currentBytes > _maxBytes)
             {
                 var last = _lru.Last; if (last == null) break;
                 _lru.RemoveLast();
                 _map.Remove(last.Value.Key);
+                // decodeWidth 추출
+                int decodeWidth = 256;
+                var parts = last.Value.Key.Split("|w=");
+                if (parts.Length == 2 && int.TryParse(parts[1], out int w)) decodeWidth = w;
+                _currentBytes -= EstimateImageBytes(last.Value.Image, decodeWidth);
             }
         }
     }

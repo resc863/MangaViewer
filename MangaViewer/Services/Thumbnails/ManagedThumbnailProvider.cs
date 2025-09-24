@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
 using Windows.Storage.Streams;
+using System.Runtime.InteropServices.WindowsRuntime;
 
 namespace MangaViewer.Services.Thumbnails
 {
@@ -38,17 +39,28 @@ namespace MangaViewer.Services.Thumbnails
             var cached = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(path, maxDecodeDim)).ConfigureAwait(false);
             if (cached != null) return cached;
 
-            string key = ThumbnailCacheService.MakeKey(path, maxDecodeDim);
-            var task = s_inflightPath.GetOrAdd(key, _ => DecodeCreateAndCachePathAsync(dispatcher, path, maxDecodeDim));
-            try
+            // PNG 재인코딩 제거 경로: BitmapImage.DecodePixelWidth 사용
+            var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!dispatcher.TryEnqueue(async () =>
             {
-                using var _ = ct.Register(() => { });
-                return await task.ConfigureAwait(false);
-            }
-            finally
+                try
+                {
+                    var img = new BitmapImage();
+                    img.DecodePixelWidth = maxDecodeDim;
+                    using var stream = await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read);
+                    await img.SetSourceAsync(stream);
+                    ThumbnailCacheService.Instance.Add(path, maxDecodeDim, img);
+                    tcs.TrySetResult(img);
+                }
+                catch
+                {
+                    tcs.TrySetResult(null);
+                }
+            }))
             {
-                s_inflightPath.TryRemove(key, out _);
+                tcs.TrySetResult(null);
             }
+            return await tcs.Task.ConfigureAwait(false);
         }
 
         /// <summary>
@@ -59,25 +71,16 @@ namespace MangaViewer.Services.Thumbnails
             if (data == null || data.Length == 0) return null;
 
             InMemoryRandomAccessStream? ras = null;
-            DataWriter? writer = null;
             try
             {
-                // Materialize provided bytes into an IRandomAccessStream for decoder
+                // DataWriter 제거, 직접 WriteAsync 사용
                 ras = new InMemoryRandomAccessStream();
-                writer = new DataWriter(ras);
-                writer.WriteBytes(data);
-                await writer.StoreAsync().AsTask(ct).ConfigureAwait(false);
-                writer.DetachStream();
-                writer.Dispose(); writer = null;
+                await ras.WriteAsync(data.AsBuffer());
                 ras.Seek(0);
 
                 var sb = await DecodeAsync(ras, maxDecodeDim, ct).ConfigureAwait(false);
                 ras.Dispose();
                 if (sb == null) return null;
-
-                var png = await EncodeToPngAsync(sb, ct).ConfigureAwait(false);
-                sb.Dispose();
-                if (png == null) return null;
 
                 // Produce BitmapImage on UI thread
                 var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -86,25 +89,21 @@ namespace MangaViewer.Services.Thumbnails
                     try
                     {
                         var img = new BitmapImage();
-                        await img.SetSourceAsync(png);
-                        png.Dispose();
+                        img.SetSource(ras);
                         tcs.TrySetResult(img);
                     }
                     catch
                     {
-                        try { png.Dispose(); } catch { }
                         tcs.TrySetResult(null);
                     }
                 }))
                 {
-                    try { png.Dispose(); } catch { }
                     return null;
                 }
                 return await tcs.Task.ConfigureAwait(false);
             }
             catch
             {
-                writer?.Dispose();
                 ras?.Dispose();
                 return null;
             }
@@ -155,25 +154,6 @@ namespace MangaViewer.Services.Thumbnails
             }
         }
 
-        // Encode SoftwareBitmap to an in-memory PNG stream.
-        private static async Task<InMemoryRandomAccessStream?> EncodeToPngAsync(SoftwareBitmap sb, CancellationToken ct)
-        {
-            try
-            {
-                var stream = new InMemoryRandomAccessStream();
-                var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream).AsTask(ct).ConfigureAwait(false);
-                encoder.SetSoftwareBitmap(sb);
-                encoder.IsThumbnailGenerated = false;
-                await encoder.FlushAsync().AsTask(ct).ConfigureAwait(false);
-                stream.Seek(0);
-                return stream;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
         private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, System.Func<T?> func)
         {
             var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -186,63 +166,6 @@ namespace MangaViewer.Services.Thumbnails
                 tcs.TrySetResult(default);
             }
             return tcs.Task;
-        }
-
-        private static async Task<ImageSource?> DecodeCreateAndCachePathAsync(DispatcherQueue dispatcher, string path, int maxDecodeDim)
-        {
-            IRandomAccessStream? ras = null;
-            try
-            {
-                // Open file stream (background thread)
-                ras = await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask().ConfigureAwait(false);
-            }
-            catch
-            {
-                ras?.Dispose();
-                return null;
-            }
-
-            try
-            {
-                // Decode downscaled SoftwareBitmap
-                var sb = await DecodeAsync(ras, maxDecodeDim, CancellationToken.None).ConfigureAwait(false);
-                ras.Dispose();
-                if (sb == null) return null;
-
-                // Encode to PNG (keeps only raw bytes to be consumed on UI thread safely)
-                var png = await EncodeToPngAsync(sb, CancellationToken.None).ConfigureAwait(false);
-                sb.Dispose();
-                if (png == null) return null;
-
-                // Create BitmapImage on UI thread and cache it
-                var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
-                if (!dispatcher.TryEnqueue(async () =>
-                {
-                    try
-                    {
-                        var img = new BitmapImage();
-                        await img.SetSourceAsync(png);
-                        png.Dispose();
-                        ThumbnailCacheService.Instance.Add(path, maxDecodeDim, img);
-                        tcs.TrySetResult(img);
-                    }
-                    catch
-                    {
-                        try { png.Dispose(); } catch { }
-                        tcs.TrySetResult(null);
-                    }
-                }))
-                {
-                    try { png.Dispose(); } catch { }
-                    return null;
-                }
-                return await tcs.Task.ConfigureAwait(false);
-            }
-            catch
-            {
-                ras?.Dispose();
-                return null;
-            }
         }
     }
 }
