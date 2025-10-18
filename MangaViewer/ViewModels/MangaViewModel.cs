@@ -140,7 +140,9 @@ namespace MangaViewer.ViewModels
             if (IsOcrRunning) return;
             if (LeftImageFilePath == null && RightImageFilePath == null) return;
             if (!RunOcrCommand.CanExecute(null)) return;
-            try { await RunOcrAsync(); } catch (Exception ex) { Log.Error(ex, "RunOcrAsync from SettingsChanged failed"); }
+            
+                await RunOcrAsync();
+            
         }
 
         /// <summary>
@@ -329,7 +331,6 @@ namespace MangaViewer.ViewModels
             if (Math.Abs(w - _leftWrapperWidth) > .5 || Math.Abs(h - _leftWrapperHeight) > .5)
             {
                 _leftWrapperWidth = w; _leftWrapperHeight = h;
-                Debug.WriteLine($"[Wrapper] Left {w}x{h}");
             }
         }
         public void UpdateRightOcrContainerSize(double w, double h)
@@ -338,7 +339,6 @@ namespace MangaViewer.ViewModels
             if (Math.Abs(w - _rightWrapperWidth) > .5 || Math.Abs(h - _rightWrapperHeight) > .5)
             {
                 _rightWrapperWidth = w; _rightWrapperHeight = h;
-                Debug.WriteLine($"[Wrapper] Right {w}x{h}");
             }
         }
 

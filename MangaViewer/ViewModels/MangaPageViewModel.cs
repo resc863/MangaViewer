@@ -83,17 +83,7 @@ namespace MangaViewer.ViewModels
                 // 2) 저품질 빠른 디코드 (이미 저품질 캐시 없음 또는 표시가 필요한 경우)
                 if (cachedLo == null)
                 {
-                    ImageSource? loSrc = null;
-                    if (_filePath!.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) || bytes == null)
-                            return;
-                        loSrc = await provider.GetForBytesAsync(dispatcher, bytes, decodeWidthLo, cts.Token).ConfigureAwait(false);
-                    }
-                    else
-                    {
-                        loSrc = await provider.GetForPathAsync(dispatcher, _filePath!, decodeWidthLo, cts.Token).ConfigureAwait(false);
-                    }
+                    ImageSource? loSrc = await GetThumbnailSourceAsync(dispatcher, _filePath!, decodeWidthLo, cts.Token).ConfigureAwait(false);
 
                     if (cts.IsCancellationRequested) return;
                     if (loSrc != null && localVersion == _version)
@@ -119,17 +109,7 @@ namespace MangaViewer.ViewModels
                 }
 
                 // 4) 고품질 디코드
-                ImageSource? hiSrc = null;
-                if (_filePath!.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!ImageCacheService.Instance.TryGetMemoryImageBytes(_filePath, out var bytes) || bytes == null)
-                        return;
-                    hiSrc = await provider.GetForBytesAsync(dispatcher, bytes, decodeWidthHi, cts.Token).ConfigureAwait(false);
-                }
-                else
-                {
-                    hiSrc = await provider.GetForPathAsync(dispatcher, _filePath!, decodeWidthHi, cts.Token).ConfigureAwait(false);
-                }
+                ImageSource? hiSrc = await GetThumbnailSourceAsync(dispatcher, _filePath!, decodeWidthHi, cts.Token).ConfigureAwait(false);
 
                 if (cts.IsCancellationRequested) return;
                 if (hiSrc != null && localVersion == _version)
@@ -170,13 +150,13 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, System.Func<T?> func)
+        private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, Func<T?> func)
         {
             var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
             if (!dispatcher.TryEnqueue(() =>
             {
                 try { tcs.TrySetResult(func()); }
-                catch (System.Exception ex) { tcs.TrySetException(ex); }
+                catch (Exception ex) { tcs.TrySetException(ex); }
             }))
             {
                 tcs.TrySetResult(default);
@@ -184,18 +164,23 @@ namespace MangaViewer.ViewModels
             return tcs.Task;
         }
 
-        private static Task RunOnUiAsync(DispatcherQueue dispatcher, System.Action action)
+        private static Task RunOnUiAsync(DispatcherQueue dispatcher, Action action)
         {
-            var tcs = new TaskCompletionSource<object?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!dispatcher.TryEnqueue(() =>
+            return RunOnUiAsync(dispatcher, () => { action(); return (object?)null; });
+        }
+
+        private async Task<ImageSource?> GetThumbnailSourceAsync(DispatcherQueue dispatcher, string filePath, int decodeWidth, CancellationToken token)
+        {
+            if (filePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
             {
-                try { action(); tcs.TrySetResult(null); }
-                catch (System.Exception ex) { tcs.TrySetException(ex); }
-            }))
-            {
-                tcs.TrySetResult(null);
+                if (!ImageCacheService.Instance.TryGetMemoryImageBytes(filePath, out var bytes) || bytes == null)
+                    return null;
+                return await ThumbnailProviderFactory.Get().GetForBytesAsync(dispatcher, bytes, decodeWidth, token).ConfigureAwait(false);
             }
-            return tcs.Task;
+            else
+            {
+                return await ThumbnailProviderFactory.Get().GetForPathAsync(dispatcher, filePath, decodeWidth, token).ConfigureAwait(false);
+            }
         }
     }
 }

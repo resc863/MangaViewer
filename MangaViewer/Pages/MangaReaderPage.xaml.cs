@@ -9,17 +9,16 @@ using System;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
-using Microsoft.UI.Xaml.Media; // for VisualTreeHelper if needed
 using Windows.System.Threading;
 using Windows.ApplicationModel.DataTransfer; // Clipboard
 using Microsoft.UI.Input; // Pointer identifiers
 using Microsoft.UI.Xaml.Input; // Tapped
-using Microsoft.UI.Xaml.Input; // Tapped, PointerRoutedEventArgs
 using Windows.Storage; // LocalSettings
 using Microsoft.UI.Xaml.Controls.Primitives; // DragDeltaEventArgs
 using Services = MangaViewer.Services; // alias root services if needed
 using MangaViewer.Services.Thumbnails; // moved scheduler
 using System.Collections.Generic; // for viewport seed list
+using Microsoft.UI.Xaml.Media.Imaging; // for BitmapImage
 
 namespace MangaViewer.Pages
 {
@@ -210,6 +209,11 @@ namespace MangaViewer.Pages
                     ApplicationData.Current.LocalSettings.Values["ReaderPaneOpenPreferred"] = _preferredPaneOpen;
                 }
                 catch { }
+            }
+            else if (e.PropertyName == nameof(MangaViewModel.SelectedThumbnailIndex))
+            {
+                // 썸네일 선택 변경 시 큐를 즉시 재구성하여 선택된 부분부터 우선 생성
+                RebuildViewportThumbnailQueue(radius: 48);
             }
         }
 
@@ -444,29 +448,20 @@ namespace MangaViewer.Pages
             RedrawRight();
         }
 
-        /// <summary>단일 페이지 모드의 OCR 박스 렌더링.</summary>
-        private void RedrawSingle()
+        private void RedrawOcr(Grid? wrapper, Canvas? overlay, IEnumerable<BoundingBoxViewModel> boxes, BitmapImage? imageSource, bool isLeft)
         {
-            if (SingleWrapperGrid == null || SingleOverlayCanvas == null || ViewModel.LeftImageSource == null) { SingleOverlayCanvas?.Children?.Clear(); return; }
-            DrawBoxes(SingleWrapperGrid, SingleOverlayCanvas, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource.PixelWidth, ViewModel.LeftImageSource.PixelHeight, true);
-        }
-        /// <summary>좌측 페이지 OCR 박스 렌더링(양면 모드).</summary>
-        private void RedrawLeft()
-        {
-            if (LeftWrapperGrid == null || LeftOverlayCanvas == null || ViewModel.LeftImageSource == null || !ViewModel.IsTwoPageMode) { LeftOverlayCanvas?.Children?.Clear(); return; }
-            DrawBoxes(LeftWrapperGrid, LeftOverlayCanvas, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource.PixelWidth, ViewModel.LeftImageSource.PixelHeight, true);
-        }
-        /// <summary>우측 페이지 OCR 박스 렌더링.</summary>
-        private void RedrawRight()
-        {
-            if (RightWrapperGrid == null || RightOverlayCanvas == null || ViewModel.RightImageSource == null) { RightOverlayCanvas?.Children?.Clear(); return; }
-            DrawBoxes(RightWrapperGrid, RightOverlayCanvas, ViewModel.RightOcrBoxes, ViewModel.RightImageSource.PixelWidth, ViewModel.RightImageSource.PixelHeight, false);
+            if (wrapper == null || overlay == null || imageSource == null) { overlay?.Children?.Clear(); return; }
+            DrawBoxes(wrapper, overlay, boxes, imageSource.PixelWidth, imageSource.PixelHeight, isLeft);
         }
 
-        /// <summary>
-        /// 원본 픽셀 좌표 기반 박스들을 현재 컨테이너에 맞춰 스케일링해 그립니다.
-        /// </summary>
-        private void DrawBoxes(Grid wrapper, Canvas overlay, System.Collections.Generic.IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
+        /// <summary>단일 페이지 모드의 OCR 박스 렌더링.</summary>
+        private void RedrawSingle() => RedrawOcr(SingleWrapper, SingleOverlay, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource, true);
+        /// <summary>좌측 페이지 OCR 박스 렌더링(양면 모드).</summary>
+        private void RedrawLeft() => RedrawOcr(LeftWrapper, LeftOverlay, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource, true);
+        /// <summary>우측 페이지 OCR 박스 렌더링.</summary>
+        private void RedrawRight() => RedrawOcr(RightWrapper, RightOverlay, ViewModel.RightOcrBoxes, ViewModel.RightImageSource, false);
+
+        private void DrawBoxes(Grid wrapper, Canvas overlay, IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
             overlay.Children.Clear();
             double wrapperW = wrapper.ActualWidth;
@@ -486,27 +481,34 @@ namespace MangaViewer.Pages
 
             foreach (var b in boxes)
             {
-                double x = offsetX + b.OriginalX * scale;
-                double y = offsetY + b.OriginalY * scale;
-                double w = b.OriginalW * scale;
-                double h = b.OriginalH * scale;
-                if (w <= 0 || h <= 0) continue;
-                var rect = new Rectangle
-                {
-                    Width = w,
-                    Height = h,
-                    StrokeThickness = 1,
-                    Stroke = strokeBrush,
-                    Fill = fillBrush,
-                    Tag = b
-                };
-                rect.Tapped += OnOcrRectTapped;
-                rect.PointerEntered += (_, __) => rect.Opacity = 0.85;
-                rect.PointerExited += (_, __) => rect.Opacity = 1.0;
-                Canvas.SetLeft(rect, x);
-                Canvas.SetTop(rect, y);
-                overlay.Children.Add(rect);
+                var rect = CreateOcrRectangle(b, offsetX, offsetY, scale, strokeBrush, fillBrush);
+                if (rect != null) overlay.Children.Add(rect);
             }
+        }
+
+        private Rectangle CreateOcrRectangle(BoundingBoxViewModel b, double offsetX, double offsetY, double scale, SolidColorBrush strokeBrush, SolidColorBrush fillBrush)
+        {
+            double x = offsetX + b.OriginalX * scale;
+            double y = offsetY + b.OriginalY * scale;
+            double w = b.OriginalW * scale;
+            double h = b.OriginalH * scale;
+            if (w <= 0 || h <= 0) return null!; // Skip invalid boxes
+
+            var rect = new Rectangle
+            {
+                Width = w,
+                Height = h,
+                StrokeThickness = 1,
+                Stroke = strokeBrush,
+                Fill = fillBrush,
+                Tag = b
+            };
+            rect.Tapped += OnOcrRectTapped;
+            rect.PointerEntered += (_, __) => rect.Opacity = 0.85;
+            rect.PointerExited += (_, __) => rect.Opacity = 1.0;
+            Canvas.SetLeft(rect, x);
+            Canvas.SetTop(rect, y);
+            return rect;
         }
 
         private void OnOcrRectTapped(object sender, TappedRoutedEventArgs e)
@@ -571,9 +573,6 @@ namespace MangaViewer.Pages
             try { ApplicationData.Current.LocalSettings.Values["ReaderPaneWidth"] = newLen; } catch { }
         }
 
-        private void PaneResizeThumb_PointerEntered(object sender, PointerRoutedEventArgs e) { }
-        private void PaneResizeThumb_PointerMoved(object sender, PointerRoutedEventArgs e) { }
-        private void PaneResizeThumb_PointerExited(object sender, PointerRoutedEventArgs e) { }
         private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
 
         /// <summary>

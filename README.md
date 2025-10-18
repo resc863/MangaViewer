@@ -1,5 +1,3 @@
-<div align="right">[한국어 문서(README.ko.md)](./README.ko.md)</div>
-
 # MangaViewer (WinUI 3)
 
 A WinUI 3-based manga (image) reader for Windows that supports local folders, single/two-page view, reading direction toggle, cover separation, a right-side thumbnail pane, OCR overlays/copy, and e-hentai search with streaming read.
@@ -120,3 +118,43 @@ MangaViewer/
 ## License
 
 See `LICENSE.txt`.
+
+# MangaViewer
+
+Overview
+- A WinUI 3 (.NET 9) manga reader.
+- Features: folder-based reading, dual-page (cover split/merged), RTL/LTR switching, thumbnail decode/prefetch, OCR overlay, streaming gallery via `mem:` keys.
+
+Entry points (public surface)
+- `App`: application startup, logging configuration, calls `ImageCacheService.InitializeUI(DispatcherQueue)`.
+- `MainWindow`: hosts a single `MangaViewModel`, handles navigation/keyboard, enables the Mica backdrop.
+- `Pages/*`: views bound to view models.
+- `ViewModels`: exposes app state/commands/events.
+- `Services`: IO/cache/business logic.
+
+Data flow (high level)
+
+1) Load folder
+- UI (OpenFolder) → `MangaViewModel.OpenFolderCommand` → `MangaManager.LoadFolderAsync` (natural sort) → `PageChanged` event → `MangaViewModel` updates current image paths → `ImageCacheService.Get/Prefetch`.
+
+2) Page navigation
+- Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/Toggle*` → `PageChanged` → update left/right images, sync thumbnail selection, prefetch.
+
+3) Streaming
+- Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeholders) → `AddDownloadedFiles(mem:/path)` sequential feed → display progressively.
+
+4) OCR
+- `RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` → update `BoundingBoxViewModel` collections.
+
+Change checklist
+- UI thread: XAML objects (`BitmapImage`, `ObservableCollection`) must be created/modified on the UI thread. Use `DispatcherQueue` from services.
+- Cancellation/errors: long-running tasks should accept `CancellationToken`. Log errors and surface user-friendly status (`Services/Logging/Log`).
+- Performance: keep prefetch/thumbnail decode concurrency low (2–4). Use small delays to avoid UI starvation.
+- Mapping: `MangaManager` rules for cover split/RTL and page↔image mapping must stay consistent. If you change rules, update `GetImagePathsForPage`, `GetPrimaryImageIndexForPage`, and `GetPageIndexFromImageIndex` together.
+- Cache: decoded LRU capacity and memory byte cache interact. When removing memory items, evict from decoded cache too.
+
+Test guide
+- Natural sort across mixed names (numeric/alphabetic/mixed).
+- Verify page mapping across cover split/merged and RTL combinations.
+- Streaming `mem:` mixed with local files (replacement/placeholders).
+- OCR settings auto re-run when idle.

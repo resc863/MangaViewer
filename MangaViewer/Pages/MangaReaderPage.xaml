@@ -12,7 +12,7 @@
     </Page.Resources>
     <Grid Background="Transparent">
         <SplitView x:Name="ReaderSplitView"
-                   DisplayMode="Overlay"
+                   DisplayMode="Inline"
                    OpenPaneLength="160"
                    IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}"
                    PanePlacement="Right"
@@ -31,10 +31,7 @@
                            Grid.Column="0"
                            Background="Transparent"
                            DragDelta="PaneResizeThumb_DragDelta"
-                           DragCompleted="PaneResizeThumb_DragCompleted"
-                           PointerEntered="PaneResizeThumb_PointerEntered"
-                           PointerMoved="PaneResizeThumb_PointerMoved"
-                           PointerExited="PaneResizeThumb_PointerExited">
+                           DragCompleted="PaneResizeThumb_DragCompleted">
                         <Thumb.Template>
                             <ControlTemplate TargetType="Thumb">
                                 <Grid Background="Transparent">
@@ -71,11 +68,9 @@
                         </Grid.RenderTransform>
                         <Grid Background="Transparent">
                             <!-- Single Page Mode -->
-                            <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
-                                <Grid x:Name="SingleWrapper" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
-                                    <Canvas x:Name="SingleOverlay" Background="Transparent" />
-                                </Grid>
+                            <Grid x:Name="SingleWrapper" Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
+                                <Canvas x:Name="SingleOverlay" Background="Transparent" />
                             </Grid>
                             <!-- Two Page Mode -->
                             <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
