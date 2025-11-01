@@ -27,11 +27,13 @@ namespace MangaViewer.ViewModels
         private readonly MangaManager _mangaManager = new();
         private readonly ImageCacheService _imageCache = ImageCacheService.Instance;
         private readonly OcrService _ocrService = OcrService.Instance;
+        private readonly BookmarkService _bookmarkService = BookmarkService.Instance;
 
         private BitmapImage? _leftImageSource;
         private BitmapImage? _rightImageSource;
         private int _selectedThumbnailIndex = -1;
         private bool _isPaneOpen = true;
+        private bool _isBookmarkPaneOpen = false;
         private bool _isNavOpen = false;
         private bool _isLoading;
         private bool _isSinglePageMode;
@@ -50,6 +52,8 @@ namespace MangaViewer.ViewModels
         private InfoBarSeverity _ocrSeverity = InfoBarSeverity.Informational;
 
         public ReadOnlyObservableCollection<MangaPageViewModel> Thumbnails => _mangaManager.Pages;
+
+        public ObservableCollection<MangaPageViewModel> Bookmarks { get; } = new();
 
         public string? LeftImageFilePath { get; private set; }
         public string? RightImageFilePath { get; private set; }
@@ -76,13 +80,14 @@ namespace MangaViewer.ViewModels
                 if (SetProperty(ref _selectedThumbnailIndex, value))
                 {
                     ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(_selectedThumbnailIndex);
-                    if (value >= 0)
+                    if (value >=0)
                         _mangaManager.SetCurrentPageFromImageIndex(value);
                 }
             }
         }
 
         public bool IsPaneOpen { get => _isPaneOpen; set => SetProperty(ref _isPaneOpen, value); }
+        public bool IsBookmarkPaneOpen { get => _isBookmarkPaneOpen; set => SetProperty(ref _isBookmarkPaneOpen, value); }
         public bool IsNavOpen { get => _isNavOpen; set => SetProperty(ref _isNavOpen, value); }
         public bool IsLoading { get => _isLoading; private set { if (SetProperty(ref _isLoading, value)) { OnPropertyChanged(nameof(IsControlEnabled)); OnPropertyChanged(nameof(IsOpenFolderEnabled)); } } }
         public bool IsControlEnabled => !IsLoading && !IsOcrRunning;
@@ -97,10 +102,14 @@ namespace MangaViewer.ViewModels
         public RelayCommand ToggleDirectionCommand { get; }
         public RelayCommand ToggleCoverCommand { get; }
         public RelayCommand TogglePaneCommand { get; }
+        public RelayCommand ToggleBookmarkPaneCommand { get; }
         public RelayCommand ToggleNavPaneCommand { get; }
         public RelayCommand GoLeftCommand { get; }
         public RelayCommand GoRightCommand { get; }
         public AsyncRelayCommand RunOcrCommand { get; }
+        public RelayCommand AddBookmarkCommand { get; }
+        public RelayCommand RemoveBookmarkCommand { get; }
+        public RelayCommand NavigateToBookmarkCommand { get; }
 
         private readonly ObservableCollection<BoundingBoxViewModel> _leftOcrBoxes = new();
         private readonly ObservableCollection<BoundingBoxViewModel> _rightOcrBoxes = new();
@@ -124,15 +133,19 @@ namespace MangaViewer.ViewModels
             _ocrService.SettingsChanged += OnOcrSettingsChanged; // auto refresh
 
             OpenFolderCommand = new AsyncRelayCommand(async p => await OpenFolderAsync(p), _ => IsOpenFolderEnabled);
-            NextPageCommand = new RelayCommand(_ => _mangaManager.GoToNextPage(), _ => _mangaManager.TotalImages > 0);
-            PrevPageCommand = new RelayCommand(_ => _mangaManager.GoToPreviousPage(), _ => _mangaManager.TotalImages > 0);
-            ToggleDirectionCommand = new RelayCommand(_ => { _mangaManager.ToggleDirection(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
-            ToggleCoverCommand = new RelayCommand(_ => { _mangaManager.ToggleCover(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
+            NextPageCommand = new RelayCommand(_ => _mangaManager.GoToNextPage(), _ => _mangaManager.TotalImages >0);
+            PrevPageCommand = new RelayCommand(_ => _mangaManager.GoToPreviousPage(), _ => _mangaManager.TotalImages >0);
+            ToggleDirectionCommand = new RelayCommand(_ => { _mangaManager.ToggleDirection(); CancelOcr(); }, _ => _mangaManager.TotalImages >0);
+            ToggleCoverCommand = new RelayCommand(_ => { _mangaManager.ToggleCover(); CancelOcr(); }, _ => _mangaManager.TotalImages >0);
             TogglePaneCommand = new RelayCommand(_ => IsPaneOpen = !IsPaneOpen);
+            ToggleBookmarkPaneCommand = new RelayCommand(_ => IsBookmarkPaneOpen = !IsBookmarkPaneOpen);
             ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
-            GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
-            GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
-            RunOcrCommand = new AsyncRelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
+            GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages >0);
+            GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages >0);
+            RunOcrCommand = new AsyncRelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages >0 && !IsOcrRunning);
+            AddBookmarkCommand = new RelayCommand(_ => AddCurrentBookmark(), _ => _mangaManager.TotalImages >0);
+            RemoveBookmarkCommand = new RelayCommand(o => RemoveBookmark(o as MangaPageViewModel), _ => Bookmarks.Count >0);
+            NavigateToBookmarkCommand = new RelayCommand(o => NavigateToBookmark(o as MangaPageViewModel));
         }
 
         private async void OnOcrSettingsChanged(object? sender, EventArgs e)
@@ -140,9 +153,7 @@ namespace MangaViewer.ViewModels
             if (IsOcrRunning) return;
             if (LeftImageFilePath == null && RightImageFilePath == null) return;
             if (!RunOcrCommand.CanExecute(null)) return;
-            
-                await RunOcrAsync();
-            
+            await RunOcrAsync();
         }
 
         /// <summary>
@@ -155,8 +166,9 @@ namespace MangaViewer.ViewModels
             CancelOcr();
             _ocrService.ClearCache();
             _mangaManager.Clear();
-            _previousPageIndex = 0;
+            _previousPageIndex =0;
             SelectedThumbnailIndex = -1;
+            Bookmarks.Clear();
         }
 
         /// <summary>
@@ -175,11 +187,11 @@ namespace MangaViewer.ViewModels
         {
             IsStreamingGallery = false; // local load unless mem: detected
             OnPropertyChanged(nameof(IsOpenFolderEnabled));
-            if (filePaths == null || filePaths.Count == 0) return;
+            if (filePaths == null || filePaths.Count ==0) return;
 
             // NEW: handle in-memory cached gallery (mem: keys) directly
             bool allMem = true;
-            for (int i = 0; i < filePaths.Count; i++)
+            for (int i =0; i < filePaths.Count; i++)
             {
                 if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
             }
@@ -235,9 +247,38 @@ namespace MangaViewer.ViewModels
 
         private void OnMangaLoaded()
         {
-            _previousPageIndex = 0;
+            _previousPageIndex =0;
             OnPropertyChanged(nameof(Thumbnails));
             UpdateCommandStates();
+            // Load bookmarks for the new folder
+            try
+            {
+                _bookmarkService.LoadForFolder(_mangaManager.CurrentFolderPath);
+                RebuildBookmarksFromStore();
+            }
+            catch { }
+        }
+
+        private void RebuildBookmarksFromStore()
+        {
+            Bookmarks.Clear();
+            var list = _bookmarkService.GetAll();
+            foreach (var p in list)
+            {
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                // 기존: 현재 페이지 집합에 존재하는 경우에만 추가
+                // 변경: 썸네일이 없어도(현 폴더에 없더라도) 일단 목록에 추가하여 비어있는 자리로 표시
+                // 중복은 방지
+                bool exists = false;
+                foreach (var b in Bookmarks)
+                {
+                    if (string.Equals(b.FilePath, p, StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
+                }
+                if (!exists)
+                {
+                    Bookmarks.Add(new MangaPageViewModel { FilePath = p });
+                }
+            }
         }
 
         /// <summary>
@@ -249,9 +290,9 @@ namespace MangaViewer.ViewModels
             int delta = newIndex - _previousPageIndex;
             CancelOcr();
             var paths = _mangaManager.GetImagePathsForCurrentPage();
-            string? leftPath = paths.Count > 0 ? paths[0] : null;
-            string? rightPath = paths.Count > 1 ? paths[1] : null;
-            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+            string? leftPath = paths.Count >0 ? paths[0] : null;
+            string? rightPath = paths.Count >1 ? paths[1] : null;
+            if (_mangaManager.IsRightToLeft && paths.Count ==2)
                 (leftPath, rightPath) = (rightPath, leftPath);
 
             LeftImageFilePath = leftPath;
@@ -276,7 +317,7 @@ namespace MangaViewer.ViewModels
             RunOcrCommand.RaiseCanExecuteChanged();
             ClearOcr();
 
-            if (delta != 0)
+            if (delta !=0)
                 PageSlideRequested?.Invoke(this, delta);
 
             _previousPageIndex = newIndex;
@@ -292,14 +333,14 @@ namespace MangaViewer.ViewModels
             try
             {
                 var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                for (int i = 1; i <= 2; i++)
+                for (int i =1; i <=2; i++)
                 {
                     int idx = _mangaManager.CurrentPageIndex + i;
                     if (idx >= _mangaManager.TotalPages) break;
                     foreach (var p in _mangaManager.GetImagePathsForPage(idx))
                         if (!string.IsNullOrEmpty(p)) set.Add(p);
                 }
-                if (set.Count > 0) _imageCache.Prefetch(set);
+                if (set.Count >0) _imageCache.Prefetch(set);
             }
             catch (Exception ex) { Log.Error(ex, "[Prefetch] Error"); }
         }
@@ -320,14 +361,18 @@ namespace MangaViewer.ViewModels
             PrevPageCommand.RaiseCanExecuteChanged();
             ToggleDirectionCommand.RaiseCanExecuteChanged();
             ToggleCoverCommand.RaiseCanExecuteChanged();
+            TogglePaneCommand.RaiseCanExecuteChanged();
+            ToggleBookmarkPaneCommand.RaiseCanExecuteChanged();
             GoLeftCommand.RaiseCanExecuteChanged();
             GoRightCommand.RaiseCanExecuteChanged();
             RunOcrCommand.RaiseCanExecuteChanged();
+            AddBookmarkCommand.RaiseCanExecuteChanged();
+            RemoveBookmarkCommand.RaiseCanExecuteChanged();
         }
 
         public void UpdateLeftOcrContainerSize(double w, double h)
         {
-            if (w <= 0 || h <= 0) return;
+            if (w <=0 || h <=0) return;
             if (Math.Abs(w - _leftWrapperWidth) > .5 || Math.Abs(h - _leftWrapperHeight) > .5)
             {
                 _leftWrapperWidth = w; _leftWrapperHeight = h;
@@ -335,7 +380,7 @@ namespace MangaViewer.ViewModels
         }
         public void UpdateRightOcrContainerSize(double w, double h)
         {
-            if (w <= 0 || h <= 0) return;
+            if (w <=0 || h <=0) return;
             if (Math.Abs(w - _rightWrapperWidth) > .5 || Math.Abs(h - _rightWrapperHeight) > .5)
             {
                 _rightWrapperWidth = w; _rightWrapperHeight = h;
@@ -349,6 +394,42 @@ namespace MangaViewer.ViewModels
             IsInfoBarOpen = open;
         }
 
+        private void AddCurrentBookmark()
+        {
+            if (_mangaManager.TotalImages <=0) return;
+            int imageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
+            if (imageIndex <0) return;
+            if (imageIndex >= Thumbnails.Count) return;
+            var path = Thumbnails[imageIndex].FilePath;
+            if (string.IsNullOrWhiteSpace(path)) return;
+            if (_bookmarkService.Add(path))
+            {
+                // Avoid duplicates in view
+                foreach (var b in Bookmarks)
+                    if (string.Equals(b.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
+                Bookmarks.Add(new MangaPageViewModel { FilePath = path });
+            }
+        }
+
+        private void RemoveBookmark(MangaPageViewModel? vm)
+        {
+            if (vm?.FilePath == null) return;
+            if (_bookmarkService.Remove(vm.FilePath))
+            {
+                Bookmarks.Remove(vm);
+            }
+        }
+
+        private void NavigateToBookmark(MangaPageViewModel? vm)
+        {
+            if (vm?.FilePath == null) return;
+            int idx = _mangaManager.FindImageIndexByPath(vm.FilePath);
+            if (idx >=0)
+            {
+                SelectedThumbnailIndex = idx;
+            }
+        }
+
         /// <summary>
         /// 현재 표시 중인 좌/우 이미지에 대해 OCR을 실행하고 박스들을 생성합니다.
         /// </summary>
@@ -357,11 +438,11 @@ namespace MangaViewer.ViewModels
             if (IsOcrRunning) return;
             CancelOcr();
             var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
-            if (originalPaths.Count == 0) return;
+            if (originalPaths.Count ==0) return;
 
-            // Adjust ordering for right-to-left so index 0 always maps to currently displayed left page
+            // Adjust ordering for right-to-left so index0 always maps to currently displayed left page
             var paths = new List<string>(originalPaths);
-            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+            if (_mangaManager.IsRightToLeft && paths.Count ==2)
             {
                 // Display logic swaps the visual left/right when RTL. Mirror that here so OCR boxes align.
                 (paths[0], paths[1]) = (paths[1], paths[0]);
@@ -375,15 +456,15 @@ namespace MangaViewer.ViewModels
             {
                 ClearOcr();
                 SetOcrStatus($"OCR 실행 중... ({paths.Count} images)", InfoBarSeverity.Informational, true);
-                int totalBoxes = 0;
-                for (int i = 0; i < paths.Count; i++)
+                int totalBoxes =0;
+                for (int i =0; i < paths.Count; i++)
                 {
                     string p = paths[i];
                     if (string.IsNullOrWhiteSpace(p)) continue;
                     token.ThrowIfCancellationRequested();
                     var boxes = await _ocrService.GetOcrAsync(p, token);
                     foreach (var b in boxes)
-                        if (i == 0) _leftOcrBoxes.Add(b); else _rightOcrBoxes.Add(b);
+                        if (i ==0) _leftOcrBoxes.Add(b); else _rightOcrBoxes.Add(b);
                     totalBoxes += boxes.Count;
                 }
                 SetOcrStatus($"OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
@@ -427,7 +508,7 @@ namespace MangaViewer.ViewModels
         public void CreatePlaceholderPages(int count) => _mangaManager.CreatePlaceholders(count);
         public void ReplacePlaceholderWithFile(int index, string path)
         {
-            if (index < 0) return;
+            if (index <0) return;
             _mangaManager.ReplaceFileAtIndex(index, path);
         }
         public void SetExpectedTotalPages(int total) => _mangaManager.SetExpectedTotal(total);

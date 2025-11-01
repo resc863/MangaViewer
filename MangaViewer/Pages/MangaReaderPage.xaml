@@ -11,14 +11,62 @@
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Page.Resources>
     <Grid Background="Transparent">
+        <!-- Outer grid to host left bookmark pane and right reader split -->
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left Bookmark Pane (bring to front) -->
+        <Grid Grid.Column="0" Background="Transparent" Visibility="{Binding IsBookmarkPaneOpen, Converter={StaticResource BooleanToVisibilityConverter}}" Canvas.ZIndex="2">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="8"/>
+                <ColumnDefinition Width="200"/>
+            </Grid.ColumnDefinitions>
+            <Thumb x:Name="BookmarkPaneResizeThumb"
+                   Grid.Column="0"
+                   Background="Transparent"
+                   DragDelta="BookmarkPaneResizeThumb_DragDelta">
+                <Thumb.Template>
+                    <ControlTemplate TargetType="Thumb">
+                        <Grid Background="Transparent">
+                            <Border Width="1"
+                                    HorizontalAlignment="Left"
+                                    Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Thumb.Template>
+            </Thumb>
+            <ListView x:Name="BookmarksList"
+                      Grid.Column="1"
+                      Background="Transparent"
+                      ItemsSource="{Binding Bookmarks}"
+                      SelectionMode="Single"
+                      IsItemClickEnabled="True"
+                      ItemClick="BookmarksList_ItemClick"
+                      ContainerContentChanging="BookmarksList_ContainerContentChanging">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
+                        <Grid>
+                            <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
+                            <Button Content="제거" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,5,5,0" Click="RemoveBookmark_Click"/>
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+        </Grid>
+
+        <!-- Main Reader Area (existing right-side thumbnails SplitView) -->
         <SplitView x:Name="ReaderSplitView"
+                   Grid.Column="1"
                    DisplayMode="Inline"
                    OpenPaneLength="160"
                    IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}"
                    PanePlacement="Right"
                    PaneBackground="Transparent"
                    Background="Transparent"
-                   SizeChanged="ReaderSplitView_SizeChanged">
+                   SizeChanged="ReaderSplitView_SizeChanged"
+                   Canvas.ZIndex="1">
             <SplitView.Pane>
                 <!-- Resizable pane: left grip thumb + content listview -->
                 <Grid Background="Transparent">

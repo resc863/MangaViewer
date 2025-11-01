@@ -1,7 +1,7 @@
 ﻿// Project: MangaViewer
 // File: Services/MangaManager.cs
 // Purpose: Loads images from a folder (top-level only), maintains logical page layout (single/two-page),
-//          and exposes navigation and mapping between image indices and page indices.
+// and exposes navigation and mapping between image indices and page indices.
 
 using System;
 using System.Collections.Generic;
@@ -44,6 +44,8 @@ namespace MangaViewer.Services
         public int TotalImages => _pages.Count;
         public int TotalPages => GetMaxPageIndex() + 1;
 
+        public string? CurrentFolderPath { get; private set; }
+
         public MangaManager()
         {
             _dispatcher = DispatcherQueue.GetForCurrentThread();
@@ -59,6 +61,7 @@ namespace MangaViewer.Services
 
             _pages.Clear();
             CurrentPageIndex = 0;
+            CurrentFolderPath = folder?.Path;
             var dispatcher = _dispatcher ?? DispatcherQueue.GetForCurrentThread();
 
             // 파일 수집 + 자연 정렬 (비동기, LINQ 체인 제거)
@@ -125,6 +128,7 @@ namespace MangaViewer.Services
         {
             _pages.Clear();
             CurrentPageIndex = 0;
+            CurrentFolderPath = null;
             RaiseMangaLoaded();
             RaisePageChanged();
         }
@@ -301,6 +305,17 @@ namespace MangaViewer.Services
         {
             if (imageIndex < 0 || imageIndex >= _pages.Count) return 0;
             return IsCoverSeparate ? (imageIndex == 0 ? 0 : 1 + (imageIndex - 1) / 2) : imageIndex / 2;
+        }
+
+        public int FindImageIndexByPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return -1;
+            for (int i = 0; i < _pages.Count; i++)
+            {
+                if (string.Equals(_pages[i].FilePath, path, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
         }
 
         private static string ToNaturalSortKey(string name) =>

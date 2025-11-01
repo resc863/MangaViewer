@@ -45,6 +45,17 @@
                             <FontIcon Glyph="&#xE70e;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
+                    <AppBarToggleButton ToolTipService.ToolTip="북마크 패널"
+                                         IsChecked="{Binding IsBookmarkPaneOpen, Mode=TwoWay}">
+                        <AppBarToggleButton.Icon>
+                            <FontIcon Glyph="&#xE735;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarToggleButton.Icon>
+                    </AppBarToggleButton>
+                    <AppBarButton Label="북마크 추가" Command="{Binding AddBookmarkCommand}">
+                        <AppBarButton.Icon>
+                            <FontIcon Glyph="&#xE141;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
                     <AppBarSeparator/>
                     <AppBarButton Label="폴더 열기"
                                   Click="OpenFolder_Click"

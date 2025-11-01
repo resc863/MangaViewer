@@ -42,6 +42,9 @@ namespace MangaViewer.Pages
         private const double PaneMinWidth = 120;
         private const double PaneMaxWidth = 420;
 
+        private const double BookmarkPaneMinWidth = 120;
+        private const double BookmarkPaneMaxWidth = 420;
+
         private int _prefetchRadius = 24;
         private int _prefetchRadiusIdle = 48;
         private DateTime _lastScrollTime = DateTime.MinValue;
@@ -95,10 +98,18 @@ namespace MangaViewer.Pages
                     var d = Convert.ToDouble(v);
                     ReaderSplitView.OpenPaneLength = Math.Clamp(d, PaneMinWidth, PaneMaxWidth);
                 }
+                if (settings.Values.TryGetValue("BookmarkPaneWidth", out var bv) && bv is not null)
+                {
+                    var d2 = Convert.ToDouble(bv);
+                    if (BookmarksList?.Parent is Grid g)
+                    {
+                        g.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(d2, BookmarkPaneMinWidth, BookmarkPaneMaxWidth));
+                    }
+                }
             }
             catch { }
 
-            // 최초 로드 직후: 현재 뷰포트 중심부터 위/아래 확장 순서로 대기열 재구성 시도
+            // initial kick
             _ = DispatcherQueue.TryEnqueue(() => RebuildViewportThumbnailQueue(radius: 48));
         }
 
@@ -152,6 +163,11 @@ namespace MangaViewer.Pages
                     incc.CollectionChanged -= OnThumbsChanged;
                 foreach (var p in ViewModel.Thumbnails)
                     p.PropertyChanged -= OnPagePropertyChanged;
+                // Unsubscribe bookmarks
+                if (ViewModel.Bookmarks is INotifyCollectionChanged bincc)
+                    bincc.CollectionChanged -= OnBookmarksChanged;
+                foreach (var b in ViewModel.Bookmarks)
+                    b.PropertyChanged -= OnPagePropertyChanged;
                 ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             }
         }
@@ -191,8 +207,50 @@ namespace MangaViewer.Pages
             foreach (var page in ViewModel.Thumbnails)
                 SubscribePage(page);
 
+            // Subscribe to Bookmarks changes to kick decode for newly added ones
+            if (ViewModel.Bookmarks is INotifyCollectionChanged bincc)
+            {
+                bincc.CollectionChanged -= OnBookmarksChanged;
+                bincc.CollectionChanged += OnBookmarksChanged;
+            }
+            // Kick for existing bookmarks on hook
+            foreach (var bm in ViewModel.Bookmarks)
+            {
+                bm.PropertyChanged -= OnPagePropertyChanged;
+                bm.PropertyChanged += OnPagePropertyChanged;
+                if (!string.IsNullOrEmpty(bm.FilePath) && !bm.HasThumbnail && !bm.IsThumbnailLoading)
+                    ThumbnailDecodeScheduler.Instance.EnqueueBookmark(bm, bm.FilePath, DispatcherQueue);
+            }
+
             StartThumbnailAutoRefresh();
             RedrawAllOcr();
+        }
+
+        private void OnBookmarksChanged(object? sender, NotifyCollectionChangedEventArgs e)
+        {
+            if (e.NewItems != null)
+            {
+                foreach (var item in e.NewItems)
+                {
+                    if (item is MangaPageViewModel m)
+                    {
+                        m.PropertyChanged -= OnPagePropertyChanged;
+                        m.PropertyChanged += OnPagePropertyChanged;
+                        if (!string.IsNullOrEmpty(m.FilePath) && !m.HasThumbnail && !m.IsThumbnailLoading)
+                            ThumbnailDecodeScheduler.Instance.EnqueueBookmark(m, m.FilePath, DispatcherQueue);
+                    }
+                }
+            }
+            if (e.OldItems != null)
+            {
+                foreach (var item in e.OldItems)
+                {
+                    if (item is MangaPageViewModel m)
+                    {
+                        m.PropertyChanged -= OnPagePropertyChanged;
+                    }
+                }
+            }
         }
 
         private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -434,6 +492,39 @@ namespace MangaViewer.Pages
             }
         }
 
+        private void BookmarksList_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+        {
+            if (args.Item is not MangaPageViewModel vm) return;
+            if (args.InRecycleQueue)
+            {
+                vm.UnloadThumbnail();
+            }
+            else
+            {
+                string path = vm.FilePath ?? string.Empty;
+                // Use dedicated API so bookmark requests won't be pruned by viewport queue rebuilds
+                ThumbnailDecodeScheduler.Instance.EnqueueBookmark(vm, path, DispatcherQueue);
+            }
+        }
+
+        private void BookmarksList_ItemClick(object sender, ItemClickEventArgs e)
+        {
+            if (e.ClickedItem is MangaPageViewModel vm && DataContext is MangaViewModel mvm)
+            {
+                // navigate to this bookmark
+                var param = vm; // same instance
+                mvm.NavigateToBookmarkCommand.Execute(vm);
+            }
+        }
+
+        private void RemoveBookmark_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.DataContext is MangaPageViewModel vm && DataContext is MangaViewModel mvm)
+            {
+                mvm.RemoveBookmarkCommand.Execute(vm);
+            }
+        }
+
         private void OnLeftOcrContainerSizeChanged(object sender, SizeChangedEventArgs e) => RedrawLeft();
         private void OnRightOcrContainerSizeChanged(object sender, SizeChangedEventArgs e) => RedrawRight();
         private void OnSingleOcrContainerSizeChanged(object sender, SizeChangedEventArgs e) => RedrawSingle();
@@ -646,6 +737,18 @@ namespace MangaViewer.Pages
 
             // 대기열 교체(거리 > 200 제외는 스케줄러에서 처리)
             ThumbnailDecodeScheduler.Instance.ReplacePendingWithViewportFirst(seeds, pivot, DispatcherQueue);
+        }
+
+        private void BookmarkPaneResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
+        {
+            if (BookmarksList?.Parent is Grid g)
+            {
+                double cur = g.ColumnDefinitions[1].Width.Value;
+                double newLen = cur + e.HorizontalChange; // thumb is on left edge, drag right expands
+                newLen = Math.Clamp(newLen, BookmarkPaneMinWidth, BookmarkPaneMaxWidth);
+                g.ColumnDefinitions[1].Width = new GridLength(newLen);
+                try { ApplicationData.Current.LocalSettings.Values["BookmarkPaneWidth"] = newLen; } catch { }
+            }
         }
     }
 }
