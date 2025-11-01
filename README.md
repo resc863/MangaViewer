@@ -122,7 +122,7 @@ See `LICENSE.txt`.
 # MangaViewer
 
 Overview
-- A WinUI 3 (.NET 9) manga reader.
+- A WinUI3 (.NET9) manga reader.
 - Features: folder-based reading, dual-page (cover split/merged), RTL/LTR switching, thumbnail decode/prefetch, OCR overlay, streaming gallery via `mem:` keys.
 
 Entry points (public surface)
@@ -158,3 +158,49 @@ Test guide
 - Verify page mapping across cover split/merged and RTL combinations.
 - Streaming `mem:` mixed with local files (replacement/placeholders).
 - OCR settings auto re-run when idle.
+
+# Bookmark feature
+
+Purpose
+- Save/manage bookmarks per folder for the page you are reading.
+- Auto-restore bookmarks when the same folder is opened again.
+
+Usage (UI)
+- Open/close the bookmark panel: top toolbar bookmark toggle (`IsBookmarkPaneOpen`).
+- Add current page to bookmarks: "Add bookmark" button (`AddBookmarkCommand`).
+- Navigate to a bookmark: click an item (`NavigateToBookmarkCommand`).
+- Remove a bookmark: click the "Remove" button on the item (`RemoveBookmarkCommand`).
+- Resize the panel: drag the left border (width is persisted in local settings).
+
+Persistence
+- Scope: per folder.
+- Storage file: `bookmarks.json` inside the selected folder (auto created/updated).
+- JSON schema: `{ "bookmarks": [ "full_path_1", "full_path_2", ... ] }`
+- De-duplication: adding an existing path is ignored.
+- Error tolerant: read/write errors are ignored to avoid breaking the app.
+
+Behavior
+- On folder load completion, `bookmarks.json` is read and the list is rebuilt.
+- Items can appear even if the actual file is currently missing; thumbnail/navigation may fail until the file exists again.
+- When starting streaming gallery (`BeginStreamingGallery`), the bookmark list is cleared.
+
+Developer notes
+- Service: `BookmarkService` (singleton)
+ - `LoadForFolder(string? folderPath)` — load current folder bookmarks into memory
+ - `GetAll() : IReadOnlyList<string>` — return all bookmark paths
+ - `Contains(string path) : bool`
+ - `Add(string path) : bool` — persists immediately on success
+ - `Remove(string path) : bool` — persists immediately on success
+- ViewModel: `MangaViewModel`
+ - Collection: `Bookmarks (ObservableCollection<MangaPageViewModel>)`
+ - Panel toggle: `IsBookmarkPaneOpen (bool)`
+ - Commands: `AddBookmarkCommand`, `RemoveBookmarkCommand`, `NavigateToBookmarkCommand`, `ToggleBookmarkPaneCommand`
+ - Folder load timing: `OnMangaLoaded` → `BookmarkService.LoadForFolder(...)` → `RebuildBookmarksFromStore()`
+- UI
+ - Toolbar toggle/button: `MainWindow.xaml`
+ - Panel/list/buttons: `MangaReaderPage.xaml` `BookmarksList`
+ - Thumbnails: `ThumbnailDecodeScheduler.EnqueueBookmark(...)` asynchronously decodes bookmark thumbnails (separate from the viewport queue)
+- Local settings key (width): `BookmarkPaneWidth` (`ApplicationData.Current.LocalSettings`)
+
+Limitations
+- Bookmarks are path-based. If files/folders are renamed or moved, navigation and thumbnail loading for those items may fail.
