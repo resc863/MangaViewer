@@ -48,10 +48,10 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 ## Requirements
 
 - OS: Windows 11 recommended
-  - TargetFramework: `net9.0-windows10.0.26100.0` (Windows SDK 26100)
+  - TargetFramework: `net10.0-windows10.0.26100.0` (Windows SDK 26100)
   - SupportedOSPlatformVersion: `10.0.22621.0`
 - SDK/Tooling
-  - .NET SDK 9.0+
+  - .NET SDK 10.0+
   - Windows 11 SDK 10.0.26100.x
   - Windows App SDK 1.7.x (via NuGet)
 
@@ -59,7 +59,7 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 
 VS Code tasks (updated):
 - `restore`
-- `build Debug x64` / `x86` / `ARM64` targeting `net9.0-windows10.0.26100.0`
+- `build Debug x64` / `x86` / `ARM64` targeting `net10.0-windows10.0.26100.0`
 
 PowerShell (pwsh) manual commands:
 
@@ -68,7 +68,7 @@ PowerShell (pwsh) manual commands:
 dotnet restore .\MangaViewer\MangaViewer.csproj
 
 # Build (x64 Debug)
-dotnet build .\MangaViewer\MangaViewer.csproj -c Debug -f net9.0-windows10.0.26100.0 -p:Platform=x64
+dotnet build .\MangaViewer\MangaViewer.csproj -c Debug -f net10.0-windows10.0.26100.0 -p:Platform=x64
 
 # Run (x64 Debug)
 dotnet run --project .\MangaViewer\MangaViewer.csproj -c Debug -p:Platform=x64
@@ -122,7 +122,7 @@ See `LICENSE.txt`.
 # MangaViewer
 
 Overview
-- A WinUI3 (.NET9) manga reader.
+- A WinUI3 (.NET10) manga reader.
 - Features: folder-based reading, dual-page (cover split/merged), RTL/LTR switching, thumbnail decode/prefetch, OCR overlay, streaming gallery via `mem:` keys.
 
 Entry points (public surface)

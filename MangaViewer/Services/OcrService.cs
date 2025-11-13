@@ -241,28 +241,8 @@ namespace MangaViewer.Services
                         transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                     }
 
-                    SoftwareBitmap toOcr;
-                    try
-                    {
-                        toOcr = await decoder.GetSoftwareBitmapAsync(
-                            BitmapPixelFormat.Gray8,
-                            BitmapAlphaMode.Ignore,
-                            transform,
-                            ExifOrientationMode.RespectExifOrientation,
-                            ColorManagementMode.DoNotColorManage);
-                    }
-                    catch
-                    {
-                        using var oriented = await decoder.GetSoftwareBitmapAsync(
-                            BitmapPixelFormat.Bgra8,
-                            BitmapAlphaMode.Ignore,
-                            transform,
-                            ExifOrientationMode.RespectExifOrientation,
-                            ColorManagementMode.DoNotColorManage);
-
-                        try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
-                        catch { toOcr = oriented; }
-                    }
+                    // Decoding helper avoids unsupported pixel format exceptions/log noise.
+                    var toOcr = await DecodeForOcrAsync(decoder, transform);
 
                     var ocr = await engine.RecognizeAsync(toOcr);
 
@@ -322,29 +302,8 @@ namespace MangaViewer.Services
                     transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                 }
 
-                SoftwareBitmap toOcr;
-                try
-                {
-                    toOcr = await decoder.GetSoftwareBitmapAsync(
-                        BitmapPixelFormat.Gray8,
-                        BitmapAlphaMode.Ignore,
-                        transform,
-                        ExifOrientationMode.RespectExifOrientation,
-                        ColorManagementMode.DoNotColorManage);
-                }
-                catch
-                {
-                    using var oriented = await decoder.GetSoftwareBitmapAsync(
-                        BitmapPixelFormat.Bgra8,
-                        BitmapAlphaMode.Ignore,
-                        transform,
-                        ExifOrientationMode.RespectExifOrientation,
-                        ColorManagementMode.DoNotColorManage);
-
-                    try { toOcr = SoftwareBitmap.Convert(oriented, BitmapPixelFormat.Gray8); }
-                    catch { toOcr = oriented; }
-                }
-
+                cancellationToken.ThrowIfCancellationRequested();
+                var toOcr = await DecodeForOcrAsync(decoder, transform);
                 cancellationToken.ThrowIfCancellationRequested();
                 var ocr = await engine.RecognizeAsync(toOcr);
                 cancellationToken.ThrowIfCancellationRequested();
@@ -529,6 +488,45 @@ namespace MangaViewer.Services
                 return await Windows.Storage.Streams.FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask(token);
             }
             catch { return null; }
+        }
+
+        /// <summary>
+        /// 디코더로부터 OCR에 적합한 SoftwareBitmap을 생성합니다.
+        /// 원본 픽셀 포맷을 우선 사용 후 필요 시 Gray8/Bgra8으로 변환해 예외 및 WinRT unsupported 로그를 회피합니다.
+        /// </summary>
+        private static async Task<SoftwareBitmap> DecodeForOcrAsync(BitmapDecoder decoder, BitmapTransform transform)
+        {
+            SoftwareBitmap bitmap;
+            // 1) 시도: 원본 포맷 (unsupported 예외 최소화)
+            try
+            {
+                bitmap = await decoder.GetSoftwareBitmapAsync(decoder.BitmapPixelFormat, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
+            }
+            catch
+            {
+                // 2) fallback: Bgra8 (일반적으로 대부분 지원)
+                try
+                {
+                    bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
+                }
+                catch
+                {
+                    // 3) 최종 fallback: 기본 호출
+                    bitmap = await decoder.GetSoftwareBitmapAsync();
+                }
+            }
+
+            // 4) 포맷이 OCR 엔진 허용 포맷(Gray8/Bgra8)이 아닌 경우 변환 시도
+            if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Gray8 && bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8)
+            {
+                try
+                {
+                    var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Gray8);
+                    bitmap = converted;
+                }
+                catch { /* 변환 실패시 원본 그대로 사용 */ }
+            }
+            return bitmap;
         }
     }
 }
