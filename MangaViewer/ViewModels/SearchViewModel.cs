@@ -86,7 +86,7 @@ public sealed class EhentaiGalleryDetailParser : IGalleryDetailParser
 public class GalleryItemViewModel : BaseViewModel
 {
     // Precompiled regex for title cleaning
-    private static readonly Regex _cleanTitleRegex = new(@"^(?:[\[(][^\])]++[\])]\s*)+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+    private static readonly Regex _cleanTitleRegex = new(@"^(?:[\[(](?>[^\]\)]+)[\])]\s*)+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     public string? GalleryId { get; set; }
     public string? GalleryUrl { get; set; }

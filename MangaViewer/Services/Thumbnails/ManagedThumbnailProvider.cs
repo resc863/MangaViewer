@@ -70,43 +70,31 @@ namespace MangaViewer.Services.Thumbnails
         {
             if (data == null || data.Length == 0) return null;
 
-            InMemoryRandomAccessStream? ras = null;
-            try
+            var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!dispatcher.TryEnqueue(async () =>
             {
-                // DataWriter 제거, 직접 WriteAsync 사용
-                ras = new InMemoryRandomAccessStream();
-                await ras.WriteAsync(data.AsBuffer());
-                ras.Seek(0);
-
-                var sb = await DecodeAsync(ras, maxDecodeDim, ct).ConfigureAwait(false);
-                ras.Dispose();
-                if (sb == null) return null;
-
-                // Produce BitmapImage on UI thread
-                var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
-                if (!dispatcher.TryEnqueue(async () =>
+                try
                 {
-                    try
+                    using var ras = new InMemoryRandomAccessStream();
+                    await ras.WriteAsync(data.AsBuffer());
+                    ras.Seek(0);
+
+                    var img = new BitmapImage
                     {
-                        var img = new BitmapImage();
-                        img.SetSource(ras);
-                        tcs.TrySetResult(img);
-                    }
-                    catch
-                    {
-                        tcs.TrySetResult(null);
-                    }
-                }))
-                {
-                    return null;
+                        DecodePixelWidth = maxDecodeDim
+                    };
+                    await img.SetSourceAsync(ras);
+                    tcs.TrySetResult(img);
                 }
-                return await tcs.Task.ConfigureAwait(false);
-            }
-            catch
+                catch
+                {
+                    tcs.TrySetResult(null);
+                }
+            }))
             {
-                ras?.Dispose();
                 return null;
             }
+            return await tcs.Task.ConfigureAwait(false);
         }
 
         // Decode downscaled BGRA8 SoftwareBitmap honoring EXIF orientation and sRGB color management.
