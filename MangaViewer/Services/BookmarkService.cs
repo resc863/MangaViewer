@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
 
 namespace MangaViewer.Services
@@ -9,6 +10,7 @@ namespace MangaViewer.Services
     /// <summary>
     /// Per-folder bookmark persistence. Stores a JSON file in the opened folder.
     /// JSON shape: { "bookmarks": [ "fullPath1", "fullPath2", ... ] }
+    /// AOT-friendly: manual JSON build/parse (avoids generic reflection-based serialization).
     /// </summary>
     public sealed class BookmarkService
     {
@@ -17,118 +19,96 @@ namespace MangaViewer.Services
 
         private string? _currentFolderPath;
         private readonly HashSet<string> _items = new(StringComparer.OrdinalIgnoreCase);
-
         private const string FileName = "bookmarks.json";
 
-        private BookmarkService()
-        {
-        }
+        private BookmarkService() { }
 
         public void LoadForFolder(string? folderPath)
         {
             _items.Clear();
             _currentFolderPath = null;
-
-            if (string.IsNullOrWhiteSpace(folderPath))
-            {
-                return;
-            }
-
+            if (string.IsNullOrWhiteSpace(folderPath)) return;
             _currentFolderPath = folderPath;
-
             try
             {
                 var filePath = Path.Combine(folderPath, FileName);
-                if (!File.Exists(filePath))
-                {
-                    // Create an empty file the first time a folder is opened.
-                    Save();
-                    return;
-                }
-
+                if (!File.Exists(filePath)) { Save(); return; }
                 var json = File.ReadAllText(filePath);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    return;
-                }
-
-                var doc = JsonSerializer.Deserialize<BookmarkFile>(json);
-                if (doc?.Bookmarks != null)
-                {
-                    foreach (var p in doc.Bookmarks)
-                    {
-                        if (!string.IsNullOrWhiteSpace(p))
-                        {
-                            _items.Add(p);
-                        }
-                    }
-                }
+                if (string.IsNullOrWhiteSpace(json)) return;
+                ParseJson(json);
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
 
         public IReadOnlyList<string> GetAll() => _items.ToList();
-
         public bool Contains(string path) => _items.Contains(path);
-
         public bool Add(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return false;
-            }
-
-            if (_items.Add(path))
-            {
-                Save();
-                return true;
-            }
-
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            if (_items.Add(path)) { Save(); return true; }
             return false;
         }
-
         public bool Remove(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return false;
-            }
-
-            if (_items.Remove(path))
-            {
-                Save();
-                return true;
-            }
-
+            if (string.IsNullOrWhiteSpace(path)) return false;
+            if (_items.Remove(path)) { Save(); return true; }
             return false;
         }
 
         private void Save()
         {
-            if (string.IsNullOrWhiteSpace(_currentFolderPath))
-            {
-                return;
-            }
-
+            if (string.IsNullOrWhiteSpace(_currentFolderPath)) return;
             try
             {
                 var filePath = Path.Combine(_currentFolderPath, FileName);
-                var model = new BookmarkFile { Bookmarks = _items.ToList() };
-                var json = JsonSerializer.Serialize(model, new JsonSerializerOptions { WriteIndented = true });
+                var json = BuildJson(_items);
                 File.WriteAllText(filePath, json);
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
 
-        private sealed class BookmarkFile
+        // Manual JSON builder (minimal escaping for quotes and backslashes)
+        private static string BuildJson(IEnumerable<string> items)
         {
-            public List<string> Bookmarks { get; set; } = new();
+            var sb = new StringBuilder();
+            sb.Append("{\"bookmarks\": [");
+            bool first = true;
+            foreach (var it in items)
+            {
+                if (string.IsNullOrWhiteSpace(it)) continue;
+                if (!first) sb.Append(',');
+                first = false;
+                sb.Append('"');
+                foreach (char c in it)
+                {
+                    if (c == '\\') sb.Append("\\\\");
+                    else if (c == '"') sb.Append("\\\"");
+                    else sb.Append(c);
+                }
+                sb.Append('"');
+            }
+            sb.Append("]}");
+            return sb.ToString();
+        }
+
+        private void ParseJson(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("bookmarks", out var arr) && arr.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var el in arr.EnumerateArray())
+                    {
+                        if (el.ValueKind == JsonValueKind.String)
+                        {
+                            var v = el.GetString();
+                            if (!string.IsNullOrWhiteSpace(v)) _items.Add(v);
+                        }
+                    }
+                }
+            }
+            catch { }
         }
     }
 }

@@ -4,18 +4,9 @@ namespace MangaViewer.Services.Thumbnails
 {
     public static class ThumbnailProviderFactory
     {
-        private static IThumbnailProvider? _instance;
-
-        public static IThumbnailProvider Get()
-        {
-            if (_instance != null) return _instance;
-            _instance = new ManagedThumbnailProvider();
-            return _instance;
-        }
-
-        public static void ResetForTesting(IThumbnailProvider? provider = null)
-        {
-            _instance = provider;
-        }
+        // Pre-create single provider instance (no lazy path JIT) for AOT friendliness.
+        public static readonly IThumbnailProvider Instance = new ManagedThumbnailProvider();
+        public static IThumbnailProvider Get() => Instance;
+        public static void ResetForTesting(IThumbnailProvider? provider = null) { /* testing shim no-op in AOT optimized mode */ }
     }
 }

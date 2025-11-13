@@ -49,6 +49,8 @@ namespace MangaViewer.Pages
         private int _prefetchRadiusIdle = 48;
         private DateTime _lastScrollTime = DateTime.MinValue;
 
+        private readonly Queue<Rectangle> _rectPool = new();
+
         public MangaReaderPage()
         {
             InitializeComponent();
@@ -554,6 +556,11 @@ namespace MangaViewer.Pages
 
         private void DrawBoxes(Grid wrapper, Canvas overlay, IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
+            // Pool recycle
+            foreach (var child in overlay.Children)
+            {
+                if (child is Rectangle r) _rectPool.Enqueue(r);
+            }
             overlay.Children.Clear();
             double wrapperW = wrapper.ActualWidth;
             double wrapperH = wrapper.ActualHeight;
@@ -563,42 +570,24 @@ namespace MangaViewer.Pages
             double displayH = imgPixelH * scale;
             double offsetX = (wrapperW - displayW) / 2.0;
             double offsetY = (wrapperH - displayH) / 2.0;
-
-            var strokeBrush = new SolidColorBrush(isLeft ? Colors.Yellow : Colors.DeepSkyBlue);
-            byte a = 0x40;
-            var fillColor = isLeft ? Colors.Yellow : Colors.DeepSkyBlue;
-            fillColor.A = a;
-            var fillBrush = new SolidColorBrush(fillColor);
-
+            var strokeColor = isLeft ? Colors.Yellow : Colors.DeepSkyBlue;
+            var fillColor = strokeColor; fillColor.A = 0x40;
             foreach (var b in boxes)
             {
-                var rect = CreateOcrRectangle(b, offsetX, offsetY, scale, strokeBrush, fillBrush);
-                if (rect != null) overlay.Children.Add(rect);
+                double w = b.OriginalW * scale; double h = b.OriginalH * scale; if (w <= 0 || h <= 0) continue;
+                var rect = _rectPool.Count > 0 ? _rectPool.Dequeue() : CreatePooledRectangle();
+                rect.Width = w; rect.Height = h; rect.Tag = b; rect.Stroke = new SolidColorBrush(strokeColor); rect.Fill = new SolidColorBrush(fillColor);
+                double x = offsetX + b.OriginalX * scale; double y = offsetY + b.OriginalY * scale;
+                Canvas.SetLeft(rect, x); Canvas.SetTop(rect, y);
+                overlay.Children.Add(rect);
             }
         }
-
-        private Rectangle CreateOcrRectangle(BoundingBoxViewModel b, double offsetX, double offsetY, double scale, SolidColorBrush strokeBrush, SolidColorBrush fillBrush)
+        private Rectangle CreatePooledRectangle()
         {
-            double x = offsetX + b.OriginalX * scale;
-            double y = offsetY + b.OriginalY * scale;
-            double w = b.OriginalW * scale;
-            double h = b.OriginalH * scale;
-            if (w <= 0 || h <= 0) return null!; // Skip invalid boxes
-
-            var rect = new Rectangle
-            {
-                Width = w,
-                Height = h,
-                StrokeThickness = 1,
-                Stroke = strokeBrush,
-                Fill = fillBrush,
-                Tag = b
-            };
+            var rect = new Rectangle { StrokeThickness = 1 };
             rect.Tapped += OnOcrRectTapped;
             rect.PointerEntered += (_, __) => rect.Opacity = 0.85;
             rect.PointerExited += (_, __) => rect.Opacity = 1.0;
-            Canvas.SetLeft(rect, x);
-            Canvas.SetTop(rect, y);
             return rect;
         }
 

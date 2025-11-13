@@ -6,8 +6,6 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Windows.Storage;
@@ -27,13 +25,10 @@ namespace MangaViewer.Services
         public event Action? PageChanged;
 
         private readonly DispatcherQueue _dispatcher;
-
         private static readonly HashSet<string> s_imageExtensions = new(StringComparer.OrdinalIgnoreCase)
         { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
-        private static readonly Regex s_digitsRegex = new(@"\d+", RegexOptions.Compiled);
 
         private CancellationTokenSource? _loadCts;
-
         private readonly ObservableCollection<MangaPageViewModel> _pages = new();
         public ReadOnlyObservableCollection<MangaPageViewModel> Pages { get; }
 
@@ -151,71 +146,56 @@ namespace MangaViewer.Services
         /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> filePaths)
         {
-            var incoming = filePaths?.Where(f => !string.IsNullOrWhiteSpace(f)).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? new();
-            if (incoming.Count == 0) return;
+            if (filePaths == null) return;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var list = new List<string>();
+            foreach (var p in filePaths)
+            {
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                if (seen.Add(p)) list.Add(p);
+            }
+            if (list.Count == 0) return;
+            list.Sort(StringComparer.OrdinalIgnoreCase);
 
-            // 위치 추출: 이름에 포함된 숫자(mem:gid:####.ext 는 ####) 기반
-            foreach (var path in incoming.OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+            foreach (var path in list)
             {
                 bool isMem = path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase);
                 string name = System.IO.Path.GetFileNameWithoutExtension(path) ?? string.Empty;
-                int index = -1;
-                if (isMem)
-                {
-                    int lastColon = path.LastIndexOf(':');
-                    if (lastColon >= 0 && lastColon + 5 <= path.Length)
-                    {
-                        var numSpan = path.AsSpan(lastColon + 1, Math.Min(4, path.Length - (lastColon + 1)));
-                        if (int.TryParse(numSpan, out int parsed)) index = parsed - 1;
-                    }
-                }
-                else
-                {
-                    index = ExtractNumericIndex(name) - 1; // zero-based
-                }
-
+                int index = isMem ? ExtractMemIndex(path) : (ExtractNumericIndex(name) - 1);
                 if (index < 0) continue;
-
-                if (index >= _pages.Count)
-                {
-                    SetExpectedTotal(index + 1);
-                }
-
+                if (index >= _pages.Count) SetExpectedTotal(index + 1);
                 var vm = _pages[index];
-                if (vm.FilePath == null)
-                {
-                    vm.FilePath = path; // 채움
-                }
+                if (vm.FilePath == null) vm.FilePath = path;
                 else
                 {
                     if (isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (!isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { vm.FilePath = path; }
+                    if (!isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) vm.FilePath = path;
                 }
             }
             RaisePageChanged();
         }
 
-        /// <summary>
-        /// 주어진 인덱스의 파일을 직접 교체/설정합니다. 필요 시 placeholder를 확장합니다.
-        /// </summary>
-        public void ReplaceFileAtIndex(int index, string path)
+        private static int ExtractMemIndex(string memPath)
         {
-            if (index < 0 || string.IsNullOrWhiteSpace(path)) return;
-            if (index >= _pages.Count)
-            {
-                SetExpectedTotal(index + 1);
-            }
-            var vm = _pages[index];
-            vm.FilePath = path;
-            RaisePageChanged();
+            int lastColon = memPath.LastIndexOf(':');
+            if (lastColon < 0) return -1;
+            int start = lastColon + 1;
+            int len = 0;
+            while (start + len < memPath.Length && len < 4 && char.IsDigit(memPath[start + len])) len++;
+            if (len == 0) return -1;
+            if (int.TryParse(memPath.AsSpan(start, len), out int v)) return v - 1;
+            return -1;
         }
 
         private static int ExtractNumericIndex(string name)
         {
             if (string.IsNullOrEmpty(name)) return -1;
-            var m = s_digitsRegex.Match(name);
-            if (!m.Success) return -1;
-            if (int.TryParse(m.Value, out int v)) return v;
+            int i = 0;
+            while (i < name.Length && !char.IsDigit(name[i])) i++;
+            if (i >= name.Length) return -1;
+            int start = i;
+            while (i < name.Length && char.IsDigit(name[i])) i++;
+            if (int.TryParse(name.AsSpan(start, i - start), out int v)) return v;
             return -1;
         }
 
@@ -318,8 +298,25 @@ namespace MangaViewer.Services
             return -1;
         }
 
-        private static string ToNaturalSortKey(string name) =>
-            s_digitsRegex.Replace(name, m => m.Value.PadLeft(10, '0'));
+        private static string ToNaturalSortKey(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return string.Empty;
+            var sb = new System.Text.StringBuilder(name.Length + 16);
+            int i = 0;
+            while (i < name.Length)
+            {
+                char c = name[i];
+                if (!char.IsDigit(c)) { sb.Append(c); i++; continue; }
+                int start = i;
+                while (i < name.Length && char.IsDigit(name[i])) i++;
+                int len = i - start;
+                // pad numeric part to fixed width (10) for lexical ordering
+                for (int pad = 10 - len; pad > 0; pad--) sb.Append('0');
+                sb.Append(name, start, len);
+            }
+            return sb.ToString();
+        }
+
         public void CreatePlaceholders(int count)
         {
             if (count <= 0) return;
@@ -327,6 +324,14 @@ namespace MangaViewer.Services
             for (int i = 0; i < count; i++)
                 _pages.Add(new MangaPageViewModel());
             RaiseMangaLoaded();
+            RaisePageChanged();
+        }
+
+        public void ReplaceFileAtIndex(int index, string path)
+        {
+            if (index < 0 || string.IsNullOrWhiteSpace(path)) return;
+            if (index >= _pages.Count) SetExpectedTotal(index + 1);
+            _pages[index].FilePath = path;
             RaisePageChanged();
         }
 
