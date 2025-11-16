@@ -1,15 +1,15 @@
 using System;
-using Windows.Storage;
+using MangaViewer.Services;
 
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// Stores user customizable tag related settings (e.g., font size) in local settings.
+    /// Stores user customizable tag related settings (e.g., font size).
+    /// WinRT ApplicationData dependency removed in favor of SettingsProvider for broader host support.
     /// </summary>
     public sealed class TagSettingsService
     {
         public static TagSettingsService Instance { get; } = new();
-        private readonly ApplicationDataContainer _local = ApplicationData.Current.LocalSettings;
         private const string FontSizeKey = "TagFontSize";
         private double _tagFontSize = 13d;
 
@@ -17,12 +17,7 @@ namespace MangaViewer.Services
         {
             try
             {
-                if (_local.Values.TryGetValue(FontSizeKey, out var v))
-                {
-                    if (v is double d) _tagFontSize = d;
-                    else if (v is int i) _tagFontSize = i;
-                    else if (double.TryParse(v?.ToString(), out var p)) _tagFontSize = p;
-                }
+                _tagFontSize = SettingsProvider.GetDouble(FontSizeKey, 13d);
             }
             catch { _tagFontSize = 13d; }
         }
@@ -37,7 +32,7 @@ namespace MangaViewer.Services
                 double clamped = Math.Clamp(value, 6d, 48d);
                 if (Math.Abs(clamped - _tagFontSize) < 0.1) return;
                 _tagFontSize = clamped;
-                try { _local.Values[FontSizeKey] = clamped; } catch { }
+                try { SettingsProvider.SetDouble(FontSizeKey, clamped); } catch { }
                 TagFontSizeChanged?.Invoke(this, EventArgs.Empty);
             }
         }

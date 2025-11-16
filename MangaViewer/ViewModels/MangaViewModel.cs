@@ -7,8 +7,8 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Windows.Storage.Pickers; // retained for FolderPicker only
-using Windows.Storage; // removed where possible but kept for legacy mem scenario
+using Microsoft.Windows.Storage.Pickers; // use WASDK pickers
+using Windows.Storage; // kept for StorageFolder/Path usage
 using System.Threading;
 using Microsoft.UI.Xaml.Controls; // InfoBarSeverity
 using MangaViewer.Services.Thumbnails; // Added for ThumbnailDecodeScheduler
@@ -231,9 +231,10 @@ namespace MangaViewer.ViewModels
             CancelOcr();
             try
             {
-                var picker = new FolderPicker();
-                WinRT.Interop.InitializeWithWindow.Initialize(picker, (IntPtr)windowHandle);
-                picker.FileTypeFilter.Add("*");
+                // Windows App SDK picker with WindowId (no InitializeWithWindow interop)
+                var hWnd = (IntPtr)windowHandle;
+                var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
+                var picker = new FolderPicker(windowId);
                 var folder = await picker.PickSingleFolderAsync();
                 if (folder != null)
                 {
@@ -268,7 +269,7 @@ namespace MangaViewer.ViewModels
                 bool exists = false;
                 foreach (var b in Bookmarks)
                 {
-                    if (string.Equals(b.FilePath, p, StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
+                    if (string.Equals(b.FilePath, p, System.StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
                 }
                 if (!exists)
                 {

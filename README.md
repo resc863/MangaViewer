@@ -53,7 +53,7 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 - SDK/Tooling
   - .NET SDK 10.0+
   - Windows 11 SDK 10.0.26100.x
-  - Windows App SDK 1.7.x (via NuGet)
+  - Windows App SDK 1.8.x (via NuGet)
 
 ## Build & Run
 
@@ -101,7 +101,7 @@ MangaViewer/
     EhentaiService.cs             # search → image streaming (memory)
     ImageCacheService.cs          # image/memory cache, prefetch
     Thumbnails/*                  # decode scheduling/cache
-    TagSettingsService.cs         # tag font size
+    TagSettingsService.cs         # tag font size (SettingsProvider-backed)
   Controls/
     TagWrapPanel.cs, ParagraphGapSliderControl.cs
   Converters/
@@ -114,6 +114,10 @@ MangaViewer/
 - Windows OCR language packs are required for better recognition.
 - Large galleries may consume more memory; adjust cache limits or clear cache in Settings.
 - This app is a client example for browsing external websites (e-hentai). Follow the site’s ToS and local laws. Trademarks and copyrights belong to their owners.
+
+## Modernization notes
+- Folder picker migrated to Windows App SDK `Microsoft.Windows.Storage.Pickers.FolderPicker(WindowId)` (no `InitializeWithWindow`).
+- Tag settings now persist via `.NET`-based `SettingsProvider` (no `ApplicationData.Current.LocalSettings`).
 
 ## License
 
@@ -170,7 +174,7 @@ Usage (UI)
 - Add current page to bookmarks: "Add bookmark" button (`AddBookmarkCommand`).
 - Navigate to a bookmark: click an item (`NavigateToBookmarkCommand`).
 - Remove a bookmark: click the "Remove" button on the item (`RemoveBookmarkCommand`).
-- Resize the panel: drag the left border (width is persisted in local settings).
+- Resize the panel: drag the left border (width is persisted in settings).
 
 Persistence
 - Scope: per folder.
@@ -200,7 +204,7 @@ Developer notes
  - Toolbar toggle/button: `MainWindow.xaml`
  - Panel/list/buttons: `MangaReaderPage.xaml` `BookmarksList`
  - Thumbnails: `ThumbnailDecodeScheduler.EnqueueBookmark(...)` asynchronously decodes bookmark thumbnails (separate from the viewport queue)
-- Local settings key (width): `BookmarkPaneWidth` (`ApplicationData.Current.LocalSettings`)
+ - Settings key (width): `BookmarkPaneWidth` (via `SettingsProvider`)
 
 Limitations
 - Bookmarks are path-based. If files/folders are renamed or moved, navigation and thumbnail loading for those items may fail.
