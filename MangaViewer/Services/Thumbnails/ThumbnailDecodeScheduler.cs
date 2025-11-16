@@ -2,15 +2,25 @@ using MangaViewer.ViewModels;
 using Microsoft.UI.Dispatching;
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
+using MangaViewer.Services;
 
 namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// 썸네일 디코드 요청을 관리하는 우선순위 스케줄러.
-    /// - 화면에 가까운 이미지(거리 기준)부터 우선 처리합니다.
-    /// - 동일 경로라도 서로 다른 VM(뷰 항목)이면 각각 스케줄링하여 캐시 적용 기회를 보장합니다.
-    /// - 동시 수행 최대 개수(<see cref="_maxConcurrency"/>)를 제한하여 CPU/메모리 사용량을 제어합니다.
+    /// ThumbnailDecodeScheduler
+    /// Manages prioritized decoding of thumbnails with limited concurrency.
+    /// Priority Rules:
+    ///  - Lower Priority value processed first. For normal thumbnails Priority = distance from selectedIndex.
+    ///  - Bookmarks assigned explicit negative priority (-10) so they preempt regular thumbnails.
+    /// Queue Management:
+    ///  - ReplacePendingWithViewportFirst reconstructs queue in spiral order around current pivot.
+    ///  - UpdateSelectedIndex recalculates distances and discards far-away (>200) requests.
+    /// Concurrency:
+    ///  - _maxConcurrency controls parallelism; dynamic adjustment allowed via SetMaxConcurrency.
+    /// Cancellation: Each Request owns a CTS for potential future expansion (currently not used aggressively).
+    /// Metrics: Records success/failure + latency into DiagnosticsService under key 'ThumbDecode'.
     /// </summary>
     public sealed class ThumbnailDecodeScheduler
     {
@@ -33,6 +43,7 @@ namespace MangaViewer.Services.Thumbnails
             public DispatcherQueue Dispatcher = null!; // UI 디스패처
             public long Order; // 입력 순서 (tie-breaker)
             public RequestGroup Group; // 요청 그룹(일반 썸네일/북마크)
+            public CancellationTokenSource Cts = new(); // 취소 토큰 소스
         }
 
         private static readonly Lazy<ThumbnailDecodeScheduler> _instance = new(() => new ThumbnailDecodeScheduler());
@@ -105,7 +116,7 @@ namespace MangaViewer.Services.Thumbnails
                 if (_pendingKeys.Contains(key) || _runningKeys.Contains(key))
                     return;
 
-                _pending.Add(new Request
+                var req = new Request
                 {
                     Key = key,
                     Vm = vm,
@@ -115,7 +126,8 @@ namespace MangaViewer.Services.Thumbnails
                     Dispatcher = dispatcher,
                     Order = _orderCounter++,
                     Group = isBookmark ? RequestGroup.Bookmarks : RequestGroup.Thumbnails
-                });
+                };
+                _pending.Add(req);
                 _pendingKeys.Add(key);
 
                 SortPending_NoLock();
@@ -146,6 +158,7 @@ namespace MangaViewer.Services.Thumbnails
                     if (req.Priority > 200)
                     {
                         _pendingKeys.Remove(req.Key);
+                        req.Cts.Cancel();
                         _pending.RemoveAt(i);
                     }
                 }
@@ -172,6 +185,7 @@ namespace MangaViewer.Services.Thumbnails
                 {
                     if (_pending[i].Group == RequestGroup.Thumbnails)
                     {
+                        _pending[i].Cts.Cancel();
                         _pendingKeys.Remove(_pending[i].Key);
                         _pending.RemoveAt(i);
                     }
@@ -237,22 +251,25 @@ namespace MangaViewer.Services.Thumbnails
 
         private async Task ProcessAsync(Request req)
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool success = false;
             try
             {
                 await req.Vm.EnsureThumbnailAsync(req.Dispatcher);
+                success = req.Vm.HasThumbnail;
             }
-            catch
-            {
-                // ignore
-            }
+            catch (OperationCanceledException) { }
+            catch { }
             finally
             {
+                DiagnosticsService.Instance.Record("ThumbDecode", success, sw.ElapsedTicks);
                 lock (_lock)
                 {
                     _running--;
                     _runningKeys.Remove(req.Key);
                     TrySchedule_NoLock();
                 }
+                req.Cts.Dispose();
             }
         }
     }

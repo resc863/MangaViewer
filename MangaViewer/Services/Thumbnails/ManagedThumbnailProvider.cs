@@ -11,19 +11,20 @@ using System.Runtime.InteropServices.WindowsRuntime;
 namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// Managed thumbnail provider that decodes images off the UI thread and creates a UI-friendly
-    /// BitmapImage on the UI thread using a small in-memory PNG stream.
-    ///
-    /// Rationale:
-    /// - SoftwareBitmap/SoftwareBitmapSource are fragile to share across bindings/threads.
-    /// - Encoding to PNG and calling BitmapImage.SetSourceAsync on the UI thread is robust and cheap.
-    /// - All WinRT resources are disposed ASAP to avoid lifetime races during fast scrolling.
+    /// ManagedThumbnailProvider
+    /// Strategy:
+    ///  - Performs file open + decode entirely on UI thread using BitmapImage (WinUI limitation for SetSourceAsync).
+    ///  - Caches result in ThumbnailCacheService keyed by path + decode width.
+    ///  - For memory bytes, wraps them in InMemoryRandomAccessStream before SetSourceAsync.
+    /// Reasons for design:
+    ///  - Avoid lifetime issues of SoftwareBitmap / SoftwareBitmapSource across rapid virtualization.
+    ///  - BitmapImage.SetSourceAsync is stable and inexpensive for small thumbnail decode pixel widths.
+    /// Cancellation: If dispatcher enqueue fails or token canceled before operations complete returns null.
     /// </summary>
     public sealed class ManagedThumbnailProvider : IThumbnailProvider
     {
         /// <summary>
-        /// 파일 경로로부터 썸네일을 생성합니다.
-        /// 1) 백그라운드에서 디코드 → 2) PNG 인코드 → 3) UI 스레드에서 BitmapImage 생성 및 캐시.
+        /// Create thumbnail from file path. Attempts cache first (UI thread) then decodes.
         /// </summary>
         public async Task<ImageSource?> GetForPathAsync(DispatcherQueue dispatcher, string path, int maxDecodeDim, CancellationToken ct)
         {
@@ -51,7 +52,7 @@ namespace MangaViewer.Services.Thumbnails
         }
 
         /// <summary>
-        /// 메모리 바이트 배열로부터 썸네일을 생성합니다.
+        /// Create thumbnail from in-memory bytes (stream gallery).
         /// </summary>
         public async Task<ImageSource?> GetForBytesAsync(DispatcherQueue dispatcher, byte[] data, int maxDecodeDim, CancellationToken ct)
         {

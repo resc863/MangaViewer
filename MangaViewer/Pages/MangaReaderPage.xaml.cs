@@ -10,30 +10,38 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
 using Windows.System.Threading;
-using Windows.ApplicationModel.DataTransfer; // Clipboard
 using Microsoft.UI.Input; // Pointer identifiers
 using Microsoft.UI.Xaml.Input; // Tapped
-using Windows.Storage; // LocalSettings
 using Microsoft.UI.Xaml.Controls.Primitives; // DragDeltaEventArgs
-using Services = MangaViewer.Services; // alias root services if needed
-using MangaViewer.Services.Thumbnails; // moved scheduler
-using System.Collections.Generic; // for viewport seed list
-using Microsoft.UI.Xaml.Media.Imaging; // for BitmapImage
+using Services = MangaViewer.Services;
+using MangaViewer.Services.Thumbnails;
+using System.Collections.Generic;
+using Microsoft.UI.Xaml.Media.Imaging;
+using MangaViewer.Services;
 
 namespace MangaViewer.Pages
 {
     /// <summary>
-    /// 리더 페이지 코드비하인드.
-    /// - 썸네일 컨테이너(realized) 감지 시 디코드 스케줄러 큐잉
-    /// - 현재 뷰포트 기준 우선순위 갱신 및 근접 프리페치
-    /// - OCR 결과 박스 캔버스 렌더링/클립보드 복사/하이라이트 효과
-    /// - 우측 패널 폭/열림 상태 저장 및 리사이즈 디바운스 처리
+    /// MangaReaderPage (code-behind)
+    /// Responsibilities:
+    ///  - Coordinate thumbnail decode scheduling based on viewport visibility and scroll activity.
+    ///  - Manage bookmark list interactions (container events, removal, navigation).
+    ///  - Render OCR bounding boxes with a pooled Rectangle overlay (reduces allocations while panning/sliding).
+    ///  - Handle pane resize (thumbnails + bookmarks) with persistence to SettingsProvider.
+    ///  - Trigger page slide animation (Storyboard) when logical page changes.
+    /// Performance Strategies:
+    ///  - Periodic UI timer to refresh priorities without heavy per-scroll computations.
+    ///  - Viewport-centered rebuild queue (ReplacePendingWithViewportFirst) for rapid direction changes.
+    ///  - Debounced resize logic to avoid toggling IsPaneOpen persistence mid-drag.
+    ///  - Rectangle pool to reuse shapes for OCR overlays (minimize GC pressure).
+    /// Threading: All UI interactions on UI thread; background decode handled by scheduler & provider.
     /// </summary>
     public sealed partial class MangaReaderPage : Page
     {
         public MangaViewModel ViewModel { get; private set; } = null!;
         private Storyboard? _pageSlideStoryboard;
         private ThreadPoolTimer? _thumbRefreshTimer;
+        private Microsoft.UI.Dispatching.DispatcherQueueTimer? _thumbRefreshUiTimer;
         private bool _isUnloaded;
         private ScrollViewer? _thumbScrollViewer;
         private bool? _preferredPaneOpen; // persisted preferred state
@@ -51,13 +59,14 @@ namespace MangaViewer.Pages
 
         private readonly Queue<Rectangle> _rectPool = new();
 
+        private readonly ClipboardService _clipboard = ClipboardService.Instance;
+
         public MangaReaderPage()
         {
             InitializeComponent();
             Loaded += MangaReaderPage_Loaded;
             Unloaded += MangaReaderPage_Unloaded;
 
-            // Initialize resize debounce timer
             _resizeDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _resizeDebounceTimer.Tick += (_, __) =>
             {
@@ -91,23 +100,15 @@ namespace MangaViewer.Pages
             }
             HookThumbScrollViewer();
 
-            // Load saved pane width
+            // Load saved pane width via SettingsProvider
             try
             {
-                var settings = ApplicationData.Current.LocalSettings;
-                if (settings.Values.TryGetValue("ReaderPaneWidth", out var v) && v is not null)
-                {
-                    var d = Convert.ToDouble(v);
-                    ReaderSplitView.OpenPaneLength = Math.Clamp(d, PaneMinWidth, PaneMaxWidth);
-                }
-                if (settings.Values.TryGetValue("BookmarkPaneWidth", out var bv) && bv is not null)
-                {
-                    var d2 = Convert.ToDouble(bv);
-                    if (BookmarksList?.Parent is Grid g)
-                    {
-                        g.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(d2, BookmarkPaneMinWidth, BookmarkPaneMaxWidth));
-                    }
-                }
+                var w = SettingsProvider.GetDouble("ReaderPaneWidth", double.NaN);
+                if (!double.IsNaN(w))
+                    ReaderSplitView.OpenPaneLength = Math.Clamp(w, PaneMinWidth, PaneMaxWidth);
+                var bw = SettingsProvider.GetDouble("BookmarkPaneWidth", double.NaN);
+                if (!double.IsNaN(bw) && BookmarksList?.Parent is Grid g)
+                    g.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(bw, BookmarkPaneMinWidth, BookmarkPaneMaxWidth));
             }
             catch { }
 
@@ -146,6 +147,8 @@ namespace MangaViewer.Pages
             _isUnloaded = true;
             _thumbRefreshTimer?.Cancel();
             _thumbRefreshTimer = null;
+            _thumbRefreshUiTimer?.Stop();
+            _thumbRefreshUiTimer = null;
             if (_thumbScrollViewer != null)
             {
                 _thumbScrollViewer.ViewChanged -= OnThumbsViewChanged;
@@ -184,20 +187,13 @@ namespace MangaViewer.Pages
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             ViewModel.PropertyChanged += OnViewModelPropertyChanged;
 
-            // Load preferred pane state from settings and apply once
+            // Load preferred pane state from SettingsProvider
             try
             {
-                var settings = ApplicationData.Current.LocalSettings;
-                if (settings.Values.TryGetValue("ReaderPaneOpenPreferred", out var v) && v is bool b)
-                {
-                    _preferredPaneOpen = b;
-                    if (ViewModel.IsPaneOpen != b)
-                        ViewModel.IsPaneOpen = b;
-                }
-                else
-                {
-                    _preferredPaneOpen = ViewModel.IsPaneOpen;
-                }
+                bool pref = SettingsProvider.GetBool("ReaderPaneOpenPreferred", ViewModel.IsPaneOpen);
+                _preferredPaneOpen = pref;
+                if (ViewModel.IsPaneOpen != pref)
+                    ViewModel.IsPaneOpen = pref;
             }
             catch { _preferredPaneOpen = ViewModel.IsPaneOpen; }
 
@@ -264,11 +260,7 @@ namespace MangaViewer.Pages
 
                 // Update preferred state and persist
                 _preferredPaneOpen = vm.IsPaneOpen;
-                try
-                {
-                    ApplicationData.Current.LocalSettings.Values["ReaderPaneOpenPreferred"] = _preferredPaneOpen;
-                }
-                catch { }
+                try { SettingsProvider.SetBool("ReaderPaneOpenPreferred", _preferredPaneOpen.Value); } catch { }
             }
             else if (e.PropertyName == nameof(MangaViewModel.SelectedThumbnailIndex))
             {
@@ -345,11 +337,17 @@ namespace MangaViewer.Pages
         private void StartThumbnailAutoRefresh()
         {
             _thumbRefreshTimer?.Cancel();
-            _thumbRefreshTimer = ThreadPoolTimer.CreatePeriodicTimer(_ =>
+            _thumbRefreshTimer = null;
+            _thumbRefreshUiTimer?.Stop();
+            _thumbRefreshUiTimer = DispatcherQueue.CreateTimer();
+            _thumbRefreshUiTimer.Interval = TimeSpan.FromMilliseconds(700);
+            _thumbRefreshUiTimer.IsRepeating = true;
+            _thumbRefreshUiTimer.Tick += (_, __) =>
             {
                 if (_isUnloaded) return;
-                try { DispatcherQueue.TryEnqueue(() => { UpdatePriorityByViewport(); KickVisibleThumbnailDecode(); }); } catch { }
-            }, TimeSpan.FromMilliseconds(700));
+                try { UpdatePriorityByViewport(); KickVisibleThumbnailDecode(); } catch { }
+            };
+            _thumbRefreshUiTimer.Start();
         }
 
         private void OnThumbsViewChanged(object? sender, ScrollViewerViewChangedEventArgs e)
@@ -597,11 +595,7 @@ namespace MangaViewer.Pages
             {
                 try
                 {
-                    var dp = new DataPackage { RequestedOperation = DataPackageOperation.Copy };
-                    dp.SetText(vm.Text);
-                    Clipboard.SetContent(dp);
-                    Clipboard.Flush();
-                    // optional: brief visual feedback
+                    _clipboard.SetText(vm.Text);
                     r.StrokeThickness = 2;
                     var _ = DispatcherQueue.TryEnqueue(async () =>
                     {
@@ -650,7 +644,7 @@ namespace MangaViewer.Pages
             double newLen = ReaderSplitView.OpenPaneLength - e.HorizontalChange;
             newLen = Math.Clamp(newLen, PaneMinWidth, PaneMaxWidth);
             ReaderSplitView.OpenPaneLength = newLen;
-            try { ApplicationData.Current.LocalSettings.Values["ReaderPaneWidth"] = newLen; } catch { }
+            try { SettingsProvider.SetDouble("ReaderPaneWidth", newLen); } catch { }
         }
 
         private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
@@ -733,10 +727,10 @@ namespace MangaViewer.Pages
             if (BookmarksList?.Parent is Grid g)
             {
                 double cur = g.ColumnDefinitions[1].Width.Value;
-                double newLen = cur + e.HorizontalChange; // thumb is on left edge, drag right expands
+                double newLen = cur + e.HorizontalChange;
                 newLen = Math.Clamp(newLen, BookmarkPaneMinWidth, BookmarkPaneMaxWidth);
                 g.ColumnDefinitions[1].Width = new GridLength(newLen);
-                try { ApplicationData.Current.LocalSettings.Values["BookmarkPaneWidth"] = newLen; } catch { }
+                try { SettingsProvider.SetDouble("BookmarkPaneWidth", newLen); } catch { }
             }
         }
     }

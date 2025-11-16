@@ -6,19 +6,17 @@ using System.Threading.Tasks;
 namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// 썸네일 생성 제공자 인터페이스.
-    /// - 파일 경로 또는 메모리 바이트 입력을 받아 <see cref="ImageSource"/>를 반환합니다.
-    /// - UI 접근이 필요한 경우 <see cref="DispatcherQueue"/>를 사용해 UI 스레드에서 안전하게 객체를 생성해야 합니다.
+    /// Abstraction for creating decoded thumbnail ImageSource objects.
+    /// Implementations must:
+    ///  - Decode efficiently (potentially off-UI thread) then marshal creation to UI thread if needed.
+    ///  - Respect CancellationToken for scroll cancellation.
+    ///  - Optionally leverage caching before decoding.
     /// </summary>
     public interface IThumbnailProvider
     {
-        /// <summary>
-        /// 파일 경로로부터 썸네일을 생성합니다.
-        /// </summary>
+        /// <summary>Decode thumbnail from file path up to maxDecodeDim (largest of width/height).</summary>
         Task<ImageSource?> GetForPathAsync(DispatcherQueue dispatcher, string path, int maxDecodeDim, CancellationToken ct);
-        /// <summary>
-        /// 메모리 바이트로부터 썸네일을 생성합니다.
-        /// </summary>
+        /// <summary>Decode thumbnail from raw bytes (memory gallery) up to maxDecodeDim.</summary>
         Task<ImageSource?> GetForBytesAsync(DispatcherQueue dispatcher, byte[] data, int maxDecodeDim, CancellationToken ct);
     }
 }

@@ -9,10 +9,25 @@ using MangaViewer.Services.Thumbnails;
 
 namespace MangaViewer.ViewModels
 {
+    /// <summary>
+    /// Represents a single manga image (page) in thumbnail lists and bookmark panels.
+    /// Responsibilities:
+    ///  - Holds FilePath and manages versioning so stale async thumbnail results are discarded.
+    ///  - Provides asynchronous thumbnail loading with progressive quality (low -> high) and caching.
+    ///  - Supports cancellation & unloading when list items recycle (improves memory + scroll perf).
+    /// Threading Model:
+    ///  - Public async APIs perform background work and marshal UI updates via DispatcherQueue.
+    ///  - Version field (_version) increments whenever FilePath changes; async continuations compare
+    ///    captured version with current to ignore outdated results.
+    /// Caching Strategy:
+    ///  - Reads from ThumbnailCacheService (size-limited LRU of ImageSource) before decoding.
+    ///  - Stores both low and high resolution variants; replaces low with high when ready.
+    ///  - For memory-backed images (mem: keys) it fetches raw bytes from ImageCacheService.
+    /// </summary>
     public class MangaPageViewModel : BaseViewModel
     {
         private string? _filePath;
-        private int _version; // FilePath 변경 버전. 비동기 작업이 완료될 때 일치해야 반영.
+        private int _version; // Incremented when FilePath changes; used to discard stale async results.
         private CancellationTokenSource? _thumbCts;
         public string? FilePath
         {
@@ -22,10 +37,10 @@ namespace MangaViewer.ViewModels
                 if (_filePath != value)
                 {
                     _filePath = value;
-                    unchecked { _version++; }
+                    unchecked { _version++; } // allow overflow benignly
                     CancelThumbnail();
                     OnPropertyChanged();
-                    // 실제 썸네일 생성은 ListView.ContainerContentChanging 이벤트에서 지연 로딩
+                    // Thumbnail will be produced lazily by container realization event.
                     ThumbnailSource = null;
                 }
             }
@@ -35,7 +50,7 @@ namespace MangaViewer.ViewModels
         public ImageSource? ThumbnailSource
         {
             get => _thumbnailSource;
-            private set // Setter is private, controlled by the FilePath property
+            private set // Only set internally after decoding/lookup
             {
                 if (_thumbnailSource != value)
                 {
@@ -45,12 +60,14 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        // 동시 디코딩 수 제한 제거(스케줄러에서만 제한)
-        // private static readonly SemaphoreSlim s_decodeGate = new(Math.Clamp(Environment.ProcessorCount / 2, 4, 8));
         private bool _thumbnailLoading;
         public bool IsThumbnailLoading => _thumbnailLoading;
         public bool HasThumbnail => _thumbnailSource != null;
 
+        /// <summary>
+        /// Ensure thumbnail is loaded; performs progressive decode (cache -> low -> delay -> high).
+        /// Returns immediately if already loading or present.
+        /// </summary>
         public async Task EnsureThumbnailAsync(DispatcherQueue dispatcher)
         {
             if (HasThumbnail || IsThumbnailLoading) return;
@@ -62,10 +79,10 @@ namespace MangaViewer.ViewModels
             _thumbnailLoading = true;
             var provider = ThumbnailProviderFactory.Get();
             CancellationTokenSource cts = new();
-            _thumbCts = cts; // 최신 요청 토큰 저장
+            _thumbCts = cts; // capture latest CTS
             try
             {
-                // 1) 캐시 우선 (고품질 → 저품질) - UI 전환 없이 백그라운드에서 조회
+                // 1) High-quality cache check
                 var cachedHi = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi);
                 if (cachedHi != null)
                 {
@@ -73,14 +90,15 @@ namespace MangaViewer.ViewModels
                         await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedHi; });
                     return;
                 }
+                // 2) Low-quality cache check (potential quick placeholder)
                 var cachedLo = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthLo);
                 if (cachedLo != null && localVersion == _version)
                 {
                     await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedLo; });
-                    // 나중에 고품질 업그레이드 시도 (아래에서 수행)
+                    // Continue to attempt high-quality upgrade.
                 }
 
-                // 2) 저품질 빠른 디코드 (이미 저품질 캐시 없음 또는 표시가 필요한 경우)
+                // 3) Decode low-quality if absent
                 if (cachedLo == null)
                 {
                     ImageSource? loSrc = await GetThumbnailSourceAsync(dispatcher, _filePath!, decodeWidthLo, cts.Token).ConfigureAwait(false);
@@ -96,10 +114,10 @@ namespace MangaViewer.ViewModels
                     }
                 }
 
-                // 3) 적응형 딜레이: 스크롤 idle 감지(간단히 140ms, 추후 개선 가능)
+                // 4) Adaptive delay (scroll idle heuristic)
                 try { await Task.Delay(140, cts.Token); } catch { if (cts.IsCancellationRequested) return; }
 
-                // 재확인: 이미 고품질 캐시가 생겼는지 (UI 전환 없이)
+                // 5) Re-check high-quality cache before decoding
                 var againCachedHi = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi);
                 if (againCachedHi != null)
                 {
@@ -108,7 +126,7 @@ namespace MangaViewer.ViewModels
                     return;
                 }
 
-                // 4) 고품질 디코드
+                // 6) High-quality decode
                 ImageSource? hiSrc = await GetThumbnailSourceAsync(dispatcher, _filePath!, decodeWidthHi, cts.Token).ConfigureAwait(false);
 
                 if (cts.IsCancellationRequested) return;
@@ -122,7 +140,7 @@ namespace MangaViewer.ViewModels
                     });
                 }
             }
-            catch (OperationCanceledException) { /* ignore */ }
+            catch (OperationCanceledException) { /* expected on recycle */ }
             finally
             {
                 _thumbnailLoading = false;
@@ -134,15 +152,16 @@ namespace MangaViewer.ViewModels
             }
         }
 
+        /// <summary>Cancel any in-flight thumbnail decode.</summary>
         public void CancelThumbnail()
         {
             try { _thumbCts?.Cancel(); }
             catch { }
         }
 
+        /// <summary>Release thumbnail reference (e.g., recycled list item) to lower memory usage.</summary>
         public void UnloadThumbnail()
         {
-            // 스크롤로 화면에서 벗어남: 진행 중 디코드 취소 + 바인딩 해제
             CancelThumbnail();
             if (_thumbnailSource != null)
             {
@@ -169,6 +188,10 @@ namespace MangaViewer.ViewModels
             return RunOnUiAsync(dispatcher, () => { action(); return (object?)null; });
         }
 
+        /// <summary>
+        /// Helper for creating thumbnail ImageSource from bytes or path. Delegates to provider.
+        /// Memory images (mem:) resolved via ImageCacheService byte store.
+        /// </summary>
         private async Task<ImageSource?> GetThumbnailSourceAsync(DispatcherQueue dispatcher, string filePath, int decodeWidth, CancellationToken token)
         {
             if (filePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))

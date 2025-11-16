@@ -8,16 +8,28 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Threading;
 using System.Threading.Tasks;
-using Windows.Storage;
+using Windows.Storage; // retained only for picker entry point
 using MangaViewer.ViewModels;
 using Microsoft.UI.Dispatching;
+using System.IO; // new for non-WinRT enumeration
 
 namespace MangaViewer.Services
 {
     /// <summary>
-    /// 만화 이미지 로드 및 페이지(1~2장 표시) 계산/탐색 관리.
-    /// 지정 폴더의 '최상위 파일'만 검사하며 하위 폴더는 재귀적으로 탐색하지 않는다.
-    /// 허용 확장자: .jpg, .jpeg, .png, .bmp, .webp, .avif, .gif (대소문자 무시)
+    /// MangaManager
+    /// Responsibilities:
+    ///  - Collect eligible image files from a folder (non-recursive, natural sort).
+    ///  - Maintain Page vs Image index mapping supporting cover-separated mode and RTL direction toggling.
+    ///  - Support streaming additions (mem: keys) with numeric ordering heuristic.
+    ///  - Provide navigation helpers (next/prev/page jump) updating CurrentPageIndex.
+    ///  - Deliver observable collection of MangaPageViewModel objects (placeholders allowed for streaming).
+    /// Performance Strategies:
+    ///  - Batch adds (64 items) with short delay to reduce UI thread blocking when large folder loads.
+    ///  - Natural sort converts numeric substrings to fixed-width to produce intuitive ordering.
+    /// Streaming Support:
+    ///  - SetExpectedTotal creates placeholder VMs enabling layout before actual files arrive.
+    ///  - AddDownloadedFiles merges mem: images and later real disk paths replacing placeholders.
+    /// Threading: Background file enumeration + batching via Task.Run; UI updates marshaled through DispatcherQueue.
     /// </summary>
     public class MangaManager
     {
@@ -34,7 +46,7 @@ namespace MangaViewer.Services
 
         public int CurrentPageIndex { get; private set; }
         public bool IsRightToLeft { get; private set; }
-        public bool IsCoverSeparate { get; private set; } = true; // true: 표지 분리
+        public bool IsCoverSeparate { get; private set; } = true; // true: cover separate
 
         public int TotalImages => _pages.Count;
         public int TotalPages => GetMaxPageIndex() + 1;
@@ -47,8 +59,19 @@ namespace MangaViewer.Services
             Pages = new ReadOnlyObservableCollection<MangaPageViewModel>(_pages);
         }
 
-        /// <summary>선택 폴더 내 허용된 이미지 전체 로드 (초기 추가)</summary>
+        /// <summary>
+        /// Load folder via StorageFolder (legacy); internally uses path-based method.
+        /// </summary>
         public async Task LoadFolderAsync(StorageFolder folder)
+        {
+            if (folder == null) { Clear(); return; }
+            await LoadFolderAsync(folder.Path);
+        }
+
+        /// <summary>
+        /// Load images from physical folder (top-level only). Clears existing pages.
+        /// </summary>
+        public async Task LoadFolderAsync(string folderPath)
         {
             _loadCts?.Cancel();
             _loadCts = new CancellationTokenSource();
@@ -56,25 +79,36 @@ namespace MangaViewer.Services
 
             _pages.Clear();
             CurrentPageIndex = 0;
-            CurrentFolderPath = folder?.Path;
+            CurrentFolderPath = folderPath;
             var dispatcher = _dispatcher ?? DispatcherQueue.GetForCurrentThread();
 
-            // 파일 수집 + 자연 정렬 (비동기, LINQ 체인 제거)
-            List<(string Path, string SortKey)> imageFiles = await Task.Run(async () =>
+            if (string.IsNullOrWhiteSpace(folderPath) || !Directory.Exists(folderPath))
             {
-                var files = await folder.GetFilesAsync();
-                var result = new List<(string Path, string SortKey)>(files.Count);
-                foreach (var f in files)
+                RaiseMangaLoaded();
+                RaisePageChanged();
+                return;
+            }
+
+            // 파일 수집 + 자연 정렬 (비동기)
+            List<(string Path, string SortKey)> imageFiles = await Task.Run(() =>
+            {
+                var result = new List<(string Path, string SortKey)>();
+                try
                 {
-                    if (!string.IsNullOrEmpty(f.FileType) && s_imageExtensions.Contains(f.FileType))
+                    var files = Directory.GetFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly);
+                    foreach (var f in files)
                     {
-                        string name = System.IO.Path.GetFileNameWithoutExtension(f.Name);
-                        string sortKey = ToNaturalSortKey(name);
-                        result.Add((f.Path, sortKey));
+                        string ext = Path.GetExtension(f);
+                        if (s_imageExtensions.Contains(ext))
+                        {
+                            string name = Path.GetFileNameWithoutExtension(f);
+                            string sortKey = ToNaturalSortKey(name);
+                            result.Add((f, sortKey));
+                        }
                     }
+                    result.Sort((a, b) => StringComparer.Ordinal.Compare(a.SortKey, b.SortKey));
                 }
-                // 자연 정렬 키 기준 정렬
-                result.Sort((a, b) => StringComparer.Ordinal.Compare(a.SortKey, b.SortKey));
+                catch { }
                 return result;
             }, token);
 
@@ -142,7 +176,7 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// 스트리밍/다운로드된 파일 추가. mem: 키 기반 이미지 포함, 중복/역다운로드 처리.
+        /// Merge streaming downloaded files (mem: or disk paths) into placeholder pages; apply replacement logic.
         /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> filePaths)
         {

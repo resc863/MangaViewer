@@ -7,12 +7,13 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Windows.Storage.Pickers;
-using Windows.Storage;
+using Windows.Storage.Pickers; // retained for FolderPicker only
+using Windows.Storage; // removed where possible but kept for legacy mem scenario
 using System.Threading;
 using Microsoft.UI.Xaml.Controls; // InfoBarSeverity
 using MangaViewer.Services.Thumbnails; // Added for ThumbnailDecodeScheduler
 using MangaViewer.Services.Logging;
+using System.IO; // new for path operations
 
 namespace MangaViewer.ViewModels
 {
@@ -189,7 +190,6 @@ namespace MangaViewer.ViewModels
             OnPropertyChanged(nameof(IsOpenFolderEnabled));
             if (filePaths == null || filePaths.Count ==0) return;
 
-            // NEW: handle in-memory cached gallery (mem: keys) directly
             bool allMem = true;
             for (int i =0; i < filePaths.Count; i++)
             {
@@ -197,7 +197,7 @@ namespace MangaViewer.ViewModels
             }
             if (allMem)
             {
-                BeginStreamingGallery(); // reuse streaming pipeline (placeholders + ordered add)
+                BeginStreamingGallery();
                 SetExpectedTotalPages(filePaths.Count);
                 AddDownloadedFiles(filePaths);
                 return;
@@ -205,11 +205,11 @@ namespace MangaViewer.ViewModels
 
             try
             {
-                string? folderPath = System.IO.Path.GetDirectoryName(filePaths[0]);
+                string? folderPath = Path.GetDirectoryName(filePaths[0]);
                 if (!string.IsNullOrWhiteSpace(folderPath))
                 {
-                    StorageFolder folder = await StorageFolder.GetFolderFromPathAsync(folderPath);
-                    await _mangaManager.LoadFolderAsync(folder);
+                    _ocrService.ClearCache();
+                    await _mangaManager.LoadFolderAsync(folderPath);
                 }
             }
             catch (Exception ex)
@@ -238,7 +238,7 @@ namespace MangaViewer.ViewModels
                 if (folder != null)
                 {
                     _ocrService.ClearCache();
-                    await _mangaManager.LoadFolderAsync(folder);
+                    await _mangaManager.LoadFolderAsync(folder.Path); // path-based 로드 사용
                 }
             }
             catch (Exception ex) { Log.Error(ex, "[Folder] Error"); }
@@ -250,7 +250,6 @@ namespace MangaViewer.ViewModels
             _previousPageIndex =0;
             OnPropertyChanged(nameof(Thumbnails));
             UpdateCommandStates();
-            // Load bookmarks for the new folder
             try
             {
                 _bookmarkService.LoadForFolder(_mangaManager.CurrentFolderPath);
@@ -266,9 +265,6 @@ namespace MangaViewer.ViewModels
             foreach (var p in list)
             {
                 if (string.IsNullOrWhiteSpace(p)) continue;
-                // 기존: 현재 페이지 집합에 존재하는 경우에만 추가
-                // 변경: 썸네일이 없어도(현 폴더에 없더라도) 일단 목록에 추가하여 비어있는 자리로 표시
-                // 중복은 방지
                 bool exists = false;
                 foreach (var b in Bookmarks)
                 {
@@ -282,7 +278,7 @@ namespace MangaViewer.ViewModels
         }
 
         /// <summary>
-        /// 페이지 인덱스 변경 시 호출되어 표시 이미지/선택/프리페치를 업데이트합니다.
+        /// 페이지 인덱스 변경 시 표시 이미지/선택/프리페치를 업데이트합니다.
         /// </summary>
         private void OnPageChanged()
         {
@@ -325,9 +321,6 @@ namespace MangaViewer.ViewModels
         }
         #endregion
 
-        /// <summary>
-        /// 다음 페이지들의 이미지 경로를 미리 수집하여 디코드 캐시에 프리페치합니다.
-        /// </summary>
         private void TryPrefetchAhead()
         {
             try
@@ -404,7 +397,6 @@ namespace MangaViewer.ViewModels
             if (string.IsNullOrWhiteSpace(path)) return;
             if (_bookmarkService.Add(path))
             {
-                // Avoid duplicates in view
                 foreach (var b in Bookmarks)
                     if (string.Equals(b.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
                 Bookmarks.Add(new MangaPageViewModel { FilePath = path });
@@ -430,9 +422,6 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        /// <summary>
-        /// 현재 표시 중인 좌/우 이미지에 대해 OCR을 실행하고 박스들을 생성합니다.
-        /// </summary>
         private async Task RunOcrAsync()
         {
             if (IsOcrRunning) return;
@@ -440,11 +429,9 @@ namespace MangaViewer.ViewModels
             var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
             if (originalPaths.Count ==0) return;
 
-            // Adjust ordering for right-to-left so index0 always maps to currently displayed left page
             var paths = new List<string>(originalPaths);
             if (_mangaManager.IsRightToLeft && paths.Count ==2)
             {
-                // Display logic swaps the visual left/right when RTL. Mirror that here so OCR boxes align.
                 (paths[0], paths[1]) = (paths[1], paths[0]);
             }
 

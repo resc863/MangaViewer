@@ -5,9 +5,13 @@ using System.Collections.Generic;
 namespace MangaViewer.Services.Thumbnails
 {
     /// <summary>
-    /// 썸네일 ImageSource LRU 캐시.
-    /// - 키는 "{path}|w={decodeWidth}" 형식입니다.
-    /// - UI 스레드에서만 접근하도록 설계되었습니다(생성/바인딩 안전).
+    /// ThumbnailCacheService
+    /// Purpose: LRU cache for decoded ImageSource thumbnails keyed by path + decode width.
+    /// Characteristics:
+    ///  - Capacity limited both by entry count (_capacity) and approximate memory footprint (128MB soft limit).
+    ///  - Image byte size estimation uses (decodeWidth^2 * 4) as rough RGBA approximation.
+    ///  - Thread affinity: Methods assumed UI thread usage (no locks); safe because XAML ImageSource typically manipulated on UI thread.
+    ///  - Removal API allows discarding outdated lower-quality thumbnail when high-quality replacement arrives.
     /// </summary>
     public sealed class ThumbnailCacheService
     {
@@ -27,13 +31,10 @@ namespace MangaViewer.Services.Thumbnails
         public static string MakeKey(string path, int decodeWidth) => $"{path}|w={decodeWidth}";
 
         // 바이트 단위 캐시 상한
-        private readonly long _maxBytes = 128 * 1024 * 1024; // 128MB
+        private readonly long _maxBytes = 128 * 1024 * 1024; // 128MB soft limit
         private long _currentBytes = 0;
-        private static long EstimateImageBytes(ImageSource image, int decodeWidth)
-        {
-            // BitmapImage는 PixelWidth/PixelHeight를 알 수 있으나, 안전하게 decodeWidth^2*4로 추정
-            return decodeWidth * decodeWidth * 4;
-        }
+        private static long EstimateImageBytes(ImageSource image, int decodeWidth) => decodeWidth * decodeWidth * 4;
+
         /// <summary>
         /// 키가 존재하면 LRU 갱신 후 이미지 반환, 없으면 null.
         /// </summary>
@@ -86,6 +87,7 @@ namespace MangaViewer.Services.Thumbnails
         {
             _map.Clear();
             _lru.Clear();
+            _currentBytes = 0;
         }
 
         private void Trim()

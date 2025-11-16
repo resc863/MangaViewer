@@ -16,12 +16,22 @@ using MangaViewer.Services.Logging;
 
 namespace MangaViewer.Services
 {
-    /// <summary>
-    /// OCR(Windows.Media.Ocr) 래퍼 서비스.
-    /// - 언어/그룹핑/쓰기 방향/문단 간격 등의 설정을 관리하고 변경 이벤트를 발행합니다.
-    /// - StorageFile 또는 파일 경로/메모리 스트림에서 이미지를 로드해 OCR을 수행합니다.
-    /// - 단어/라인/문단 단위로 결과 바운딩 박스를 계산해 ViewModel로 제공합니다.
-    /// </summary>
+    public interface IOcrEngineFacade
+    {
+        Task<Windows.Media.Ocr.OcrResult?> RecognizeAsync(SoftwareBitmap bitmap, CancellationToken token);
+    }
+    internal sealed class WinRtOcrEngineFacade : IOcrEngineFacade
+    {
+        private readonly OcrEngine? _engine;
+        public WinRtOcrEngineFacade(OcrEngine? engine) => _engine = engine;
+        public async Task<Windows.Media.Ocr.OcrResult?> RecognizeAsync(SoftwareBitmap bitmap, CancellationToken token)
+        {
+            if (_engine == null) return null;
+            token.ThrowIfCancellationRequested();
+            return await _engine.RecognizeAsync(bitmap).AsTask(token);
+        }
+    }
+
     public class OcrResult
     {
         public string? Text { get; set; }
@@ -29,53 +39,53 @@ namespace MangaViewer.Services
     }
 
     /// <summary>
-    /// OCR 엔진과 결과 그룹핑/캐시를 관리하는 싱글톤 서비스.
+    /// OcrService
+    /// Purpose: Provide OCR processing for images with configurable language, grouping, and paragraph detection heuristics.
+    /// Features:
+    ///  - Language selection (auto or explicit tag) with engine caching per language tag.
+    ///  - Grouping modes: Word, Line, Paragraph (paragraph uses gap heuristics for vertical/horizontal layouts).
+    ///  - Paragraph grouping configurable gap factors for vertical/horizontal detection.
+    ///  - Debounced SettingsChanged event to avoid excessive reprocessing on rapid UI adjustments.
+    /// Caching: Results keyed by path + current OCR settings; invalidated whenever settings change.
+    /// Threading: Decoding & OCR executed asynchronously; UI thread only needed for event invocation (SynchronizationContext captured).
+    /// Robustness: Swallows decoding/engine failures; returns empty list on errors.
+    /// Extension Ideas:
+    ///  - Add multi-language auto-detection on a per-image basis.
+    ///  - Persist cache to disk across launches for large galleries.
+    ///  - Provide bounding box confidence scores (if underlying API exposes them).
     /// </summary>
     public class OcrService
     {
-        // Singleton
         private static readonly Lazy<OcrService> _instance = new(() => new OcrService());
-        /// <summary>전역 인스턴스.</summary>
         public static OcrService Instance => _instance.Value;
 
-        // Settings enums (nested to match call sites like OcrService.OcrGrouping)
         public enum OcrGrouping { Word = 0, Line = 1, Paragraph = 2 }
         public enum WritingMode { Auto = 0, Horizontal = 1, Vertical = 2 }
 
-        // Settings + event
-        /// <summary>설정 변경 이벤트(디바운스 적용).</summary>
         public event EventHandler? SettingsChanged;
-        /// <summary>현재 언어 태그("auto", "ja", "ko", "en" 등).</summary>
-        public string CurrentLanguage { get; private set; } = "auto"; // "auto", "ja", "ko", "en", ...
-        /// <summary>결과 그룹핑 모드(단어/줄/문단).</summary>
+        public string CurrentLanguage { get; private set; } = "auto";
         public OcrGrouping GroupingMode { get; private set; } = OcrGrouping.Word;
-        /// <summary>쓰기 방향(자동/가로/세로).</summary>
         public WritingMode TextWritingMode { get; private set; } = WritingMode.Auto;
-        /// <summary>문단 그룹핑 임계값(세로 문자 기준 가로 간격 배수).</summary>
-        public double ParagraphGapFactorVertical { get; private set; } = 1.50;   // heuristic
-        /// <summary>문단 그룹핑 임계값(가로 문자 기준 세로 간격 배수).</summary>
-        public double ParagraphGapFactorHorizontal { get; private set; } = 1.25; // heuristic
+        public double ParagraphGapFactorVertical { get; private set; } = 1.50;
+        public double ParagraphGapFactorHorizontal { get; private set; } = 1.25;
 
-        // OCR engine cache per language code ("auto" uses user profile)
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
-
-        // Simple OCR results cache (per-path + settings key)
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
-
         private EventHandler? _settingsChangedDebounced;
         private readonly SynchronizationContext? _syncContext;
         private TimeSpan _debounceDelay = TimeSpan.FromMilliseconds(250);
 
+        private readonly IImageDecoder _decoder = new WinRtImageDecoder();
+
         private OcrService()
         {
-            // warm up default engine
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
-            _syncContext = SynchronizationContext.Current; // capture UI context if created on UI thread
+            _syncContext = SynchronizationContext.Current;
             RebuildDebouncedHandler();
         }
 
         /// <summary>
-        /// OCR 언어를 변경합니다. "auto"는 사용자 프로필 언어를 사용합니다.
+        /// Set the language for OCR processing.
         /// </summary>
         public void SetLanguage(string languageTag)
         {
@@ -83,14 +93,13 @@ namespace MangaViewer.Services
             if (!string.Equals(CurrentLanguage, languageTag, StringComparison.OrdinalIgnoreCase))
             {
                 CurrentLanguage = languageTag;
-                // ensure engine available (lazy)
                 if (!_engineCache.ContainsKey(languageTag))
                     _engineCache[languageTag] = TryCreateEngineForLanguage(languageTag);
                 OnSettingsChanged();
             }
         }
         /// <summary>
-        /// OCR 결과 그룹핑 모드를 변경합니다(단어/줄/문단).
+        /// Set the grouping mode for OCR results.
         /// </summary>
         public void SetGrouping(OcrGrouping grouping)
         {
@@ -101,7 +110,7 @@ namespace MangaViewer.Services
             }
         }
         /// <summary>
-        /// 텍스트 쓰기 방향을 변경합니다(자동/가로/세로).
+        /// Set the text writing mode (horizontal/vertical) for OCR processing.
         /// </summary>
         public void SetWritingMode(WritingMode mode)
         {
@@ -112,7 +121,7 @@ namespace MangaViewer.Services
             }
         }
         /// <summary>
-        /// 세로 문단 그룹핑 간격 계수를 설정합니다.
+        /// Set the paragraph gap factor for vertical paragraph detection.
         /// </summary>
         public void SetParagraphGapFactorVertical(double value)
         {
@@ -124,7 +133,7 @@ namespace MangaViewer.Services
             }
         }
         /// <summary>
-        /// 가로 문단 그룹핑 간격 계수를 설정합니다.
+        /// Set the paragraph gap factor for horizontal paragraph detection.
         /// </summary>
         public void SetParagraphGapFactorHorizontal(double value)
         {
@@ -137,23 +146,18 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// OCR 결과 캐시를 초기화합니다(설정 변경 시 호출).
+        /// Clear the cached OCR results.
         /// </summary>
-        public void ClearCache()
-        {
-            _ocrCache.Clear();
-        }
+        public void ClearCache() => _ocrCache.Clear();
 
         private void OnSettingsChanged()
         {
-            // settings affect layout -> invalidate OCR cache
             ClearCache();
-            try { _settingsChangedDebounced?.Invoke(this, EventArgs.Empty); }
-            catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
+            try { _settingsChangedDebounced?.Invoke(this, EventArgs.Empty); } catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
         }
 
         /// <summary>
-        /// SettingsChanged 디바운스 간격을 설정합니다.
+        /// Set the debounce delay for the SettingsChanged event.
         /// </summary>
         public void SetSettingsChangedDebounce(TimeSpan delay)
         {
@@ -161,34 +165,48 @@ namespace MangaViewer.Services
             RebuildDebouncedHandler();
         }
 
-        private void RebuildDebouncedHandler()
-        {
-            _settingsChangedDebounced = DebounceOnContext((s, e) => SettingsChanged?.Invoke(s, e), _debounceDelay, _syncContext);
-        }
+        private void RebuildDebouncedHandler() => _settingsChangedDebounced = DebounceOnContext((s, e) => SettingsChanged?.Invoke(s, e), _debounceDelay, _syncContext);
 
         /// <summary>
-        /// 간단한 이벤트 핸들러용 디바운스 유틸리티. 주어진 컨텍스트(UI)에서 실행합니다.
+        /// Build debounced EventHandler using PeriodicTimer; schedules single invocation after silence period.
         /// </summary>
         public static EventHandler DebounceOnContext(EventHandler handler, TimeSpan delay, SynchronizationContext? context)
         {
             object gate = new();
-            System.Threading.Timer? timer = null;
+            CancellationTokenSource? cts = null;
+            PeriodicTimer? timer = null;
             return (s, e) =>
             {
                 lock (gate)
                 {
+                    cts?.Cancel();
+                    cts?.Dispose();
+                    cts = new CancellationTokenSource();
                     timer?.Dispose();
-                    timer = new System.Threading.Timer(_ =>
+                    timer = new PeriodicTimer(delay);
+                    _ = RunAsync();
+                }
+                async Task RunAsync()
+                {
+                    try
                     {
-                        try
+                        if (timer == null || cts == null) return;
+                        // Wait one tick then invoke
+                        if (await timer.WaitForNextTickAsync(cts.Token))
                         {
                             if (context != null)
                                 context.Post(_ => handler(s, e), null);
                             else
                                 handler(s, e);
                         }
-                        catch { }
-                    }, null, delay, Timeout.InfiniteTimeSpan);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch { }
+                    finally
+                    {
+                        timer?.Dispose();
+                        timer = null;
+                    }
                 }
             };
         }
@@ -214,7 +232,7 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// StorageFile 입력으로 단순 OCR을 수행합니다(라인-단어 단위 결과 반환).
+        /// Legacy synchronous recognition (no internal caching). Provided for direct StorageFile usage.
         /// </summary>
         public async Task<List<OcrResult>> RecognizeAsync(StorageFile imageFile)
         {
@@ -241,7 +259,6 @@ namespace MangaViewer.Services
                         transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                     }
 
-                    // Decoding helper avoids unsupported pixel format exceptions/log noise.
                     var toOcr = await DecodeForOcrAsync(decoder, transform);
 
                     var ocr = await engine.RecognizeAsync(toOcr);
@@ -269,8 +286,7 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// 경로(파일/메모리 키) 기반으로 OCR을 수행하고, 설정에 따라 단어/라인/문단 단위의 박스를 계산합니다.
-        /// 결과는 캐시에 저장되며 동일 설정/경로 요청 시 재사용됩니다.
+        /// Main cached OCR entry; returns bounding boxes adapted to grouping & writing mode settings.
         /// </summary>
         public async Task<List<BoundingBoxViewModel>> GetOcrAsync(string imagePath, CancellationToken cancellationToken)
         {
@@ -281,35 +297,18 @@ namespace MangaViewer.Services
                 return new List<BoundingBoxViewModel>(cached);
 
             var engine = GetActiveEngine();
+            IOcrEngineFacade facade = new WinRtOcrEngineFacade(engine);
             if (engine == null) return new List<BoundingBoxViewModel>();
 
             try
             {
-                using var rs = await OpenAsRandomAccessStreamAsync(imagePath, cancellationToken);
-                if (rs == null) return new List<BoundingBoxViewModel>();
-
-                var decoder = await BitmapDecoder.CreateAsync(rs);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var transform = new BitmapTransform();
-                uint width = decoder.PixelWidth;
-                uint height = decoder.PixelHeight;
-                const uint MaxDim = 4000;
-                if (width > MaxDim || height > MaxDim)
-                {
-                    double scale = width > height ? (double)MaxDim / width : (double)MaxDim / height;
-                    transform.ScaledWidth = (uint)Math.Max(1, Math.Round(width * scale));
-                    transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-                var toOcr = await DecodeForOcrAsync(decoder, transform);
-                cancellationToken.ThrowIfCancellationRequested();
-                var ocr = await engine.RecognizeAsync(toOcr);
-                cancellationToken.ThrowIfCancellationRequested();
-
+                var toOcr = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken);
+                if (toOcr == null) return new List<BoundingBoxViewModel>();
                 int imgW = toOcr.PixelWidth;
                 int imgH = toOcr.PixelHeight;
+                var ocr = await facade.RecognizeAsync(toOcr, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (ocr == null) return new List<BoundingBoxViewModel>();
 
                 var wordBoxes = new List<(string Text, Rect Rect, int LineIndex)>(ocr.Lines.Sum(l => l.Words.Count));
                 var lineRects = new List<Rect>(ocr.Lines.Count);
@@ -365,11 +364,7 @@ namespace MangaViewer.Services
             }
         }
 
-        private string BuildCacheKey(string path)
-        {
-            // Include major settings that affect grouping layout
-            return $"{path}|lang={CurrentLanguage}|grp={(int)GroupingMode}|wm={(int)TextWritingMode}|gv={ParagraphGapFactorVertical:F2}|gh={ParagraphGapFactorHorizontal:F2}";
-        }
+        private string BuildCacheKey(string path) => $"{path}|lang={CurrentLanguage}|grp={(int)GroupingMode}|wm={(int)TextWritingMode}|gv={ParagraphGapFactorVertical:F2}|gh={ParagraphGapFactorHorizontal:F2}";
 
         private static Rect Union(Rect a, Rect b)
         {
@@ -383,10 +378,6 @@ namespace MangaViewer.Services
         }
         private static bool IsEmpty(Rect r) => r.Width <= 0 || r.Height <= 0;
 
-        /// <summary>
-        /// 라인 직사각형 목록과 OCR 결과를 이용해 문단 단위 바운딩 박스를 생성합니다.
-        /// 가로/세로 쓰기 방향을 고려해 간격 임계값을 적용합니다.
-        /// </summary>
         private IEnumerable<BoundingBoxViewModel> GroupParagraphs(List<Rect> lineRects, Windows.Media.Ocr.OcrResult ocr, int imgW, int imgH)
         {
             var results = new List<BoundingBoxViewModel>();
@@ -449,9 +440,6 @@ namespace MangaViewer.Services
             return results;
         }
 
-        /// <summary>
-        /// 라인 인덱스 묶음을 하나의 문단 박스로 결합합니다.
-        /// </summary>
         private BoundingBoxViewModel BuildParagraph(List<int> lineIndexes, List<Rect> lineRects, Windows.Media.Ocr.OcrResult ocr, int imgW, int imgH)
         {
             Rect rect = new Rect();
@@ -468,9 +456,6 @@ namespace MangaViewer.Services
             return new BoundingBoxViewModel(paraText, rect, imgW, imgH);
         }
 
-        /// <summary>
-        /// 파일 경로 또는 mem: 키로부터 읽기 전용 RandomAccessStream을 생성합니다.
-        /// </summary>
         private static async Task<IRandomAccessStream?> OpenAsRandomAccessStreamAsync(string path, CancellationToken token)
         {
             try
@@ -490,41 +475,28 @@ namespace MangaViewer.Services
             catch { return null; }
         }
 
-        /// <summary>
-        /// 디코더로부터 OCR에 적합한 SoftwareBitmap을 생성합니다.
-        /// 원본 픽셀 포맷을 우선 사용 후 필요 시 Gray8/Bgra8으로 변환해 예외 및 WinRT unsupported 로그를 회피합니다.
-        /// </summary>
         private static async Task<SoftwareBitmap> DecodeForOcrAsync(BitmapDecoder decoder, BitmapTransform transform)
         {
             SoftwareBitmap bitmap;
-            // 1) 시도: 원본 포맷 (unsupported 예외 최소화)
             try
             {
                 bitmap = await decoder.GetSoftwareBitmapAsync(decoder.BitmapPixelFormat, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
             }
             catch
             {
-                // 2) fallback: Bgra8 (일반적으로 대부분 지원)
                 try
                 {
                     bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
                 }
                 catch
                 {
-                    // 3) 최종 fallback: 기본 호출
                     bitmap = await decoder.GetSoftwareBitmapAsync();
                 }
             }
 
-            // 4) 포맷이 OCR 엔진 허용 포맷(Gray8/Bgra8)이 아닌 경우 변환 시도
             if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Gray8 && bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8)
             {
-                try
-                {
-                    var converted = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Gray8);
-                    bitmap = converted;
-                }
-                catch { /* 변환 실패시 원본 그대로 사용 */ }
+                try { bitmap = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Gray8); } catch { }
             }
             return bitmap;
         }
