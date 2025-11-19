@@ -1,6 +1,7 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using MangaViewer.Helpers;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,7 +33,7 @@ namespace MangaViewer.Services.Thumbnails
             if (string.IsNullOrWhiteSpace(path)) return null;
 
             // Double-check cache on UI thread to avoid duplicate work when scrolling quickly.
-            var cached = await RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(path, maxDecodeDim)).ConfigureAwait(false);
+            var cached = await DispatcherHelper.RunOnUiAsync(dispatcher, () => ThumbnailCacheService.Instance.Get(path, maxDecodeDim)).ConfigureAwait(false);
             if (cached != null) return cached;
 
             var tcs = new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -64,7 +65,8 @@ namespace MangaViewer.Services.Thumbnails
                 try
                 {
                     using var ras = new InMemoryRandomAccessStream();
-                    await ras.WriteAsync(data.AsBuffer()); ras.Seek(0);
+                    await ras.WriteAsync(data.AsBuffer()); 
+                    ras.Seek(0);
                     var img = new BitmapImage { DecodePixelWidth = maxDecodeDim };
                     await img.SetSourceAsync(ras);
                     tcs.TrySetResult(img);
@@ -72,13 +74,6 @@ namespace MangaViewer.Services.Thumbnails
                 catch { tcs.TrySetResult(null); }
             })) return null;
             return await tcs.Task.ConfigureAwait(false);
-        }
-
-        private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, System.Func<T?> func)
-        {
-            var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!dispatcher.TryEnqueue(() => { try { tcs.TrySetResult(func()); } catch (System.Exception ex) { tcs.TrySetException(ex); } })) tcs.TrySetResult(default);
-            return tcs.Task;
         }
     }
 }

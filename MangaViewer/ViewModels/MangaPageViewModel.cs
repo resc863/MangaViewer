@@ -87,14 +87,14 @@ namespace MangaViewer.ViewModels
                 if (cachedHi != null)
                 {
                     if (localVersion == _version)
-                        await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedHi; });
+                        await DispatcherHelper.RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedHi; });
                     return;
                 }
                 // 2) Low-quality cache check (potential quick placeholder)
                 var cachedLo = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthLo);
                 if (cachedLo != null && localVersion == _version)
                 {
-                    await RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedLo; });
+                    await DispatcherHelper.RunOnUiAsync(dispatcher, () => { ThumbnailSource = cachedLo; });
                     // Continue to attempt high-quality upgrade.
                 }
 
@@ -106,7 +106,7 @@ namespace MangaViewer.ViewModels
                     if (cts.IsCancellationRequested) return;
                     if (loSrc != null && localVersion == _version)
                     {
-                        await RunOnUiAsync(dispatcher, () =>
+                        await DispatcherHelper.RunOnUiAsync(dispatcher, () =>
                         {
                             ThumbnailSource = ThumbnailSource ?? loSrc;
                             ThumbnailCacheService.Instance.Add(_filePath!, decodeWidthLo, loSrc);
@@ -115,14 +115,15 @@ namespace MangaViewer.ViewModels
                 }
 
                 // 4) Adaptive delay (scroll idle heuristic)
-                try { await Task.Delay(140, cts.Token); } catch { if (cts.IsCancellationRequested) return; }
+                try { await Task.Delay(ThumbnailOptions.ProgressiveDecodeDelay, cts.Token); } 
+                catch { if (cts.IsCancellationRequested) return; }
 
                 // 5) Re-check high-quality cache before decoding
                 var againCachedHi = ThumbnailCacheService.Instance.Get(_filePath!, decodeWidthHi);
                 if (againCachedHi != null)
                 {
                     if (localVersion == _version)
-                        await RunOnUiAsync(dispatcher, () => { ThumbnailSource = againCachedHi; });
+                        await DispatcherHelper.RunOnUiAsync(dispatcher, () => { ThumbnailSource = againCachedHi; });
                     return;
                 }
 
@@ -132,7 +133,7 @@ namespace MangaViewer.ViewModels
                 if (cts.IsCancellationRequested) return;
                 if (hiSrc != null && localVersion == _version)
                 {
-                    await RunOnUiAsync(dispatcher, () =>
+                    await DispatcherHelper.RunOnUiAsync(dispatcher, () =>
                     {
                         ThumbnailSource = hiSrc;
                         ThumbnailCacheService.Instance.Add(_filePath!, decodeWidthHi, hiSrc);
@@ -167,25 +168,6 @@ namespace MangaViewer.ViewModels
             {
                 ThumbnailSource = null;
             }
-        }
-
-        private static Task<T?> RunOnUiAsync<T>(DispatcherQueue dispatcher, Func<T?> func)
-        {
-            var tcs = new TaskCompletionSource<T?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!dispatcher.TryEnqueue(() =>
-            {
-                try { tcs.TrySetResult(func()); }
-                catch (Exception ex) { tcs.TrySetException(ex); }
-            }))
-            {
-                tcs.TrySetResult(default);
-            }
-            return tcs.Task;
-        }
-
-        private static Task RunOnUiAsync(DispatcherQueue dispatcher, Action action)
-        {
-            return RunOnUiAsync(dispatcher, () => { action(); return (object?)null; });
         }
 
         /// <summary>

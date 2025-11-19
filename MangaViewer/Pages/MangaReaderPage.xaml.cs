@@ -112,8 +112,19 @@ namespace MangaViewer.Pages
             }
             catch { }
 
-            // initial kick
-            _ = DispatcherQueue.TryEnqueue(() => RebuildViewportThumbnailQueue(radius: 48));
+            // 초기 로딩: 뷰포트 기준으로 썸네일 큐 구성
+            _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => 
+            {
+                // 짧은 지연 후 뷰포트가 렌더링되면 큐 재구성
+                var initialTimer = DispatcherQueue.CreateTimer();
+                initialTimer.Interval = TimeSpan.FromMilliseconds(100);
+                initialTimer.Tick += (_, __) =>
+                {
+                    initialTimer.Stop();
+                    RebuildViewportThumbnailQueue(radius: _prefetchRadiusIdle);
+                };
+                initialTimer.Start();
+            });
         }
 
         protected override void OnNavigatedTo(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -332,7 +343,7 @@ namespace MangaViewer.Pages
         }
 
         /// <summary>
-        /// 주기적으로 뷰포트에 가까운 항목을 갱신하고 디코딩을 킥합니다.
+        /// 주기적으로 뷰포트를 기준으로 그리드를 스캔하고 썸네일을 큐에 넣습니다.
         /// </summary>
         private void StartThumbnailAutoRefresh()
         {
@@ -340,7 +351,7 @@ namespace MangaViewer.Pages
             _thumbRefreshTimer = null;
             _thumbRefreshUiTimer?.Stop();
             _thumbRefreshUiTimer = DispatcherQueue.CreateTimer();
-            _thumbRefreshUiTimer.Interval = TimeSpan.FromMilliseconds(700);
+            _thumbRefreshUiTimer.Interval = TimeSpan.FromMilliseconds(400); // 700ms -> 400ms로 단축
             _thumbRefreshUiTimer.IsRepeating = true;
             _thumbRefreshUiTimer.Tick += (_, __) =>
             {
@@ -680,7 +691,7 @@ namespace MangaViewer.Pages
             var panel = ThumbnailsList.ItemsPanelRoot as Panel;
             if (panel == null || panel.Children.Count == 0) return;
 
-            // 가시 범위 기반 피벗 계산
+            // 현재 화면 범위 및 중심 계산
             int minIndex = int.MaxValue, maxIndex = -1;
             for (int i = 0; i < panel.Children.Count; i++)
             {
@@ -697,7 +708,7 @@ namespace MangaViewer.Pages
             if (minIndex == int.MaxValue || maxIndex < 0) return;
             int pivot = (minIndex + maxIndex) / 2;
 
-            // pivot, pivot-1, pivot+1, ... 순으로 시드 생성
+            // pivot 중심으로 나선형 확장: pivot, pivot-1, pivot+1, pivot-2, pivot+2, ...
             var seeds = new List<(MangaPageViewModel Vm, string Path, int Index)>();
             int count = ViewModel.Thumbnails.Count;
 
@@ -707,10 +718,11 @@ namespace MangaViewer.Pages
                 var vm = ViewModel.Thumbnails[i];
                 var path = vm.FilePath;
                 if (string.IsNullOrEmpty(path)) return;
-                if (vm.HasThumbnail) return; // 이미 썸네일 있으면 제외
+                if (vm.HasThumbnail) return; // 이미 로딩된 것은 제외
                 seeds.Add((vm, path!, i));
             }
 
+            // 중심부터 나선형으로 추가
             TryAdd(pivot);
             for (int step = 1; step <= radius; step++)
             {
@@ -718,7 +730,7 @@ namespace MangaViewer.Pages
                 TryAdd(pivot + step);
             }
 
-            // 대기열 교체(거리 > 200 제외는 스케줄러에서 처리)
+            // 대기열 교체(거리 > 200 항목은 스케줄러에서 처리)
             ThumbnailDecodeScheduler.Instance.ReplacePendingWithViewportFirst(seeds, pivot, DispatcherQueue);
         }
 

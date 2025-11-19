@@ -6,7 +6,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
-using System.Threading; // Ãß°¡
+using System.Threading;
+using Windows.Storage.Streams;
 
 namespace MangaViewer.Services
 {
@@ -169,6 +170,8 @@ namespace MangaViewer.Services
 
         private void EvictMemory_NoLock()
         {
+            var keysToRemove = new List<string>();
+            
             while ((_memoryImages.Count > _maxMemoryImageCount) || (_memoryTotalBytes > _maxMemoryImageBytes))
             {
                 var last = _memoryOrder.Last; if (last == null) break;
@@ -177,12 +180,21 @@ namespace MangaViewer.Services
                 _memoryImages.Remove(k);
                 _memoryOrder.RemoveLast();
                 _memoryOrderMap.Remove(k);
+                keysToRemove.Add(k);
+            }
+            
+            // Remove from LRU cache outside of nested lock
+            if (keysToRemove.Count > 0)
+            {
                 lock (_lruLock)
                 {
-                    if (_map.TryGetValue(k, out var node))
+                    foreach (var k in keysToRemove)
                     {
-                        _lru.Remove(node);
-                        _map.Remove(k);
+                        if (_map.TryGetValue(k, out var node))
+                        {
+                            _lru.Remove(node);
+                            _map.Remove(k);
+                        }
                     }
                 }
             }
@@ -276,8 +288,12 @@ namespace MangaViewer.Services
                     bmp = CreateBitmapOnUi(() =>
                     {
                         var img = new BitmapImage();
-                        using var ms = new MemoryStream(memBytes, writable: false);
-                        img.SetSource(ms.AsRandomAccessStream());
+                        using (var ras = new InMemoryRandomAccessStream())
+                        {
+                            ras.AsStreamForWrite().Write(memBytes, 0, memBytes.Length);
+                            ras.Seek(0);
+                            img.SetSource(ras);
+                        }
                         return img;
                     });
                 }
@@ -302,46 +318,32 @@ namespace MangaViewer.Services
 
         // Prefetch concurrency gate
         private readonly SemaphoreSlim _prefetchGate = new(2); // limit 2 concurrent prefetches
-        private readonly Queue<string> _prefetchQueue = new();
-        private bool _isPrefetching = false;
+        private readonly ConcurrentQueue<string> _prefetchQueue = new();
+        private int _isPrefetching = 0; // 0 = false, 1 = true (thread-safe)
 
         /// <summary>
         /// Prefetch given paths: reads minimal bytes (not full decode) to warm OS caches; avoids decoding overhead.
         /// </summary>
         public void Prefetch(IEnumerable<string> paths)
         {
-            lock (_prefetchQueue)
+            foreach (var p in paths)
             {
-                foreach (var p in paths)
-                {
-                    if (string.IsNullOrWhiteSpace(p)) continue;
-                    lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
-                    if (!_prefetchQueue.Contains(p))
-                        _prefetchQueue.Enqueue(p);
-                }
-                if (!_isPrefetching)
-                {
-                    _isPrefetching = true;
-                    _ = Task.Run(() => PrefetchWorker());
-                }
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
+                _prefetchQueue.Enqueue(p);
+            }
+            
+            // Start worker if not already running
+            if (Interlocked.CompareExchange(ref _isPrefetching, 1, 0) == 0)
+            {
+                _ = Task.Run(() => PrefetchWorker());
             }
         }
 
         private async Task PrefetchWorker()
         {
-            while (true)
+            while (_prefetchQueue.TryDequeue(out var path))
             {
-                string? path = null;
-                lock (_prefetchQueue)
-                {
-                    if (_prefetchQueue.Count > 0)
-                        path = _prefetchQueue.Dequeue();
-                    else
-                    {
-                        _isPrefetching = false;
-                        return;
-                    }
-                }
                 await _prefetchGate.WaitAsync();
                 try
                 {
@@ -363,6 +365,8 @@ namespace MangaViewer.Services
                     await Task.Delay(16); // throttle
                 }
             }
+            
+            Interlocked.Exchange(ref _isPrefetching, 0);
         }
 
         private BitmapImage? CreateBitmapOnUi(Func<BitmapImage> factory)

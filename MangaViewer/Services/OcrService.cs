@@ -184,29 +184,29 @@ namespace MangaViewer.Services
                     cts = new CancellationTokenSource();
                     timer?.Dispose();
                     timer = new PeriodicTimer(delay);
-                    _ = RunAsync();
-                }
-                async Task RunAsync()
-                {
-                    try
+                    var localCts = cts;
+                    var localTimer = timer;
+                    _ = Task.Run(async () =>
                     {
-                        if (timer == null || cts == null) return;
-                        // Wait one tick then invoke
-                        if (await timer.WaitForNextTickAsync(cts.Token))
+                        try
                         {
-                            if (context != null)
-                                context.Post(_ => handler(s, e), null);
-                            else
-                                handler(s, e);
+                            if (localTimer == null || localCts == null) return;
+                            // Wait one tick then invoke
+                            if (await localTimer.WaitForNextTickAsync(localCts.Token))
+                            {
+                                if (context != null)
+                                    context.Post(_ => { try { handler(s, e); } catch { } }, null);
+                                else
+                                    try { handler(s, e); } catch { }
+                            }
                         }
-                    }
-                    catch (OperationCanceledException) { }
-                    catch { }
-                    finally
-                    {
-                        timer?.Dispose();
-                        timer = null;
-                    }
+                        catch (OperationCanceledException) { }
+                        catch (Exception ex) { Log.Error(ex, "DebounceOnContext handler failed"); }
+                        finally
+                        {
+                            localTimer?.Dispose();
+                        }
+                    });
                 }
             };
         }

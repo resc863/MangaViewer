@@ -85,13 +85,25 @@ namespace MangaViewer.ViewModels
         /// </summary>
         public void UpdateLayout(double containerWidth, double containerHeight)
         {
-            if (ImagePixelWidth <= 0 || ImagePixelHeight <= 0 || containerWidth <= 0 || containerHeight <= 0)
+            if (ImagePixelWidth <= 0 || ImagePixelHeight <= 0 || 
+                containerWidth <= 0 || containerHeight <= 0 ||
+                double.IsNaN(containerWidth) || double.IsNaN(containerHeight) ||
+                double.IsInfinity(containerWidth) || double.IsInfinity(containerHeight))
             {
                 DisplayRect = new Rect();
                 return;
             }
+            
             // Uniform 스케일 적용
             double scale = System.Math.Min(containerWidth / ImagePixelWidth, containerHeight / ImagePixelHeight);
+            
+            // Prevent invalid scale values
+            if (scale <= 0 || double.IsNaN(scale) || double.IsInfinity(scale))
+            {
+                DisplayRect = new Rect();
+                return;
+            }
+            
             double displayImageWidth = ImagePixelWidth * scale;
             double displayImageHeight = ImagePixelHeight * scale;
             double offsetX = (containerWidth - displayImageWidth) / 2.0;
@@ -101,6 +113,7 @@ namespace MangaViewer.ViewModels
             double y = offsetY + NormalizedRect.Y * displayImageHeight;
             double w = NormalizedRect.Width * displayImageWidth;
             double h = NormalizedRect.Height * displayImageHeight;
+            
             DisplayRect = new Rect(x, y, w, h);
             Debug.WriteLine($"[OCRBox]Legacy '{Text}' CW={containerWidth:F1} CH={containerHeight:F1} -> Rect=({x:F1},{y:F1},{w:F1},{h:F1})");
         }
@@ -110,11 +123,14 @@ namespace MangaViewer.ViewModels
         /// </summary>
         public void UpdateLayoutExact(double displayImageWidth, double displayImageHeight)
         {
-            if (displayImageWidth <= 0 || displayImageHeight <= 0)
+            if (displayImageWidth <= 0 || displayImageHeight <= 0 ||
+                double.IsNaN(displayImageWidth) || double.IsNaN(displayImageHeight) ||
+                double.IsInfinity(displayImageWidth) || double.IsInfinity(displayImageHeight))
             {
                 DisplayRect = new Rect();
                 return;
             }
+            
             double x = NormalizedRect.X * displayImageWidth;
             double y = NormalizedRect.Y * displayImageHeight;
             double w = NormalizedRect.Width * displayImageWidth;
@@ -127,11 +143,16 @@ namespace MangaViewer.ViewModels
         /// </summary>
         public void UpdateLayoutExactWithOffset(double displayImageWidth, double displayImageHeight, double offsetX, double offsetY)
         {
-            if (displayImageWidth <= 0 || displayImageHeight <= 0)
+            if (displayImageWidth <= 0 || displayImageHeight <= 0 ||
+                double.IsNaN(displayImageWidth) || double.IsNaN(displayImageHeight) ||
+                double.IsInfinity(displayImageWidth) || double.IsInfinity(displayImageHeight) ||
+                double.IsNaN(offsetX) || double.IsNaN(offsetY) ||
+                double.IsInfinity(offsetX) || double.IsInfinity(offsetY))
             {
                 DisplayRect = new Rect();
                 return;
             }
+            
             double x = offsetX + NormalizedRect.X * displayImageWidth;
             double y = offsetY + NormalizedRect.Y * displayImageHeight;
             double w = NormalizedRect.Width * displayImageWidth;

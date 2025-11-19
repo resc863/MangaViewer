@@ -169,9 +169,10 @@ namespace MangaViewer.Services.Thumbnails
         }
 
         /// <summary>
-        /// 대기 중 요청을 전부 교체하고, 현재 뷰포트 중심 우선 순서를 부여한 시드로 재구성합니다.
-        /// 실행 중인 요청은 그대로 유지합니다.
-        /// 북마크 그룹의 대기 요청은 유지됩니다.
+        /// 모든 기존 요청을 제거 교체하고, 현재 뷰포트 중심 우선 순서로 씨앗을 재구성합니다.
+        /// 진행 중인 요청은 그대로 유지됩니다.
+        /// 북마크 그룹의 모든 요청은 유지합니다.
+        /// 뷰포트 중심부터 나선형으로 우선순위가 부여됩니다 (pivot, pivot±1, pivot±2, ...).
         /// </summary>
         public void ReplacePendingWithViewportFirst(
             IReadOnlyList<(MangaPageViewModel Vm, string Path, int Index)> seeds,
@@ -180,7 +181,7 @@ namespace MangaViewer.Services.Thumbnails
         {
             lock (_lock)
             {
-                // 기존 대기 중인 "일반 썸네일"만 제거하고 북마크는 유지
+                // 진행 중이 아닌 "일반 썸네일"만 제거하고 북마크는 유지
                 for (int i = _pending.Count - 1; i >= 0; i--)
                 {
                     if (_pending[i].Group == RequestGroup.Thumbnails)
@@ -191,6 +192,8 @@ namespace MangaViewer.Services.Thumbnails
                     }
                 }
 
+                // 씨앗 목록은 이미 나선형 순서로 정렬되어 전달됨 (pivot, pivot-1, pivot+1, ...)
+                // 순서를 유지하면서 큐에 추가
                 foreach (var s in seeds)
                 {
                     if (string.IsNullOrEmpty(s.Path))
@@ -207,7 +210,7 @@ namespace MangaViewer.Services.Thumbnails
 
                     int priority = pivot >= 0 ? Math.Abs(s.Index - pivot) : s.Index;
                     if (priority > 200)
-                        continue; // 너무 먼 항목 제외
+                        continue; // 너무 먼 것은 제외
 
                     var req = new Request
                     {
@@ -217,7 +220,7 @@ namespace MangaViewer.Services.Thumbnails
                         Index = s.Index,
                         Priority = priority,
                         Dispatcher = dispatcher,
-                        Order = _orderCounter++,
+                        Order = _orderCounter++, // 나선형 순서대로 Order가 부여됨
                         Group = RequestGroup.Thumbnails
                     };
 
