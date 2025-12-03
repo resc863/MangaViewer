@@ -16,6 +16,7 @@ namespace MangaViewer
     public partial class App : Application
     {
         private Window? _window;
+        public MainWindow? MainWindow => _window as MainWindow;
         public MainWindow? MainWindowInstance => _window as MainWindow;
 
         public static ILoggerFactory LoggerFactory { get; private set; } = null!;

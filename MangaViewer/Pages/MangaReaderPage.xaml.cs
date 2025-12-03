@@ -100,6 +100,9 @@ namespace MangaViewer.Pages
             }
             HookThumbScrollViewer();
 
+            // Set focus to ensure keyboard navigation works
+            this.Focus(FocusState.Programmatic);
+
             // Load saved pane width via SettingsProvider
             try
             {
@@ -112,10 +115,10 @@ namespace MangaViewer.Pages
             }
             catch { }
 
-            // 초기 로딩: 뷰포트 기준으로 썸네일 큐 구성
+            // 초기 로드: 뷰포트 렌더링 완료 후 큐 구축
             _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => 
             {
-                // 짧은 지연 후 뷰포트가 렌더링되면 큐 재구성
+                // 짧은 지연 후 뷰포트가 구성되면 큐 재구축
                 var initialTimer = DispatcherQueue.CreateTimer();
                 initialTimer.Interval = TimeSpan.FromMilliseconds(100);
                 initialTimer.Tick += (_, __) =>
@@ -136,6 +139,9 @@ namespace MangaViewer.Pages
                 HookVm(vm);
             }
             HookThumbScrollViewer();
+            
+            // Set focus when navigated to this page
+            this.Focus(FocusState.Programmatic);
         }
 
         protected override void OnNavigatedFrom(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)

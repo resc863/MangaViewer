@@ -29,11 +29,12 @@ namespace MangaViewer.ViewModels
         private readonly ImageCacheService _imageCache = ImageCacheService.Instance;
         private readonly OcrService _ocrService = OcrService.Instance;
         private readonly BookmarkService _bookmarkService = BookmarkService.Instance;
+        private readonly LibraryService _libraryService = new();
 
         private BitmapImage? _leftImageSource;
         private BitmapImage? _rightImageSource;
         private int _selectedThumbnailIndex = -1;
-        private bool _isPaneOpen = true;
+        private bool _isPaneOpen = false;
         private bool _isBookmarkPaneOpen = false;
         private bool _isNavOpen = false;
         private bool _isLoading;
@@ -124,8 +125,12 @@ namespace MangaViewer.ViewModels
         public event EventHandler? PageViewChanged;
         public event EventHandler<int>? PageSlideRequested;
 
+        public LibraryViewModel LibraryViewModel { get; }
+
         public MangaViewModel()
         {
+            LibraryViewModel = new LibraryViewModel(_libraryService);
+            
             LeftOcrBoxes = new ReadOnlyObservableCollection<BoundingBoxViewModel>(_leftOcrBoxes);
             RightOcrBoxes = new ReadOnlyObservableCollection<BoundingBoxViewModel>(_rightOcrBoxes);
 
@@ -243,6 +248,25 @@ namespace MangaViewer.ViewModels
                 }
             }
             catch (Exception ex) { Log.Error(ex, "[Folder] Error"); }
+            finally { IsLoading = false; }
+        }
+
+        /// <summary>
+        /// 라이브러리에서 특정 만화 폴더를 로드합니다.
+        /// </summary>
+        public async Task LoadMangaFolderAsync(string folderPath)
+        {
+            if (string.IsNullOrWhiteSpace(folderPath)) return;
+            IsStreamingGallery = false;
+            OnPropertyChanged(nameof(IsOpenFolderEnabled));
+            IsLoading = true;
+            CancelOcr();
+            try
+            {
+                _ocrService.ClearCache();
+                await _mangaManager.LoadFolderAsync(folderPath);
+            }
+            catch (Exception ex) { Log.Error(ex, "[LoadMangaFolder] Error"); }
             finally { IsLoading = false; }
         }
 

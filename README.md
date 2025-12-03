@@ -208,3 +208,64 @@ Developer notes
 
 Limitations
 - Bookmarks are path-based. If files/folders are renamed or moved, navigation and thumbnail loading for those items may fail.
+
+# Library feature
+
+Purpose
+- Manage multiple manga library folders and browse all manga collections in a unified grid view.
+- Quick access to manga folders from registered library paths without manual folder picker each time.
+
+Usage (UI)
+- Navigate to Library page from main navigation (MainWindow).
+- Add library folder: Settings page → "만화 라이브러리" section → "라이브러리 폴더 추가" button.
+- View all manga: Library page displays all manga folders found in registered library paths.
+- Open manga: click any manga tile to load that folder in the reader.
+- Manage library paths: Settings page allows adding, removing, and reordering library folders.
+- Refresh library: "새로고침" button in Library page header to rescan all folders.
+
+Persistence
+- Storage file: `library.json` in `%LocalAppData%\MangaViewer\` directory.
+- JSON schema: `{ "Paths": [ "library_path_1", "library_path_2", ... ] }`
+- Auto-validation: non-existent paths are filtered out when loaded.
+- Error tolerant: read/write errors are silently ignored.
+
+Behavior
+- Library scan: recursively searches immediate subdirectories of each library path for folders containing image files.
+- First image detection: displays the first image (alphabetically sorted) in each manga folder as thumbnail.
+- Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`, `.avif`, `.gif`
+- Alphabetical sorting: manga folders are displayed in case-insensitive alphabetical order by folder name.
+- Empty state: shows placeholder message when no library folders are registered.
+- Loading indicator: progress ring displayed during library scan.
+
+Developer notes
+- Service: `LibraryService`
+ - Constructor: auto-loads library paths from `library.json`
+ - `GetLibraryPaths() : List<string>` — return all registered library folder paths
+ - `AddLibraryPath(string path)` — add new library folder (de-duplicated, persists immediately)
+ - `RemoveLibraryPath(string path)` — remove library folder (persists immediately)
+ - `MoveLibraryPath(int oldIndex, int newIndex)` — reorder library folders (persists immediately)
+ - `ScanLibraryAsync() : Task<List<MangaFolderInfo>>` — scan all library paths and return manga folder information
+- ViewModel: `LibraryViewModel`
+ - Collection: `MangaFolders (ObservableCollection<MangaFolderViewModel>)`
+ - Property: `IsLoading (bool)` — loading state during scan
+ - Command: `RefreshCommand` — trigger library rescan
+ - Constructor: auto-loads library on initialization
+- Page: `LibraryPage`
+ - GridView: displays manga folders in card layout (thumbnail + folder name)
+ - Empty state: shows when no manga found
+ - ItemClick: opens folder in reader via `MangaViewModel.OpenFolderCommand`
+- Settings integration: `SettingsPage`
+ - Library path management UI (add/remove/reorder)
+ - Uses Windows App SDK `FolderPicker` for folder selection
+ - Auto-refreshes `LibraryViewModel` when paths change
+
+Data model
+- `MangaFolderInfo`: transfer object containing folder path, name, and first image path
+- `MangaFolderViewModel`: UI-bound view model with thumbnail loading support
+
+Limitations
+- Only scans immediate subdirectories (depth=1) of library paths, not recursive.
+- First image detection may be slow for folders with many non-image files.
+- Thumbnail loading uses the same thumbnail service as reader (shared cache/scheduler).
+- If library folders are moved or deleted externally, they will fail to load until paths are updated.
+- No folder metadata caching; rescan required to refresh the view.

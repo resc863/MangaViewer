@@ -44,7 +44,7 @@ namespace MangaViewer
             RootFrame = ContentFrame;
 
             // Initial navigation
-            ContentFrame.Navigate(typeof(Pages.MangaReaderPage), ViewModel);
+            ContentFrame.Navigate(typeof(Pages.LibraryPage), ViewModel.LibraryViewModel);
             LeftNav.SelectedItem = LeftNav.MenuItems[0];
             UpdateBackButton();
 
@@ -109,8 +109,10 @@ namespace MangaViewer
         {
             UpdateBackButton();
             var current = e.SourcePageType;
-            if (current == typeof(Pages.MangaReaderPage))
+            if (current == typeof(Pages.LibraryPage))
                 LeftNav.SelectedItem = LeftNav.MenuItems[0];
+            else if (current == typeof(Pages.MangaReaderPage))
+                LeftNav.SelectedItem = LeftNav.MenuItems[1];
             else if (current == typeof(Pages.SearchPage))
             {
                 foreach (var mi in LeftNav.MenuItems)
@@ -159,7 +161,12 @@ namespace MangaViewer
             }
             if (args.InvokedItemContainer is not NavigationViewItem item) return;
             string tag = item.Tag as string ?? string.Empty;
-            if (tag == "Reader")
+            if (tag == "Library")
+            {
+                if (ContentFrame.Content?.GetType() != typeof(Pages.LibraryPage))
+                    ContentFrame.Navigate(typeof(Pages.LibraryPage), ViewModel.LibraryViewModel, new EntranceNavigationTransitionInfo());
+            }
+            else if (tag == "Reader")
             {
                 if (ContentFrame.Content?.GetType() != typeof(Pages.MangaReaderPage))
                     ContentFrame.Navigate(typeof(Pages.MangaReaderPage), ViewModel, new EntranceNavigationTransitionInfo());

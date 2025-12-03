@@ -6,7 +6,10 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:viewmodels="using:MangaViewer.ViewModels"
     xmlns:converters="using:MangaViewer.Converters"
-    mc:Ignorable="d" Background="Transparent">
+    mc:Ignorable="d" 
+    Background="Transparent"
+    IsTabStop="True"
+    AllowFocusOnInteraction="True">
     <Page.Resources>
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Page.Resources>

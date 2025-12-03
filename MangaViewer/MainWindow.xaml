@@ -96,7 +96,8 @@
                         IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested"
                         Background="Transparent">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="리더" Icon="Library" Tag="Reader"/>
+                <NavigationViewItem Content="라이브러리" Icon="Library" Tag="Library"/>
+                <NavigationViewItem Content="리더" Icon="Document" Tag="Reader"/>
                 <NavigationViewItem Content="검색" Icon="Find" Tag="Search"/>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>

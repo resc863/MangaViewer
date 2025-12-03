@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
@@ -16,6 +17,8 @@ namespace MangaViewer.Pages
         private readonly OcrService _ocr = OcrService.Instance;
         private readonly TagSettingsService _tagSettings = TagSettingsService.Instance;
         private readonly ThumbnailSettingsService _thumbSettings = ThumbnailSettingsService.Instance;
+        private readonly LibraryService _libraryService = new();
+        
         private ComboBox _langCombo = null!;
         private ComboBox _groupCombo = null!;
         private ComboBox _writingCombo = null!;
@@ -31,7 +34,10 @@ namespace MangaViewer.Pages
         private NumberBox _cacheMaxBytesBox = null!;
         private ObservableCollection<CacheEntryView> _cacheEntries = new();
 
-        private sealed class CacheEntryView { public string GalleryId { get; set; } = string.Empty; public int Count { get; set; } }
+        private ListView _libraryPathsList = null!;
+        private ObservableCollection<string> _libraryPaths = new();
+
+        private sealed class CacheEntryView { public string GalleryId = string.Empty; public int Count; }
 
         public SettingsPage()
         {
@@ -72,7 +78,29 @@ namespace MangaViewer.Pages
         private void BuildUi()
         {
             var stack = new StackPanel { Spacing = 18, Padding = new Thickness(24) };
-            stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            
+            // Library section
+            stack.Children.Add(new TextBlock { Text = "만화 라이브러리", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            
+            var libraryBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            var addLibBtn = new Button { Content = "라이브러리 폴더 추가" }; 
+            addLibBtn.Click += AddLibraryFolder_Click;
+            libraryBtnRow.Children.Add(addLibBtn);
+            stack.Children.Add(libraryBtnRow);
+            
+            _libraryPaths = new ObservableCollection<string>();
+            _libraryPathsList = new ListView { Height = 160, SelectionMode = ListViewSelectionMode.Single, ItemsSource = _libraryPaths };
+            _libraryPathsList.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
+<Grid Margin='0,4,0,4' ColumnDefinitions='*,Auto,Auto,Auto'>
+<TextBlock VerticalAlignment='Center' Text='{Binding}' TextTrimming='CharacterEllipsis'/>
+<Button Content='↑' Padding='8,4,8,4' Grid.Column='1' Margin='4,0,0,0'/>
+<Button Content='↓' Padding='8,4,8,4' Grid.Column='2' Margin='4,0,0,0'/>
+<Button Content='제거' Padding='12,4,12,4' Grid.Column='3' Margin='8,0,0,0'/>
+</Grid></DataTemplate>");
+            _libraryPathsList.ContainerContentChanging += LibraryPathsList_ContainerContentChanging;
+            stack.Children.Add(_libraryPathsList);
+            
+            stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _langCombo = new ComboBox { Width = 160 };
             _langCombo.Items.Add(new ComboBoxItem { Content = "자동", Tag = "auto" });
@@ -158,6 +186,125 @@ namespace MangaViewer.Pages
             Content = new ScrollViewer { Content = stack };
         }
 
+        private void RefreshLibraryPaths()
+        {
+            _libraryPaths.Clear();
+            var paths = _libraryService.GetLibraryPaths();
+            foreach (var path in paths)
+                _libraryPaths.Add(path);
+        }
+
+        private async void AddLibraryFolder_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var app = Application.Current as App;
+                var window = app?.MainWindow;
+                if (window == null) return;
+                
+                var hWnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+                var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
+                var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(windowId);
+                var folder = await picker.PickSingleFolderAsync();
+                
+                if (folder != null)
+                {
+                    _libraryService.AddLibraryPath(folder.Path);
+                    RefreshLibraryPaths();
+                    
+                    if (MainWindow.RootViewModel?.LibraryViewModel != null)
+                    {
+                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void RemovePathBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Remove selected library path
+            if (_libraryPathsList.SelectedItem is string path)
+            {
+                _libraryService.RemoveLibraryPath(path);
+                RefreshLibraryPaths();
+                
+                if (MainWindow.RootViewModel?.LibraryViewModel != null)
+                {
+                    _ = MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                }
+            }
+        }
+
+        private void LibraryPathsList_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
+        {
+            if (args.ItemContainer is ListViewItem lvi && args.Item is string path)
+            {
+                if (args.InRecycleQueue) return;
+                if (args.Phase == 0)
+                {
+                    lvi.Loaded += (s,e)=>
+                    {
+                        var buttons = FindDescendants<Button>(lvi).ToList();
+                        if (buttons.Count >= 3)
+                        {
+                            buttons[0].Click -= LibraryPathUp_Click;
+                            buttons[0].Click += LibraryPathUp_Click;
+                            
+                            buttons[1].Click -= LibraryPathDown_Click;
+                            buttons[1].Click += LibraryPathDown_Click;
+                            
+                            buttons[2].Click -= LibraryPathRemove_Click;
+                            buttons[2].Click += LibraryPathRemove_Click;
+                        }
+                    };
+                }
+            }
+        }
+
+        private async void LibraryPathUp_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button b && b.DataContext is string path)
+            {
+                var paths = _libraryService.GetLibraryPaths();
+                int index = paths.IndexOf(path);
+                if (index > 0)
+                {
+                    _libraryService.MoveLibraryPath(index, index - 1);
+                    RefreshLibraryPaths();
+                    if (MainWindow.RootViewModel?.LibraryViewModel != null)
+                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                }
+            }
+        }
+
+        private async void LibraryPathDown_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button b && b.DataContext is string path)
+            {
+                var paths = _libraryService.GetLibraryPaths();
+                int index = paths.IndexOf(path);
+                if (index >= 0 && index < paths.Count - 1)
+                {
+                    _libraryService.MoveLibraryPath(index, index + 1);
+                    RefreshLibraryPaths();
+                    if (MainWindow.RootViewModel?.LibraryViewModel != null)
+                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                }
+            }
+        }
+
+        private async void LibraryPathRemove_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button b && b.DataContext is string path)
+            {
+                _libraryService.RemoveLibraryPath(path);
+                RefreshLibraryPaths();
+                if (MainWindow.RootViewModel?.LibraryViewModel != null)
+                    await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+            }
+        }
+
         private void ThumbWidthSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
         {
             _thumbSettings.DecodeWidth = (int)Math.Round(e.NewValue);
@@ -209,6 +356,19 @@ namespace MangaViewer.Pages
             return null;
         }
 
+        private static IEnumerable<T> FindDescendants<T>(DependencyObject root) where T: DependencyObject
+        {
+            if (root == null) yield break;
+            int count = VisualTreeHelper.GetChildrenCount(root);
+            for (int i = 0; i < count; i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is T t) yield return t;
+                foreach (var desc in FindDescendants<T>(child))
+                    yield return desc;
+            }
+        }
+
         private void ApplyCacheLimit_Click(object sender, RoutedEventArgs e)
         {
             int newCount = (int)_cacheMaxCountBox.Value;
@@ -238,6 +398,9 @@ namespace MangaViewer.Pages
 
         private void SettingsPage_Loaded(object sender, RoutedEventArgs e)
         {
+            // Load library paths
+            RefreshLibraryPaths();
+            
             // Language
             int langIndex = 0; // default auto
             if (string.Equals(_ocr.CurrentLanguage, "ja", StringComparison.OrdinalIgnoreCase)) langIndex = 1;
