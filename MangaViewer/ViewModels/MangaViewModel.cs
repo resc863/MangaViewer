@@ -124,6 +124,7 @@ namespace MangaViewer.ViewModels
         public event EventHandler? OcrCompleted;
         public event EventHandler? PageViewChanged;
         public event EventHandler<int>? PageSlideRequested;
+        public event EventHandler? MangaFolderLoaded; // 새 폴더 로드 완료 이벤트
 
         public LibraryViewModel LibraryViewModel { get; }
 
@@ -245,6 +246,9 @@ namespace MangaViewer.ViewModels
                 {
                     _ocrService.ClearCache();
                     await _mangaManager.LoadFolderAsync(folder.Path); // path-based 로드 사용
+                    
+                    // 폴더 로드 완료 후 자동으로 MangaReaderPage로 전환
+                    MainWindow.TryNavigate(typeof(Pages.MangaReaderPage), this);
                 }
             }
             catch (Exception ex) { Log.Error(ex, "[Folder] Error"); }
@@ -265,6 +269,9 @@ namespace MangaViewer.ViewModels
             {
                 _ocrService.ClearCache();
                 await _mangaManager.LoadFolderAsync(folderPath);
+                
+                // 폴더 로드 완료 후 자동으로 MangaReaderPage로 전환
+                MainWindow.TryNavigate(typeof(Pages.MangaReaderPage), this);
             }
             catch (Exception ex) { Log.Error(ex, "[LoadMangaFolder] Error"); }
             finally { IsLoading = false; }
@@ -281,6 +288,9 @@ namespace MangaViewer.ViewModels
                 RebuildBookmarksFromStore();
             }
             catch { }
+            
+            // 폴더 로드 완료 이벤트 발생
+            MangaFolderLoaded?.Invoke(this, EventArgs.Empty);
         }
 
         private void RebuildBookmarksFromStore()

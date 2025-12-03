@@ -30,78 +30,85 @@
                     Style="{StaticResource AccentButtonStyle}"/>
         </Grid>
 
-        <!-- Loading indicator -->
-        <ProgressRing Grid.Row="1" 
-                      IsActive="{Binding IsLoading}"
-                      Width="50" Height="50"
-                      HorizontalAlignment="Center"
-                      VerticalAlignment="Center"/>
+        <!-- Content area with ScrollViewer -->
+        <ScrollViewer Grid.Row="1" 
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <Grid x:Name="ContentGrid">
+                <!-- Loading indicator -->
+                <ProgressRing IsActive="{Binding IsLoading}"
+                              Width="50" Height="50"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center"
+                              Margin="0,100,0,0"/>
 
-        <!-- Content grid -->
-        <Grid Grid.Row="1" x:Name="ContentGrid">
-            <!-- Manga folders grid -->
-            <GridView x:Name="MangaGridView"
-                      ItemsSource="{Binding MangaFolders}"
-                      Padding="24,8,24,24"
-                      SelectionMode="Single"
-                      IsItemClickEnabled="True"
-                      ItemClick="GridView_ItemClick">
-                <GridView.ItemTemplate>
-                    <DataTemplate x:DataType="viewmodels:MangaFolderViewModel">
-                        <Grid Width="200" Height="300" 
-                              Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-                              CornerRadius="8"
-                              BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
-                              BorderThickness="1">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
+                <!-- Manga folders grid -->
+                <GridView x:Name="MangaGridView"
+                          ItemsSource="{Binding MangaFolders}"
+                          Padding="24,8,24,24"
+                          SelectionMode="Single"
+                          IsItemClickEnabled="True"
+                          ItemClick="GridView_ItemClick"
+                          ScrollViewer.VerticalScrollMode="Disabled"
+                          ScrollViewer.HorizontalScrollMode="Disabled">
+                    <GridView.ItemTemplate>
+                        <DataTemplate x:DataType="viewmodels:MangaFolderViewModel">
+                            <Grid Width="200" Height="300" 
+                                  Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                  CornerRadius="8"
+                                  BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                  BorderThickness="1">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
 
-                            <!-- Thumbnail -->
-                            <Border Grid.Row="0" 
-                                    CornerRadius="8,8,0,0"
-                                    Background="{ThemeResource LayerFillColorDefaultBrush}">
-                                <Image Source="{x:Bind ThumbnailPath, Mode=OneWay}"
-                                       Stretch="UniformToFill"
-                                       HorizontalAlignment="Center"
-                                       VerticalAlignment="Center"/>
-                            </Border>
-
-                            <!-- Folder Name -->
-                            <Border Grid.Row="1" 
-                                    Background="{ThemeResource LayerFillColorDefaultBrush}"
-                                    Padding="12,8"
-                                    CornerRadius="0,0,8,8">
-                                <TextBlock Text="{x:Bind FolderName, Mode=OneWay}"
-                                           TextWrapping="Wrap"
-                                           TextTrimming="CharacterEllipsis"
-                                           MaxLines="2"
+                                <!-- Thumbnail -->
+                                <Border Grid.Row="0" 
+                                        CornerRadius="8,8,0,0"
+                                        Background="{ThemeResource LayerFillColorDefaultBrush}">
+                                    <Image Source="{x:Bind ThumbnailPath, Mode=OneWay}"
+                                           Stretch="UniformToFill"
                                            HorizontalAlignment="Center"
-                                           TextAlignment="Center"
-                                           Style="{StaticResource BodyTextBlockStyle}"/>
-                            </Border>
-                        </Grid>
-                    </DataTemplate>
-                </GridView.ItemTemplate>
-            </GridView>
+                                           VerticalAlignment="Center"/>
+                                </Border>
 
-            <!-- Empty state -->
-            <StackPanel x:Name="EmptyState"
-                        HorizontalAlignment="Center"
-                        VerticalAlignment="Center"
-                        Spacing="12">
-                <FontIcon Glyph="&#xE8B7;" 
-                          FontFamily="Segoe MDL2 Assets"
-                          FontSize="48"
-                          Opacity="0.6"/>
-                <TextBlock Text="라이브러리 폴더가 없습니다"
-                           Style="{StaticResource SubtitleTextBlockStyle}"
-                           Opacity="0.6"/>
-                <TextBlock Text="설정에서 만화 라이브러리 폴더를 추가하세요"
-                           Style="{StaticResource BodyTextBlockStyle}"
-                           Opacity="0.6"/>
-            </StackPanel>
-        </Grid>
+                                <!-- Folder Name -->
+                                <Border Grid.Row="1" 
+                                        Background="{ThemeResource LayerFillColorDefaultBrush}"
+                                        Padding="12,8"
+                                        CornerRadius="0,0,8,8">
+                                    <TextBlock Text="{x:Bind FolderName, Mode=OneWay}"
+                                               TextWrapping="Wrap"
+                                               TextTrimming="CharacterEllipsis"
+                                               MaxLines="2"
+                                               HorizontalAlignment="Center"
+                                               TextAlignment="Center"
+                                               Style="{StaticResource BodyTextBlockStyle}"/>
+                                </Border>
+                            </Grid>
+                        </DataTemplate>
+                    </GridView.ItemTemplate>
+                </GridView>
+
+                <!-- Empty state -->
+                <StackPanel x:Name="EmptyState"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Spacing="12"
+                            Margin="0,100,0,0">
+                    <FontIcon Glyph="&#xE8B7;" 
+                              FontFamily="Segoe MDL2 Assets"
+                              FontSize="48"
+                              Opacity="0.6"/>
+                    <TextBlock Text="라이브러리 폴더가 없습니다"
+                               Style="{StaticResource SubtitleTextBlockStyle}"
+                               Opacity="0.6"/>
+                    <TextBlock Text="설정에서 만화 라이브러리 폴더를 추가하세요"
+                               Style="{StaticResource BodyTextBlockStyle}"
+                               Opacity="0.6"/>
+                </StackPanel>
+            </Grid>
+        </ScrollViewer>
     </Grid>
 </Page>

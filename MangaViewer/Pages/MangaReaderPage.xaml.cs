@@ -100,9 +100,6 @@ namespace MangaViewer.Pages
             }
             HookThumbScrollViewer();
 
-            // Set focus to ensure keyboard navigation works
-            this.Focus(FocusState.Programmatic);
-
             // Load saved pane width via SettingsProvider
             try
             {
@@ -128,6 +125,9 @@ namespace MangaViewer.Pages
                 };
                 initialTimer.Start();
             });
+            
+            // 페이지 로드 완료 후 포커스 설정 (렌더링 완료 후 충분한 지연)
+            SetFocusAfterDelay();
         }
 
         protected override void OnNavigatedTo(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -140,8 +140,21 @@ namespace MangaViewer.Pages
             }
             HookThumbScrollViewer();
             
-            // Set focus when navigated to this page
-            this.Focus(FocusState.Programmatic);
+            // 페이지 전환 시 포커스 설정
+            SetFocusAfterDelay();
+        }
+
+        private void SetFocusAfterDelay()
+        {
+            // UI 렌더링이 완전히 완료될 때까지 충분한 시간 대기 후 포커스 설정
+            _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, async () =>
+            {
+                await System.Threading.Tasks.Task.Delay(150);
+                if (!_isUnloaded && this.XamlRoot != null)
+                {
+                    this.Focus(FocusState.Programmatic);
+                }
+            });
         }
 
         protected override void OnNavigatedFrom(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -181,6 +194,7 @@ namespace MangaViewer.Pages
                 ViewModel.PageViewChanged -= (_, __) => RedrawAllOcr();
                 ViewModel.OcrCompleted -= (_, __) => RedrawAllOcr();
                 ViewModel.PageSlideRequested -= OnPageSlideRequested;
+                ViewModel.MangaFolderLoaded -= OnMangaFolderLoaded; // 구독 해제
                 if (ViewModel.Thumbnails is INotifyCollectionChanged incc)
                     incc.CollectionChanged -= OnThumbsChanged;
                 foreach (var p in ViewModel.Thumbnails)
@@ -201,6 +215,7 @@ namespace MangaViewer.Pages
             ViewModel.PageViewChanged += (_, __) => RedrawAllOcr();
             ViewModel.OcrCompleted += (_, __) => RedrawAllOcr();
             ViewModel.PageSlideRequested += OnPageSlideRequested;
+            ViewModel.MangaFolderLoaded += OnMangaFolderLoaded; // 폴더 로드 완료 이벤트 구독
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             ViewModel.PropertyChanged += OnViewModelPropertyChanged;
 
@@ -239,6 +254,12 @@ namespace MangaViewer.Pages
 
             StartThumbnailAutoRefresh();
             RedrawAllOcr();
+        }
+
+        private void OnMangaFolderLoaded(object? sender, EventArgs e)
+        {
+            // 폴더 로드 완료 시 포커스 재설정
+            SetFocusAfterDelay();
         }
 
         private void OnBookmarksChanged(object? sender, NotifyCollectionChangedEventArgs e)
