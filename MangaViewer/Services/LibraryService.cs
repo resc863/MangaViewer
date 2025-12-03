@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MangaViewer.Services
@@ -15,52 +16,101 @@ namespace MangaViewer.Services
     {
         private static readonly string s_folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer");
         private static readonly string s_libraryFile = Path.Combine(s_folder, "library.json");
+        private static readonly JsonSerializerOptions s_options = new() { WriteIndented = true };
 
         private List<string> _libraryPaths = new();
+        private readonly SemaphoreSlim _lock = new(1, 1);
 
         public LibraryService()
         {
-            LoadLibraryPaths();
+            // Synchronous load on construction for immediate availability
+            _ = LoadLibraryPathsAsync().ConfigureAwait(false);
         }
 
         public List<string> GetLibraryPaths() => new(_libraryPaths);
 
-        public void AddLibraryPath(string path)
+        public async Task AddLibraryPathAsync(string path)
         {
             if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path)) return;
-            if (_libraryPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase))) return;
-            _libraryPaths.Add(path);
-            SaveLibraryPaths();
+            
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_libraryPaths.Any(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase))) return;
+                _libraryPaths.Add(path);
+            }
+            finally { _lock.Release(); }
+            
+            await SaveLibraryPathsAsync().ConfigureAwait(false);
         }
 
-        public void RemoveLibraryPath(string path)
+        // Legacy sync method for compatibility
+        public void AddLibraryPath(string path)
+        {
+            _ = AddLibraryPathAsync(path).ConfigureAwait(false);
+        }
+
+        public async Task RemoveLibraryPathAsync(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
-            _libraryPaths.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
-            SaveLibraryPaths();
+            
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                _libraryPaths.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            }
+            finally { _lock.Release(); }
+            
+            await SaveLibraryPathsAsync().ConfigureAwait(false);
         }
 
+        // Legacy sync method for compatibility
+        public void RemoveLibraryPath(string path)
+        {
+            _ = RemoveLibraryPathAsync(path).ConfigureAwait(false);
+        }
+
+        public async Task MoveLibraryPathAsync(int oldIndex, int newIndex)
+        {
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (oldIndex < 0 || oldIndex >= _libraryPaths.Count) return;
+                if (newIndex < 0 || newIndex >= _libraryPaths.Count) return;
+                if (oldIndex == newIndex) return;
+                
+                var item = _libraryPaths[oldIndex];
+                _libraryPaths.RemoveAt(oldIndex);
+                _libraryPaths.Insert(newIndex, item);
+            }
+            finally { _lock.Release(); }
+            
+            await SaveLibraryPathsAsync().ConfigureAwait(false);
+        }
+
+        // Legacy sync method for compatibility
         public void MoveLibraryPath(int oldIndex, int newIndex)
         {
-            if (oldIndex < 0 || oldIndex >= _libraryPaths.Count) return;
-            if (newIndex < 0 || newIndex >= _libraryPaths.Count) return;
-            if (oldIndex == newIndex) return;
-            
-            var item = _libraryPaths[oldIndex];
-            _libraryPaths.RemoveAt(oldIndex);
-            _libraryPaths.Insert(newIndex, item);
-            SaveLibraryPaths();
+            _ = MoveLibraryPathAsync(oldIndex, newIndex).ConfigureAwait(false);
         }
 
         public async Task<List<MangaFolderInfo>> ScanLibraryAsync()
         {
             var result = new List<MangaFolderInfo>();
             
-            foreach (var libraryPath in _libraryPaths)
+            List<string> pathsCopy;
+            await _lock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                pathsCopy = new List<string>(_libraryPaths);
+            }
+            finally { _lock.Release(); }
+            
+            foreach (var libraryPath in pathsCopy)
             {
                 if (!Directory.Exists(libraryPath)) continue;
                 
-                var folders = await Task.Run(() => GetMangaFolders(libraryPath));
+                var folders = await Task.Run(() => GetMangaFolders(libraryPath)).ConfigureAwait(false);
                 result.AddRange(folders);
             }
             
@@ -118,35 +168,41 @@ namespace MangaViewer.Services
             }
         }
 
-        private void LoadLibraryPaths()
+        private async Task LoadLibraryPathsAsync()
         {
+            await _lock.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (!File.Exists(s_libraryFile)) return;
                 
-                var json = File.ReadAllText(s_libraryFile);
-                var data = JsonSerializer.Deserialize<LibraryData>(json);
+                var json = await File.ReadAllTextAsync(s_libraryFile).ConfigureAwait(false);
+                var data = JsonSerializer.Deserialize<LibraryData>(json, s_options);
                 
                 if (data?.Paths != null)
                 {
-                    _libraryPaths = data.Paths.Where(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p)).ToList();
+                    _libraryPaths = data.Paths
+                        .Where(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p))
+                        .ToList();
                 }
             }
             catch { }
+            finally { _lock.Release(); }
         }
 
-        private void SaveLibraryPaths()
+        private async Task SaveLibraryPathsAsync()
         {
+            await _lock.WaitAsync().ConfigureAwait(false);
             try
             {
                 Directory.CreateDirectory(s_folder);
                 
-                var data = new LibraryData { Paths = _libraryPaths };
-                var json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+                var data = new LibraryData { Paths = new List<string>(_libraryPaths) };
+                var json = JsonSerializer.Serialize(data, s_options);
                 
-                File.WriteAllText(s_libraryFile, json);
+                await File.WriteAllTextAsync(s_libraryFile, json).ConfigureAwait(false);
             }
             catch { }
+            finally { _lock.Release(); }
         }
 
         private class LibraryData

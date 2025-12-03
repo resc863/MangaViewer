@@ -113,11 +113,49 @@ MangaViewer/
 - Streaming images are kept in memory only (not saved to disk).
 - Windows OCR language packs are required for better recognition.
 - Large galleries may consume more memory; adjust cache limits or clear cache in Settings.
-- This app is a client example for browsing external websites (e-hentai). Follow the site’s ToS and local laws. Trademarks and copyrights belong to their owners.
+- This app is a client example for browsing external websites (e-hentai). Follow the site's ToS and local laws. Trademarks and copyrights belong to their owners.
 
 ## Modernization notes
-- Folder picker migrated to Windows App SDK `Microsoft.Windows.Storage.Pickers.FolderPicker(WindowId)` (no `InitializeWithWindow`).
-- Tag settings now persist via `.NET`-based `SettingsProvider` (no `ApplicationData.Current.LocalSettings`).
+
+### Windows App SDK 1.8 Migration
+This project has been modernized to use Windows App SDK 1.8 file picker APIs:
+
+- **Folder picker**: Migrated from legacy `Windows.Storage.Pickers.FolderPicker` with `InitializeWithWindow` interop to modern `Microsoft.Windows.Storage.Pickers.FolderPicker(WindowId)` approach
+  - ✅ No more COM interop (`WinRT.Interop.InitializeWithWindow.Initialize`) required
+  - ✅ Direct `WindowId` constructor for cleaner code
+  - ✅ Returns `PickFolderResult` with path string instead of `StorageFolder` object
+  - ✅ Simpler, more reliable API suitable for elevated scenarios
+
+- **File access**: Uses `FileRandomAccessStream.OpenAsync` for path-based file access (Windows App SDK 1.8+ recommended approach)
+  - ✅ Compatible with both WinUI 3 and desktop scenarios
+  - ✅ Works seamlessly with file system paths
+
+### Key differences from legacy WinRT pickers:
+1. **WindowId vs InitializeWithWindow**: New pickers use `WindowId` property directly instead of COM interop pattern
+2. **Path-based results**: Returns string paths via `PickFileResult`/`PickFolderResult` instead of `StorageFile`/`StorageFolder`
+3. **Simpler API**: No need for `FileTypeFilter` defaults (shows all files by default)
+4. **Desktop-first design**: Optimized for desktop apps with better elevation support
+
+### Migration examples:
+
+**Before (legacy WinRT API):**
+```csharp
+var picker = new Windows.Storage.Pickers.FolderPicker();
+WinRT.Interop.InitializeWithWindow.Initialize(picker, hWnd);
+picker.FileTypeFilter.Add("*");
+var folder = await picker.PickSingleFolderAsync();
+string path = folder?.Path;
+```
+
+**After (Windows App SDK 1.8+):**
+```csharp
+var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
+var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(windowId);
+var result = await picker.PickSingleFolderAsync();
+string path = result?.Path;
+```
+
+- **Settings persistence**: Migrated from `ApplicationData.Current.LocalSettings` to `.NET`-based `SettingsProvider` for better cross-platform compatibility
 
 ## License
 
@@ -128,6 +166,7 @@ See `LICENSE.txt`.
 Overview
 - A WinUI3 (.NET10) manga reader.
 - Features: folder-based reading, dual-page (cover split/merged), RTL/LTR switching, thumbnail decode/prefetch, OCR overlay, streaming gallery via `mem:` keys.
+- **Modernized with Windows App SDK 1.8 file picker APIs**
 
 Entry points (public surface)
 - `App`: application startup, logging configuration, calls `ImageCacheService.InitializeUI(DispatcherQueue)`.
@@ -139,7 +178,7 @@ Entry points (public surface)
 Data flow (high level)
 
 1) Load folder
-- UI (OpenFolder) → `MangaViewModel.OpenFolderCommand` → `MangaManager.LoadFolderAsync` (natural sort) → `PageChanged` event → `MangaViewModel` updates current image paths → `ImageCacheService.Get/Prefetch`.
+- UI (OpenFolder) → `MangaViewModel.OpenFolderCommand` → uses **Windows App SDK 1.8+ FolderPicker(WindowId)** → `MangaManager.LoadFolderAsync` (natural sort) → `PageChanged` event → `MangaViewModel` updates current image paths → `ImageCacheService.Get/Prefetch`.
 
 2) Page navigation
 - Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/Toggle*` → `PageChanged` → update left/right images, sync thumbnail selection, prefetch.
@@ -217,7 +256,7 @@ Purpose
 
 Usage (UI)
 - Navigate to Library page from main navigation (MainWindow).
-- Add library folder: Settings page → "만화 라이브러리" section → "라이브러리 폴더 추가" button.
+- Add library folder: Settings page → "만화 라이브러리" section → "라이브러리 폴더 추가" button (uses **Windows App SDK 1.8+ FolderPicker**).
 - View all manga: Library page displays all manga folders found in registered library paths.
 - Open manga: click any manga tile to load that folder in the reader.
 - Manage library paths: Settings page allows adding, removing, and reordering library folders.
@@ -256,7 +295,7 @@ Developer notes
  - ItemClick: opens folder in reader via `MangaViewModel.OpenFolderCommand`
 - Settings integration: `SettingsPage`
  - Library path management UI (add/remove/reorder)
- - Uses Windows App SDK `FolderPicker` for folder selection
+ - Uses **Windows App SDK 1.8+ FolderPicker(WindowId)** for folder selection
  - Auto-refreshes `LibraryViewModel` when paths change
 
 Data model

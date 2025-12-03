@@ -1,13 +1,16 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Threading.Tasks;
 using System.Threading;
+using System.Threading.Channels;
+using System.Threading.Tasks;
 using Windows.Storage.Streams;
+using MangaViewer.Helpers;
 
 namespace MangaViewer.Services
 {
@@ -24,6 +27,10 @@ namespace MangaViewer.Services
     ///  - Separate locks: _memLock for mem byte cache; _lruLock for decoded cache. Avoids contention across tiers.
     ///  - Public APIs that combine both tiers acquire locks in consistent order (memLock then lruLock) to prevent deadlocks.
     /// Failure Handling: IO and decoding exceptions swallowed; methods return null or perform no-op on failure.
+    /// Performance Improvements:
+    ///  - Uses Channel<T> for prefetch queue instead of ConcurrentQueue
+    ///  - ArrayPool for temporary buffers
+    ///  - ConfigureAwait(false) throughout async calls
     /// Extension Ideas:
     ///  - Disk-backed eviction persistence for mem: images.
     ///  - Adaptive prefetch radius based on scroll velocity.
@@ -40,7 +47,6 @@ namespace MangaViewer.Services
         private record CacheEntry(string Path, BitmapImage Image);
 
         private readonly object _lruLock = new();
-        private readonly ConcurrentDictionary<string, Task> _inflightPrefetch = new(StringComparer.OrdinalIgnoreCase);
 
         // UI dispatcher to create XAML objects safely
         private DispatcherQueue? _dispatcher;
@@ -62,6 +68,16 @@ namespace MangaViewer.Services
         public int MaxMemoryImageCount => _maxMemoryImageCount;
         public long MaxMemoryImageBytes => _maxMemoryImageBytes;
         public int DecodedCacheCapacity => _capacity;
+
+        // Prefetch infrastructure
+        private readonly Channel<string> _prefetchChannel = Channel.CreateUnbounded<string>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false
+        });
+        private readonly SemaphoreSlim _prefetchGate = new(2, 2); // limit 2 concurrent prefetches
+        private int _isPrefetching = 0; // 0 = false, 1 = true (thread-safe)
+        private CancellationTokenSource? _prefetchCts;
 
         /// <summary>
         /// Set memory byte cache limits; evicts excess immediately.
@@ -316,13 +332,9 @@ namespace MangaViewer.Services
             return bmp;
         }
 
-        // Prefetch concurrency gate
-        private readonly SemaphoreSlim _prefetchGate = new(2); // limit 2 concurrent prefetches
-        private readonly ConcurrentQueue<string> _prefetchQueue = new();
-        private int _isPrefetching = 0; // 0 = false, 1 = true (thread-safe)
-
         /// <summary>
         /// Prefetch given paths: reads minimal bytes (not full decode) to warm OS caches; avoids decoding overhead.
+        /// Uses Channel<T> for efficient queue processing.
         /// </summary>
         public void Prefetch(IEnumerable<string> paths)
         {
@@ -330,43 +342,70 @@ namespace MangaViewer.Services
             {
                 if (string.IsNullOrWhiteSpace(p)) continue;
                 lock (_lruLock) { if (_map.ContainsKey(p)) continue; }
-                _prefetchQueue.Enqueue(p);
+                _prefetchChannel.Writer.TryWrite(p);
             }
             
             // Start worker if not already running
             if (Interlocked.CompareExchange(ref _isPrefetching, 1, 0) == 0)
             {
-                _ = Task.Run(() => PrefetchWorker());
+                _prefetchCts?.Cancel();
+                _prefetchCts?.Dispose();
+                _prefetchCts = new CancellationTokenSource();
+                _ = Task.Run(() => PrefetchWorkerAsync(_prefetchCts.Token));
             }
         }
 
-        private async Task PrefetchWorker()
+        private async Task PrefetchWorkerAsync(CancellationToken ct)
         {
-            while (_prefetchQueue.TryDequeue(out var path))
+            try
             {
-                await _prefetchGate.WaitAsync();
-                try
+                await foreach (var path in _prefetchChannel.Reader.ReadAllAsync(ct).ConfigureAwait(false))
                 {
-                    if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                    await _prefetchGate.WaitAsync(ct).ConfigureAwait(false);
+                    try
                     {
-                        TryGetMemoryImageBytes(path, out _); // already cached in memory
+                        if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                        {
+                            TryGetMemoryImageBytes(path, out _); // already cached in memory
+                        }
+                        else if (File.Exists(path))
+                        {
+                            await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                            int bufferSize = (int)Math.Min(4096, fs.Length);
+                            var buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
+                            try
+                            {
+                                await fs.ReadAsync(buffer.AsMemory(0, bufferSize), ct).ConfigureAwait(false);
+                            }
+                            finally
+                            {
+                                ArrayPool<byte>.Shared.Return(buffer);
+                            }
+                        }
                     }
-                    else if (File.Exists(path))
-                    {
-                        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                        var buffer = new byte[Math.Min(4096, fs.Length)];
-                        await fs.ReadAsync(buffer, 0, buffer.Length);
+                    catch (OperationCanceledException) 
+                    { 
+                        _prefetchGate.Release();
+                        break; 
                     }
-                }
-                catch { }
-                finally
-                {
+                    catch { }
+                    
                     _prefetchGate.Release();
-                    await Task.Delay(16); // throttle
+                    
+                    try 
+                    { 
+                        await Task.Delay(16, ct).ConfigureAwait(false); 
+                    }
+                    catch (OperationCanceledException) 
+                    { 
+                        break; 
+                    }
                 }
             }
-            
-            Interlocked.Exchange(ref _isPrefetching, 0);
+            finally
+            {
+                Interlocked.Exchange(ref _isPrefetching, 0);
+            }
         }
 
         private BitmapImage? CreateBitmapOnUi(Func<BitmapImage> factory)
@@ -381,16 +420,15 @@ namespace MangaViewer.Services
                 try { return factory(); } catch { return null; }
             }
 
-            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            if (!_dispatcher.TryEnqueue(() =>
-            {
-                try { tcs.TrySetResult(factory()); }
-                catch (Exception ex) { tcs.TrySetException(ex); }
-            }))
-            {
-                tcs.TrySetResult(null);
-            }
-            try { return tcs.Task.GetAwaiter().GetResult(); } catch { return null; }
+            // Use DispatcherHelper for cleaner async marshalling
+            try 
+            { 
+                return DispatcherHelper.RunOnUiAsync(_dispatcher, factory)
+                    .ConfigureAwait(false)
+                    .GetAwaiter()
+                    .GetResult(); 
+            } 
+            catch { return null; }
         }
 
         private void Trim_NoLock()
@@ -401,6 +439,14 @@ namespace MangaViewer.Services
                 _lru.RemoveLast();
                 _map.Remove(last.Value.Path);
             }
+        }
+
+        public void Dispose()
+        {
+            _prefetchCts?.Cancel();
+            _prefetchCts?.Dispose();
+            _prefetchGate?.Dispose();
+            _prefetchChannel.Writer.Complete();
         }
     }
 }

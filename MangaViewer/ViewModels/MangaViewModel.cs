@@ -7,8 +7,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Microsoft.Windows.Storage.Pickers; // use WASDK pickers
-using Windows.Storage; // kept for StorageFolder/Path usage
+using Microsoft.Windows.Storage.Pickers; // Windows App SDK 1.8+ pickers
 using System.Threading;
 using Microsoft.UI.Xaml.Controls; // InfoBarSeverity
 using MangaViewer.Services.Thumbnails; // Added for ThumbnailDecodeScheduler
@@ -22,6 +21,7 @@ namespace MangaViewer.ViewModels
     /// - 폴더 로드/스트리밍 추가/페이지 내비게이션/양면 표시/캐시 프리페치
     /// - OCR 실행 및 상태 표시
     /// - 썸네일 선택 연동 및 화면 전환 애니메이션 요청
+    /// - Uses Windows App SDK 1.8+ Microsoft.Windows.Storage.Pickers for folder selection
     /// </summary>
     public partial class MangaViewModel : BaseViewModel, IDisposable
     {
@@ -173,8 +173,10 @@ namespace MangaViewer.ViewModels
             CancelOcr();
             _ocrService.ClearCache();
             _mangaManager.Clear();
-            _previousPageIndex =0;
-            SelectedThumbnailIndex = -1;
+            
+            // Clear current images
+            ClearCurrentImages();
+            
             Bookmarks.Clear();
         }
 
@@ -227,6 +229,7 @@ namespace MangaViewer.ViewModels
         #region Folder/Page Loading
         /// <summary>
         /// 폴더 선택 대화상자를 열어 이미지를 로드합니다.
+        /// Uses Windows App SDK 1.8+ FolderPicker with WindowId (no InitializeWithWindow interop needed).
         /// </summary>
         private async Task OpenFolderAsync(object? windowHandle)
         {
@@ -235,9 +238,13 @@ namespace MangaViewer.ViewModels
             OnPropertyChanged(nameof(IsOpenFolderEnabled));
             IsLoading = true;
             CancelOcr();
+            
+            // Clear current images before loading new folder
+            ClearCurrentImages();
+            
             try
             {
-                // Windows App SDK picker with WindowId (no InitializeWithWindow interop)
+                // Windows App SDK 1.8+ picker: uses WindowId directly, no InitializeWithWindow needed
                 var hWnd = (IntPtr)windowHandle;
                 var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
                 var picker = new FolderPicker(windowId);
@@ -265,6 +272,10 @@ namespace MangaViewer.ViewModels
             OnPropertyChanged(nameof(IsOpenFolderEnabled));
             IsLoading = true;
             CancelOcr();
+            
+            // Clear current images before loading new folder
+            ClearCurrentImages();
+            
             try
             {
                 _ocrService.ClearCache();
@@ -277,11 +288,32 @@ namespace MangaViewer.ViewModels
             finally { IsLoading = false; }
         }
 
+        /// <summary>
+        /// Clear current displayed images and reset state
+        /// </summary>
+        private void ClearCurrentImages()
+        {
+            LeftImageSource = null;
+            RightImageSource = null;
+            LeftImageFilePath = null;
+            RightImageFilePath = null;
+            OnPropertyChanged(nameof(LeftImageFilePath));
+            OnPropertyChanged(nameof(RightImageFilePath));
+            IsSinglePageMode = false;
+            IsTwoPageMode = false;
+            _previousPageIndex = 0;
+            SelectedThumbnailIndex = -1;
+        }
+
         private void OnMangaLoaded()
         {
-            _previousPageIndex =0;
+            _previousPageIndex = 0;
             OnPropertyChanged(nameof(Thumbnails));
             UpdateCommandStates();
+            
+            // Debug logging
+            System.Diagnostics.Debug.WriteLine($"[MangaViewModel] OnMangaLoaded: {_mangaManager.TotalImages} images, {_mangaManager.TotalPages} pages");
+            
             try
             {
                 _bookmarkService.LoadForFolder(_mangaManager.CurrentFolderPath);
@@ -319,8 +351,16 @@ namespace MangaViewer.ViewModels
         {
             int newIndex = _mangaManager.CurrentPageIndex;
             int delta = newIndex - _previousPageIndex;
+            
+            // Debug logging
+            System.Diagnostics.Debug.WriteLine($"[MangaViewModel] OnPageChanged: Page {newIndex}/{_mangaManager.TotalPages}, Images {_mangaManager.TotalImages}");
+            
             CancelOcr();
             var paths = _mangaManager.GetImagePathsForCurrentPage();
+            
+            // Debug logging
+            System.Diagnostics.Debug.WriteLine($"[MangaViewModel] Paths for page {newIndex}: {string.Join(", ", paths)}");
+            
             string? leftPath = paths.Count >0 ? paths[0] : null;
             string? rightPath = paths.Count >1 ? paths[1] : null;
             if (_mangaManager.IsRightToLeft && paths.Count ==2)
@@ -333,6 +373,9 @@ namespace MangaViewer.ViewModels
 
             LeftImageSource = !string.IsNullOrEmpty(leftPath) ? _imageCache.Get(leftPath) : null;
             RightImageSource = !string.IsNullOrEmpty(rightPath) ? _imageCache.Get(rightPath) : null;
+            
+            // Debug logging
+            System.Diagnostics.Debug.WriteLine($"[MangaViewModel] Image sources: Left={LeftImageSource != null}, Right={RightImageSource != null}");
 
             IsSinglePageMode = (LeftImageSource != null) ^ (RightImageSource != null);
             IsTwoPageMode = LeftImageSource != null && RightImageSource != null;

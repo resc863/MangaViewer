@@ -25,6 +25,9 @@ namespace MangaViewer
         {
             InitializeComponent();
             ConfigureLogging();
+            
+            // Handle application exit to cleanup resources
+            this.UnhandledException += OnUnhandledException;
         }
 
         private static void ConfigureLogging()
@@ -45,6 +48,30 @@ namespace MangaViewer
             // Initialize UI dispatcher for services needing UI thread access
             var dispatcher = DispatcherQueue.GetForCurrentThread();
             ImageCacheService.Instance.InitializeUI(dispatcher);
+            
+            // Handle window closing to cleanup resources
+            _window.Closed += OnWindowClosed;
+        }
+
+        private void OnWindowClosed(object sender, WindowEventArgs args)
+        {
+            // Cleanup services
+            try
+            {
+                ImageCacheService.Instance.Dispose();
+            }
+            catch { }
+        }
+
+        private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+        {
+            // Log unhandled exceptions
+            try
+            {
+                var logger = LoggerFactory.CreateLogger<App>();
+                logger.LogError(e.Exception, "Unhandled exception occurred");
+            }
+            catch { }
         }
     }
 }

@@ -4,7 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Windows.Graphics.Imaging;
 using Windows.Storage.Streams;
-using Windows.Storage; // added for FileAccessMode
+using Windows.Storage; // for FileAccessMode
 
 namespace MangaViewer.Services
 {
@@ -24,6 +24,7 @@ namespace MangaViewer.Services
     ///  - Attempt original pixel format then fall back to BGRA8 then final generic decode.
     ///  - Convert to Gray8 when possible to reduce OCR workload.
     /// Diagnostics: Records success & latency using DiagnosticsService under key 'ImageDecode'.
+    /// Modernization: Uses FileRandomAccessStream.OpenAsync for file access (Windows App SDK 1.8+ compatible).
     /// </summary>
     internal sealed class WinRtImageDecoder : IImageDecoder
     {
@@ -39,6 +40,7 @@ namespace MangaViewer.Services
                 {
                     if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
                     {
+                        // Memory-based image from cache
                         if (ImageCacheService.Instance.TryGetMemoryImageBytes(path, out var bytes) && bytes != null)
                         {
                             var ms = new MemoryStream(bytes, writable: false);
@@ -47,6 +49,7 @@ namespace MangaViewer.Services
                     }
                     else
                     {
+                        // File-based image: use FileRandomAccessStream (works with Windows App SDK 1.8+)
                         ras = await FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask(token);
                     }
                 }

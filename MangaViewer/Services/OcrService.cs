@@ -10,7 +10,7 @@ using Windows.Foundation;
 using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
-using Windows.Storage;
+using Windows.Storage; // for StorageFile in legacy RecognizeAsync
 using Windows.Storage.Streams;
 using MangaViewer.Services.Logging;
 
@@ -49,6 +49,7 @@ namespace MangaViewer.Services
     /// Caching: Results keyed by path + current OCR settings; invalidated whenever settings change.
     /// Threading: Decoding & OCR executed asynchronously; UI thread only needed for event invocation (SynchronizationContext captured).
     /// Robustness: Swallows decoding/engine failures; returns empty list on errors.
+    /// Modernization: Uses FileRandomAccessStream for file access (Windows App SDK 1.8+ compatible).
     /// Extension Ideas:
     ///  - Add multi-language auto-detection on a per-image basis.
     ///  - Persist cache to disk across launches for large galleries.
@@ -71,7 +72,8 @@ namespace MangaViewer.Services
 
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
-        private EventHandler? _settingsChangedDebounced;
+        private CancellationTokenSource? _debounceCts;
+        private readonly object _debounceGate = new();
         private readonly SynchronizationContext? _syncContext;
         private TimeSpan _debounceDelay = TimeSpan.FromMilliseconds(250);
 
@@ -81,7 +83,6 @@ namespace MangaViewer.Services
         {
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
             _syncContext = SynchronizationContext.Current;
-            RebuildDebouncedHandler();
         }
 
         /// <summary>
@@ -153,7 +154,36 @@ namespace MangaViewer.Services
         private void OnSettingsChanged()
         {
             ClearCache();
-            try { _settingsChangedDebounced?.Invoke(this, EventArgs.Empty); } catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
+            
+            lock (_debounceGate)
+            {
+                _debounceCts?.Cancel();
+                _debounceCts?.Dispose();
+                _debounceCts = new CancellationTokenSource();
+                
+                var localCts = _debounceCts;
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(_debounceDelay, localCts.Token).ConfigureAwait(false);
+                        
+                        if (_syncContext != null)
+                            _syncContext.Post(_ => 
+                            { 
+                                try { SettingsChanged?.Invoke(this, EventArgs.Empty); } 
+                                catch { } 
+                            }, null);
+                        else
+                        {
+                            try { SettingsChanged?.Invoke(this, EventArgs.Empty); }
+                            catch { }
+                        }
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex) { Log.Error(ex, "SettingsChanged debounced dispatch failed"); }
+                });
+            }
         }
 
         /// <summary>
@@ -162,53 +192,6 @@ namespace MangaViewer.Services
         public void SetSettingsChangedDebounce(TimeSpan delay)
         {
             _debounceDelay = delay;
-            RebuildDebouncedHandler();
-        }
-
-        private void RebuildDebouncedHandler() => _settingsChangedDebounced = DebounceOnContext((s, e) => SettingsChanged?.Invoke(s, e), _debounceDelay, _syncContext);
-
-        /// <summary>
-        /// Build debounced EventHandler using PeriodicTimer; schedules single invocation after silence period.
-        /// </summary>
-        public static EventHandler DebounceOnContext(EventHandler handler, TimeSpan delay, SynchronizationContext? context)
-        {
-            object gate = new();
-            CancellationTokenSource? cts = null;
-            PeriodicTimer? timer = null;
-            return (s, e) =>
-            {
-                lock (gate)
-                {
-                    cts?.Cancel();
-                    cts?.Dispose();
-                    cts = new CancellationTokenSource();
-                    timer?.Dispose();
-                    timer = new PeriodicTimer(delay);
-                    var localCts = cts;
-                    var localTimer = timer;
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            if (localTimer == null || localCts == null) return;
-                            // Wait one tick then invoke
-                            if (await localTimer.WaitForNextTickAsync(localCts.Token))
-                            {
-                                if (context != null)
-                                    context.Post(_ => { try { handler(s, e); } catch { } }, null);
-                                else
-                                    try { handler(s, e); } catch { }
-                            }
-                        }
-                        catch (OperationCanceledException) { }
-                        catch (Exception ex) { Log.Error(ex, "DebounceOnContext handler failed"); }
-                        finally
-                        {
-                            localTimer?.Dispose();
-                        }
-                    });
-                }
-            };
         }
 
         private OcrEngine? TryCreateEngineForLanguage(string tag)
@@ -456,6 +439,10 @@ namespace MangaViewer.Services
             return new BoundingBoxViewModel(paraText, rect, imgW, imgH);
         }
 
+        /// <summary>
+        /// Open file or memory image as IRandomAccessStream for decoding.
+        /// Windows App SDK 1.8+ compatible: uses FileRandomAccessStream.OpenAsync for file paths.
+        /// </summary>
         private static async Task<IRandomAccessStream?> OpenAsRandomAccessStreamAsync(string path, CancellationToken token)
         {
             try
@@ -470,7 +457,8 @@ namespace MangaViewer.Services
                     return null;
                 }
 
-                return await Windows.Storage.Streams.FileRandomAccessStream.OpenAsync(path, FileAccessMode.Read).AsTask(token);
+                // Windows App SDK 1.8+ approach: FileRandomAccessStream for path-based access
+                return await Windows.Storage.Streams.FileRandomAccessStream.OpenAsync(path, Windows.Storage.FileAccessMode.Read).AsTask(token);
             }
             catch { return null; }
         }

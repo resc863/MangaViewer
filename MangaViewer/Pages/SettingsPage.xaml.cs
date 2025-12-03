@@ -194,6 +194,10 @@ namespace MangaViewer.Pages
                 _libraryPaths.Add(path);
         }
 
+        /// <summary>
+        /// Add a new library folder using Windows App SDK 1.8+ FolderPicker.
+        /// Uses WindowId approach (no InitializeWithWindow interop needed).
+        /// </summary>
         private async void AddLibraryFolder_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -202,9 +206,12 @@ namespace MangaViewer.Pages
                 var window = app?.MainWindow;
                 if (window == null) return;
                 
+                // Windows App SDK 1.8+ approach: use WindowId directly
                 var hWnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
                 var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hWnd);
                 var picker = new Microsoft.Windows.Storage.Pickers.FolderPicker(windowId);
+                
+                // Show picker and get result as PickFolderResult (returns path, not StorageFolder)
                 var folder = await picker.PickSingleFolderAsync();
                 
                 if (folder != null)

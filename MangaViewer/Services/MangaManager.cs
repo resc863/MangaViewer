@@ -8,10 +8,10 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Threading;
 using System.Threading.Tasks;
-using Windows.Storage; // retained only for picker entry point
+using Windows.Storage; // for legacy LoadFolderAsync(StorageFolder) overload
 using MangaViewer.ViewModels;
 using Microsoft.UI.Dispatching;
-using System.IO; // new for non-WinRT enumeration
+using System.IO; // for file system enumeration (Windows App SDK 1.8+ approach)
 
 namespace MangaViewer.Services
 {
@@ -30,6 +30,7 @@ namespace MangaViewer.Services
     ///  - SetExpectedTotal creates placeholder VMs enabling layout before actual files arrive.
     ///  - AddDownloadedFiles merges mem: images and later real disk paths replacing placeholders.
     /// Threading: Background file enumeration + batching via Task.Run; UI updates marshaled through DispatcherQueue.
+    /// Modernization: Uses System.IO.Directory for file enumeration (Windows App SDK 1.8+ recommended approach).
     /// </summary>
     public class MangaManager
     {
@@ -70,10 +71,13 @@ namespace MangaViewer.Services
 
         /// <summary>
         /// Load images from physical folder (top-level only). Clears existing pages.
+        /// Uses System.IO.Directory for file enumeration (Windows App SDK 1.8+ approach).
         /// </summary>
         public async Task LoadFolderAsync(string folderPath)
         {
+            // Cancel previous load operation
             _loadCts?.Cancel();
+            _loadCts?.Dispose();
             _loadCts = new CancellationTokenSource();
             var token = _loadCts.Token;
 
@@ -90,27 +94,37 @@ namespace MangaViewer.Services
             }
 
             // 파일 수집 + 자연 정렬 (비동기)
-            List<(string Path, string SortKey)> imageFiles = await Task.Run(() =>
+            List<(string Path, string SortKey)> imageFiles;
+            try
             {
-                var result = new List<(string Path, string SortKey)>();
-                try
+                imageFiles = await Task.Run(() =>
                 {
-                    var files = Directory.GetFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly);
-                    foreach (var f in files)
+                    var result = new List<(string Path, string SortKey)>();
+                    try
                     {
-                        string ext = Path.GetExtension(f);
-                        if (s_imageExtensions.Contains(ext))
+                        var files = Directory.GetFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly);
+                        foreach (var f in files)
                         {
-                            string name = Path.GetFileNameWithoutExtension(f);
-                            string sortKey = ToNaturalSortKey(name);
-                            result.Add((f, sortKey));
+                            if (token.IsCancellationRequested) return result;
+                            
+                            string ext = Path.GetExtension(f);
+                            if (s_imageExtensions.Contains(ext))
+                            {
+                                string name = Path.GetFileNameWithoutExtension(f) ?? string.Empty;
+                                string sortKey = ToNaturalSortKey(name.AsSpan());
+                                result.Add((f, sortKey));
+                            }
                         }
+                        result.Sort((a, b) => StringComparer.Ordinal.Compare(a.SortKey, b.SortKey));
                     }
-                    result.Sort((a, b) => StringComparer.Ordinal.Compare(a.SortKey, b.SortKey));
-                }
-                catch { }
-                return result;
-            }, token);
+                    catch { }
+                    return result;
+                }, token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
 
             if (token.IsCancellationRequested) return;
 
@@ -122,35 +136,63 @@ namespace MangaViewer.Services
             }
 
             // 첫 이미지 바로 추가 (표지)
-            _pages.Add(new MangaPageViewModel { FilePath = imageFiles[0].Path });
-            RaiseMangaLoaded();
-            RaisePageChanged();
+            dispatcher.TryEnqueue(() =>
+            {
+                if (!token.IsCancellationRequested)
+                {
+                    _pages.Add(new MangaPageViewModel { FilePath = imageFiles[0].Path });
+                    RaiseMangaLoaded();
+                    RaisePageChanged();
+                }
+            });
 
             // 나머지 배치 추가 (UI 끊김 방지)
+            // Capture the current CTS to ensure we're checking the right token
+            var currentCts = _loadCts;
             _ = Task.Run(async () =>
             {
                 const int batchSize = 64;
                 var batch = new List<MangaPageViewModel>(batchSize);
-                for (int i = 1; i < imageFiles.Count; i++)
+                
+                try
                 {
-                    if (_loadCts!.IsCancellationRequested) return;
-                    batch.Add(new MangaPageViewModel { FilePath = imageFiles[i].Path });
-
-                    bool flush = batch.Count >= batchSize || i == imageFiles.Count - 1;
-                    if (flush)
+                    for (int i = 1; i < imageFiles.Count; i++)
                     {
-                        var toAdd = batch.ToArray();
-                        batch.Clear();
-                        dispatcher.TryEnqueue(() =>
+                        if (currentCts.IsCancellationRequested) return;
+                        
+                        batch.Add(new MangaPageViewModel { FilePath = imageFiles[i].Path });
+
+                        bool flush = batch.Count >= batchSize || i == imageFiles.Count - 1;
+                        if (flush)
                         {
-                            if (_loadCts.IsCancellationRequested) return;
-                            foreach (var vm in toAdd) _pages.Add(vm);
-                            RaisePageChanged();
-                        });
-                        try { await Task.Delay(8, _loadCts.Token); } catch { return; }
+                            var toAdd = batch.ToArray();
+                            batch.Clear();
+                            
+                            dispatcher.TryEnqueue(() =>
+                            {
+                                if (!currentCts.IsCancellationRequested)
+                                {
+                                    foreach (var vm in toAdd) _pages.Add(vm);
+                                    RaisePageChanged();
+                                }
+                            });
+                            
+                            try 
+                            { 
+                                await Task.Delay(8, currentCts.Token).ConfigureAwait(false); 
+                            } 
+                            catch (OperationCanceledException) 
+                            { 
+                                return; 
+                            }
+                        }
                     }
                 }
-            }, token);
+                catch (OperationCanceledException)
+                {
+                    // Expected when cancelled
+                }
+            }, CancellationToken.None); // Use None to prevent automatic cancellation
         }
 
         public void Clear()
@@ -332,21 +374,35 @@ namespace MangaViewer.Services
             return -1;
         }
 
-        private static string ToNaturalSortKey(string name)
+        /// <summary>
+        /// Natural sort key generation using Span<T> for better performance.
+        /// Converts numeric substrings to fixed-width padded format for lexical ordering.
+        /// </summary>
+        private static string ToNaturalSortKey(ReadOnlySpan<char> name)
         {
-            if (string.IsNullOrEmpty(name)) return string.Empty;
+            if (name.IsEmpty) return string.Empty;
+            
             var sb = new System.Text.StringBuilder(name.Length + 16);
             int i = 0;
             while (i < name.Length)
             {
                 char c = name[i];
-                if (!char.IsDigit(c)) { sb.Append(c); i++; continue; }
+                if (!char.IsDigit(c)) 
+                { 
+                    sb.Append(c); 
+                    i++; 
+                    continue; 
+                }
+                
                 int start = i;
                 while (i < name.Length && char.IsDigit(name[i])) i++;
                 int len = i - start;
-                // pad numeric part to fixed width (10) for lexical ordering
-                for (int pad = 10 - len; pad > 0; pad--) sb.Append('0');
-                sb.Append(name, start, len);
+                
+                // Pad numeric part to fixed width (10) for lexical ordering
+                for (int pad = 10 - len; pad > 0; pad--) 
+                    sb.Append('0');
+                    
+                sb.Append(name.Slice(start, len));
             }
             return sb.ToString();
         }
