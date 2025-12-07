@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -16,15 +17,20 @@ namespace MangaViewer.Services
     {
         private static readonly string s_folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer");
         private static readonly string s_libraryFile = Path.Combine(s_folder, "library.json");
-        private static readonly JsonSerializerOptions s_options = new() { WriteIndented = true };
+        private static readonly JsonSerializerOptions s_options = new() 
+        { 
+            WriteIndented = true
+        };
+
+        private static readonly HashSet<string> s_imageExtensions = new(StringComparer.OrdinalIgnoreCase)
+            { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
 
         private List<string> _libraryPaths = new();
         private readonly SemaphoreSlim _lock = new(1, 1);
 
         public LibraryService()
         {
-            // Synchronous load on construction for immediate availability
-            _ = LoadLibraryPathsAsync().ConfigureAwait(false);
+            _ = LoadLibraryPathsAsync();
         }
 
         public List<string> GetLibraryPaths() => new(_libraryPaths);
@@ -44,12 +50,6 @@ namespace MangaViewer.Services
             await SaveLibraryPathsAsync().ConfigureAwait(false);
         }
 
-        // Legacy sync method for compatibility
-        public void AddLibraryPath(string path)
-        {
-            _ = AddLibraryPathAsync(path).ConfigureAwait(false);
-        }
-
         public async Task RemoveLibraryPathAsync(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
@@ -62,12 +62,6 @@ namespace MangaViewer.Services
             finally { _lock.Release(); }
             
             await SaveLibraryPathsAsync().ConfigureAwait(false);
-        }
-
-        // Legacy sync method for compatibility
-        public void RemoveLibraryPath(string path)
-        {
-            _ = RemoveLibraryPathAsync(path).ConfigureAwait(false);
         }
 
         public async Task MoveLibraryPathAsync(int oldIndex, int newIndex)
@@ -88,18 +82,12 @@ namespace MangaViewer.Services
             await SaveLibraryPathsAsync().ConfigureAwait(false);
         }
 
-        // Legacy sync method for compatibility
-        public void MoveLibraryPath(int oldIndex, int newIndex)
-        {
-            _ = MoveLibraryPathAsync(oldIndex, newIndex).ConfigureAwait(false);
-        }
-
-        public async Task<List<MangaFolderInfo>> ScanLibraryAsync()
+        public async Task<List<MangaFolderInfo>> ScanLibraryAsync(CancellationToken cancellationToken = default)
         {
             var result = new List<MangaFolderInfo>();
             
             List<string> pathsCopy;
-            await _lock.WaitAsync().ConfigureAwait(false);
+            await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 pathsCopy = new List<string>(_libraryPaths);
@@ -108,32 +96,35 @@ namespace MangaViewer.Services
             
             foreach (var libraryPath in pathsCopy)
             {
+                if (cancellationToken.IsCancellationRequested) break;
                 if (!Directory.Exists(libraryPath)) continue;
                 
-                var folders = await Task.Run(() => GetMangaFolders(libraryPath)).ConfigureAwait(false);
+                var folders = await Task.Run(() => GetMangaFolders(libraryPath, cancellationToken), cancellationToken).ConfigureAwait(false);
                 result.AddRange(folders);
             }
             
             return result;
         }
 
-        private List<MangaFolderInfo> GetMangaFolders(string libraryPath)
+        private List<MangaFolderInfo> GetMangaFolders(string libraryPath, CancellationToken cancellationToken)
         {
             var result = new List<MangaFolderInfo>();
             
             try
             {
-                var directories = Directory.GetDirectories(libraryPath);
+                var directories = Directory.EnumerateDirectories(libraryPath);
                 
                 foreach (var dir in directories)
                 {
+                    if (cancellationToken.IsCancellationRequested) break;
+                    
                     var firstImage = GetFirstImageInFolder(dir);
                     if (firstImage != null)
                     {
                         result.Add(new MangaFolderInfo
                         {
                             FolderPath = dir,
-                            FolderName = Path.GetFileName(dir),
+                            FolderName = Path.GetFileName(dir) ?? string.Empty,
                             FirstImagePath = firstImage
                         });
                     }
@@ -150,17 +141,10 @@ namespace MangaViewer.Services
         {
             try
             {
-                var imageExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                    { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
-                
-                var files = Directory.GetFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly);
-                
-                var imageFiles = files
-                    .Where(f => imageExtensions.Contains(Path.GetExtension(f)))
+                return Directory.EnumerateFiles(folderPath, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(f => s_imageExtensions.Contains(Path.GetExtension(f)))
                     .OrderBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                
-                return imageFiles.FirstOrDefault();
+                    .FirstOrDefault();
             }
             catch
             {
@@ -205,7 +189,7 @@ namespace MangaViewer.Services
             finally { _lock.Release(); }
         }
 
-        private class LibraryData
+        public class LibraryData
         {
             public List<string> Paths { get; set; } = new();
         }

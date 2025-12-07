@@ -13,9 +13,12 @@ namespace MangaViewer.Pages
     {
         public LibraryViewModel? ViewModel { get; private set; }
 
+        private double _savedScrollPosition;
+
         public LibraryPage()
         {
             this.InitializeComponent();
+            this.NavigationCacheMode = NavigationCacheMode.Enabled;
             this.Loaded += LibraryPage_Loaded;
         }
 
@@ -24,29 +27,52 @@ namespace MangaViewer.Pages
             UpdateEmptyStateVisibility();
         }
 
-        protected override void OnNavigatedTo(NavigationEventArgs e)
+        protected override async void OnNavigatedTo(NavigationEventArgs e)
         {
             base.OnNavigatedTo(e);
             
             if (e.Parameter is LibraryViewModel vm)
             {
-                ViewModel = vm;
-                DataContext = ViewModel;
-                ViewModel.PropertyChanged += ViewModel_PropertyChanged;
-                ViewModel.MangaFolders.CollectionChanged += MangaFolders_CollectionChanged;
+                if (ViewModel != vm)
+                {
+                    // Unsubscribe from old ViewModel if different
+                    if (ViewModel != null)
+                    {
+                        ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
+                        ViewModel.MangaFolders.CollectionChanged -= MangaFolders_CollectionChanged;
+                    }
+
+                    ViewModel = vm;
+                    DataContext = ViewModel;
+                    ViewModel.PropertyChanged += ViewModel_PropertyChanged;
+                    ViewModel.MangaFolders.CollectionChanged += MangaFolders_CollectionChanged;
+                }
+
+                // Load library only if not already loaded
+                await ViewModel.LoadLibraryIfNeededAsync();
                 UpdateEmptyStateVisibility();
+
+                // Restore scroll position
+                if (_savedScrollPosition > 0)
+                {
+                    LibraryScrollViewer.ChangeView(null, _savedScrollPosition, null, disableAnimation: true);
+                }
             }
+        }
+
+        protected override void OnNavigatingFrom(NavigatingCancelEventArgs e)
+        {
+            base.OnNavigatingFrom(e);
+
+            // Save scroll position before navigating away
+            _savedScrollPosition = LibraryScrollViewer.VerticalOffset;
         }
 
         protected override void OnNavigatedFrom(NavigationEventArgs e)
         {
             base.OnNavigatedFrom(e);
             
-            if (ViewModel != null)
-            {
-                ViewModel.PropertyChanged -= ViewModel_PropertyChanged;
-                ViewModel.MangaFolders.CollectionChanged -= MangaFolders_CollectionChanged;
-            }
+            // Don't unsubscribe events since page is cached
         }
 
         private void ViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)

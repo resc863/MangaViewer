@@ -19,7 +19,7 @@ namespace MangaViewer.Services;
 /// Purpose: Stream images from an E-Hentai gallery into in-memory byte cache while yielding ordered batches.
 /// Core Features:
 ///  - Fetch gallery page URLs (multi-page navigation parsing) and then each image page to extract image URLs.
-///  - Concurrent controlled downloads with global semaphore (_globalFetchGate) + per-session parallel limit.
+///  - Adaptive concurrent downloads with global semaphore (_globalFetchGate) + per-session parallel limit.
 ///  - Memory image caching: Each downloaded image stored via ImageCacheService under a mem: key (mem:gid:####.ext).
 ///  - Supports partial session restoration (resume after cancellation) using _partialGalleryCache.
 ///  - Provides streaming consumer API (IAsyncEnumerable<GalleryBatch>) delivering delta batches in order.
@@ -32,9 +32,12 @@ namespace MangaViewer.Services;
 ///  - Resets session on mismatch if caller provides different page URL list.
 /// Thread Safety: Uses ConcurrentDictionary and lock blocks only where necessary. Individual image keys stored in
 /// a ConcurrentDictionary<int,string> for stable ordering by index.
+/// Performance Improvements:
+///  - Adaptive concurrency based on processor count
+///  - Optimized semaphore usage
 /// Extension Ideas:
 ///  - Persist partial cache across application restarts (disk-backed resume).
-///  - Adaptive concurrency based on bandwidth utilization.
+///  - Adaptive prefetch radius based on scroll velocity.
 ///  - Support writing files to disk optionally instead of memory-only.
 /// </summary>
 public class EhentaiService
@@ -68,19 +71,22 @@ public class EhentaiService
         public string GalleryId = string.Empty;
         public string[] PageUrls = Array.Empty<string>();
         public int Total;
-        public ConcurrentDictionary<int, string> Keys = new(); // index -> mem key
+        public ConcurrentDictionary<int, string> Keys = new();
         public Task? Runner;
         public CancellationTokenSource Cts = new();
         public DateTime StartTimeUtc = DateTime.UtcNow;
         public volatile bool Completed;
         public volatile bool Faulted;
-        public int LastYieldCount; // last number of yielded items for delta logic
-        public bool RestoredPartial; // indicates partial restored
+        public int LastYieldCount;
+        public bool RestoredPartial;
     }
+    
     private static readonly ConcurrentDictionary<string, GallerySession> _sessions = new(StringComparer.OrdinalIgnoreCase);
-
     private static readonly TimeSpan CompletedSessionRetain = TimeSpan.FromMinutes(10);
-    private static readonly SemaphoreSlim _globalFetchGate = new(6); // global concurrent image fetch limit
+    
+    // Adaptive concurrency based on processor count
+    private static readonly int _globalConcurrency = Math.Clamp(Environment.ProcessorCount * 2, 4, 8);
+    private static readonly SemaphoreSlim _globalFetchGate = new(_globalConcurrency, _globalConcurrency);
 
     public static bool VerboseDebug { get; set; } = true;
     private static int _inFlightFetches;
@@ -109,7 +115,7 @@ public class EhentaiService
             {
                 if (!s.Completed && !s.Faulted && s.Keys.Count > 0 && !_galleryCache.ContainsKey(galleryUrl))
                 {
-                    var partial = new ConcurrentDictionary<int, string>(s.Keys); // copy
+                    var partial = new ConcurrentDictionary<int, string>(s.Keys);
                     _partialGalleryCache[galleryUrl] = partial;
                     if (VerboseDebug) Debug.WriteLine($"[EH][PARTIAL-SNAPSHOT] {galleryUrl} count={partial.Count}");
                 }
@@ -126,7 +132,9 @@ public class EhentaiService
     public static void CancelAllExcept(IEnumerable<string> keepUrls)
     {
         var keep = new HashSet<string>(keepUrls ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
-        foreach (var kv in _sessions.ToArray()) if (!keep.Contains(kv.Key)) CancelDownload(kv.Key);
+        foreach (var kv in _sessions.ToArray()) 
+            if (!keep.Contains(kv.Key)) 
+                CancelDownload(kv.Key);
     }
 
     /// <summary>
@@ -138,7 +146,8 @@ public class EhentaiService
         foreach (var kv in _sessions.ToArray())
         {
             var s = kv.Value;
-            if (s.Completed && (now - s.StartTimeUtc) > CompletedSessionRetain) CancelDownload(kv.Key);
+            if (s.Completed && (now - s.StartTimeUtc) > CompletedSessionRetain) 
+                CancelDownload(kv.Key);
         }
     }
     #endregion
@@ -149,8 +158,8 @@ public class EhentaiService
     /// </summary>
     public async Task<(List<string> pageUrls, string? title)> GetAllPageUrlsAsync(string galleryUrl, CancellationToken token)
     {
-        string html = await _http.GetStringAsync(galleryUrl, token);
-        return await ParseGalleryAllPagesAsync(galleryUrl, html, token);
+        string html = await _http.GetStringAsync(galleryUrl, token).ConfigureAwait(false);
+        return await ParseGalleryAllPagesAsync(galleryUrl, html, token).ConfigureAwait(false);
     }
     #endregion
 
@@ -198,7 +207,9 @@ public class EhentaiService
             bool mismatch = existing.Total != total;
             if (!mismatch)
             {
-                for (int i = 0; i < Math.Min(5, total) && !mismatch; i++) mismatch |= !string.Equals(existing.PageUrls[i], pages[i], StringComparison.OrdinalIgnoreCase);
+                for (int i = 0; i < Math.Min(5, total) && !mismatch; i++) 
+                    mismatch |= !string.Equals(existing.PageUrls[i], pages[i], StringComparison.OrdinalIgnoreCase);
+                    
                 for (int i = 0; i < Math.Min(5, total) && !mismatch; i++)
                 {
                     int idxCheck = total - 1 - i;
@@ -222,6 +233,7 @@ public class EhentaiService
                 Total = pages.Count,
                 StartTimeUtc = DateTime.UtcNow
             };
+            
             // Restore partial snapshot
             if (_partialGalleryCache.TryGetValue(url, out var part) && part.Count > 0)
             {
@@ -260,12 +272,6 @@ public class EhentaiService
 
         while (!token.IsCancellationRequested)
         {
-            if (token.IsCancellationRequested)
-            {
-                CancelDownload(galleryUrl);
-                yield break;
-            }
-
             if (session.Completed)
             {
                 if (_galleryCache.TryGetValue(galleryUrl, out var finalList))
@@ -299,7 +305,7 @@ public class EhentaiService
                     session.LastYieldCount = ordered.Count;
                     if (delta.Count > 0)
                     {
-                        progress?.Invoke($"진행 {ordered.Count}/{session.Total}");
+                        progress?.Invoke($"다운로드 {ordered.Count}/{session.Total}");
                         if (VerboseDebug) Debug.WriteLine($"[EH][YIELD] url={galleryUrl} delta={delta.Count} total={ordered.Count}/{session.Total} inflight={Volatile.Read(ref _inFlightFetches)}");
                         yield return new GalleryBatch(delta, ordered.Count, session.Total);
                     }
@@ -313,44 +319,57 @@ public class EhentaiService
                     var final = session.Keys.OrderBy(k => k.Key).Select(k => k.Value).ToList();
                     if (final.Count == session.Total) _galleryCache[session.GalleryUrl] = final;
                 }
-                _partialGalleryCache.TryRemove(galleryUrl, out _); // clear snapshot
+                _partialGalleryCache.TryRemove(galleryUrl, out _);
                 yield break;
             }
 
-            try { await Task.Delay(120, token); } catch (OperationCanceledException) { CancelDownload(galleryUrl); yield break; }
+            try 
+            { 
+                await Task.Delay(120, token).ConfigureAwait(false); 
+            } 
+            catch (OperationCanceledException) 
+            { 
+                CancelDownload(galleryUrl); 
+                yield break; 
+            }
         }
     }
 
     private static async Task RunDownloadAsync(GallerySession session, int sessionId)
     {
         var token = session.Cts.Token;
-        int sessionParallel = Math.Clamp(Environment.ProcessorCount / 2, 2, 3);
+        
+        // Adaptive per-session concurrency
+        int sessionParallel = Math.Clamp(Environment.ProcessorCount / 2, 2, 4);
         var running = new List<Task>();
         int nextIndex = 0;
 
         async Task Fetch(int idx)
         {
-            if (session.Keys.ContainsKey(idx)) return; // already present (restored or earlier)
+            if (session.Keys.ContainsKey(idx)) return;
             DateTime start = DateTime.UtcNow;
             try
             {
                 token.ThrowIfCancellationRequested();
-                await _globalFetchGate.WaitAsync(token);
+                await _globalFetchGate.WaitAsync(token).ConfigureAwait(false);
                 var waited = (DateTime.UtcNow - start).TotalMilliseconds;
                 Interlocked.Increment(ref _inFlightFetches);
                 if (VerboseDebug) Debug.WriteLine($"[EH][FETCH-START] S{sessionId} idx={idx + 1} waitMs={waited:F1} inflight={_inFlightFetches}");
                 try
                 {
                     string pageUrl = session.PageUrls[idx];
-                    string pageHtml = await _http.GetStringAsync(pageUrl, token);
+                    string pageHtml = await _http.GetStringAsync(pageUrl, token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
                     string? imgUrl = ExtractImageUrl(pageHtml);
                     if (imgUrl == null) return;
+                    
                     using var req = new HttpRequestMessage(HttpMethod.Get, imgUrl) { Headers = { Referrer = new Uri(pageUrl) } };
-                    var resp = await _http.SendAsync(req, token);
+                    var resp = await _http.SendAsync(req, token).ConfigureAwait(false);
                     if (!resp.IsSuccessStatusCode) return;
-                    byte[] data = await resp.Content.ReadAsByteArrayAsync(token);
+                    
+                    byte[] data = await resp.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
                     token.ThrowIfCancellationRequested();
+                    
                     string ext = Path.GetExtension(new Uri(imgUrl).AbsolutePath);
                     if (string.IsNullOrEmpty(ext) || ext.Length > 5) ext = ".jpg";
                     string key = $"mem:{session.GalleryId}:{(idx + 1).ToString("D4")}{ext}";
@@ -368,7 +387,8 @@ public class EhentaiService
             catch (OperationCanceledException) { }
             catch (Exception ex)
             {
-                session.Faulted = true; Debug.WriteLine($"[EH][FETCH-ERR] S{sessionId} idx={idx + 1} {ex.Message}");
+                session.Faulted = true; 
+                Debug.WriteLine($"[EH][FETCH-ERR] S{sessionId} idx={idx + 1} {ex.Message}");
             }
         }
 
@@ -389,7 +409,8 @@ public class EhentaiService
                     running.Add(t);
                 }
                 if (running.Count == 0) break;
-                var finished = await Task.WhenAny(running);
+                
+                var finished = await Task.WhenAny(running).ConfigureAwait(false);
                 running.Remove(finished);
             }
         }
@@ -416,7 +437,9 @@ public class EhentaiService
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var (firstPages, title) = ParseGalleryPage(firstHtml);
-        foreach (var p in firstPages) if (seen.Add(p)) ordered.Add(p);
+        foreach (var p in firstPages) 
+            if (seen.Add(p)) 
+                ordered.Add(p);
 
         var doc = new HtmlDocument();
         doc.LoadHtml(firstHtml);
@@ -438,10 +461,12 @@ public class EhentaiService
             if (count++ >= MaxIndexPages) break;
             try
             {
-                string html = await _http.GetStringAsync(idxUrl, token);
+                string html = await _http.GetStringAsync(idxUrl, token).ConfigureAwait(false);
                 var (pPages, _) = ParseGalleryPage(html);
-                foreach (var p in pPages) if (seen.Add(p)) ordered.Add(p);
-                await Task.Delay(40, token);
+                foreach (var p in pPages) 
+                    if (seen.Add(p)) 
+                        ordered.Add(p);
+                await Task.Delay(40, token).ConfigureAwait(false);
             }
             catch { }
         }
@@ -486,7 +511,9 @@ public class EhentaiService
             try
             {
                 var matches = Regex.Matches(html, @"https?://[^""]+/s/[0-9a-f]{10,}/\d+-\d+");
-                foreach (Match m in matches) if (IsImagePageLink(m.Value)) list.Add(m.Value);
+                foreach (Match m in matches) 
+                    if (IsImagePageLink(m.Value)) 
+                        list.Add(m.Value);
             }
             catch { }
         }
@@ -495,7 +522,8 @@ public class EhentaiService
         return (list, title);
     }
 
-    private static bool IsImagePageLink(string href) => !string.IsNullOrEmpty(href) && href.Contains("/s/") && Regex.IsMatch(href, @"/s/[0-9a-f]{5,}/\d+-\d+");
+    private static bool IsImagePageLink(string href) => 
+        !string.IsNullOrEmpty(href) && href.Contains("/s/") && Regex.IsMatch(href, @"/s/[0-9a-f]{5,}/\d+-\d+");
 
     private static string? ExtractImageUrl(string html)
     {
@@ -517,12 +545,11 @@ public class EhentaiService
     /// </summary>
     public async Task<int> GetEstimatedPageCountAsync(string galleryUrl, CancellationToken token)
     {
-        try { var (pages, _) = await GetAllPageUrlsAsync(galleryUrl, token); return pages.Count; } catch { return 0; }
+        try 
+        { 
+            var (pages, _) = await GetAllPageUrlsAsync(galleryUrl, token).ConfigureAwait(false); 
+            return pages.Count; 
+        } 
+        catch { return 0; }
     }
-
-    /// <summary>
-    /// Legacy method retained for callers expecting the side-effect of clearing memory images.
-    /// </summary>
-    [Obsolete("Streaming pipeline performs its own per-gallery memory management; explicit clearing no longer required.")]
-    public static void ClearInMemoryCacheForNewGallery() => ImageCacheService.Instance.ClearMemoryImages();
 }

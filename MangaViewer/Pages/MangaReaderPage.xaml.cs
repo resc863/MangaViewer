@@ -103,10 +103,10 @@ namespace MangaViewer.Pages
             // Load saved pane width via SettingsProvider
             try
             {
-                var w = SettingsProvider.GetDouble("ReaderPaneWidth", double.NaN);
+                var w = SettingsProvider.Get("ReaderPaneWidth", double.NaN);
                 if (!double.IsNaN(w))
                     ReaderSplitView.OpenPaneLength = Math.Clamp(w, PaneMinWidth, PaneMaxWidth);
-                var bw = SettingsProvider.GetDouble("BookmarkPaneWidth", double.NaN);
+                var bw = SettingsProvider.Get("BookmarkPaneWidth", double.NaN);
                 if (!double.IsNaN(bw) && BookmarksList?.Parent is Grid g)
                     g.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(bw, BookmarkPaneMinWidth, BookmarkPaneMaxWidth));
             }
@@ -215,14 +215,14 @@ namespace MangaViewer.Pages
             ViewModel.PageViewChanged += (_, __) => RedrawAllOcr();
             ViewModel.OcrCompleted += (_, __) => RedrawAllOcr();
             ViewModel.PageSlideRequested += OnPageSlideRequested;
-            ViewModel.MangaFolderLoaded += OnMangaFolderLoaded; // 폴더 로드 완료 이벤트 구독
+            ViewModel.MangaFolderLoaded += OnMangaFolderLoaded;
             ViewModel.PropertyChanged -= OnViewModelPropertyChanged;
             ViewModel.PropertyChanged += OnViewModelPropertyChanged;
 
             // Load preferred pane state from SettingsProvider
             try
             {
-                bool pref = SettingsProvider.GetBool("ReaderPaneOpenPreferred", ViewModel.IsPaneOpen);
+                bool pref = SettingsProvider.Get("ReaderPaneOpenPreferred", ViewModel.IsPaneOpen);
                 _preferredPaneOpen = pref;
                 if (ViewModel.IsPaneOpen != pref)
                     ViewModel.IsPaneOpen = pref;
@@ -298,7 +298,7 @@ namespace MangaViewer.Pages
 
                 // Update preferred state and persist
                 _preferredPaneOpen = vm.IsPaneOpen;
-                try { SettingsProvider.SetBool("ReaderPaneOpenPreferred", _preferredPaneOpen.Value); } catch { }
+                try { SettingsProvider.Set("ReaderPaneOpenPreferred", _preferredPaneOpen.Value); } catch { }
             }
             else if (e.PropertyName == nameof(MangaViewModel.SelectedThumbnailIndex))
             {
@@ -682,7 +682,7 @@ namespace MangaViewer.Pages
             double newLen = ReaderSplitView.OpenPaneLength - e.HorizontalChange;
             newLen = Math.Clamp(newLen, PaneMinWidth, PaneMaxWidth);
             ReaderSplitView.OpenPaneLength = newLen;
-            try { SettingsProvider.SetDouble("ReaderPaneWidth", newLen); } catch { }
+            try { SettingsProvider.Set("ReaderPaneWidth", newLen); } catch { }
         }
 
         private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
@@ -769,7 +769,7 @@ namespace MangaViewer.Pages
                 double newLen = cur + e.HorizontalChange;
                 newLen = Math.Clamp(newLen, BookmarkPaneMinWidth, BookmarkPaneMaxWidth);
                 g.ColumnDefinitions[1].Width = new GridLength(newLen);
-                try { SettingsProvider.SetDouble("BookmarkPaneWidth", newLen); } catch { }
+                try { SettingsProvider.Set("BookmarkPaneWidth", newLen); } catch { }
             }
         }
     }

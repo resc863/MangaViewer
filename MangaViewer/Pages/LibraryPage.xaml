@@ -31,7 +31,8 @@
         </Grid>
 
         <!-- Content area with ScrollViewer -->
-        <ScrollViewer Grid.Row="1" 
+        <ScrollViewer x:Name="LibraryScrollViewer"
+                      Grid.Row="1" 
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled">
             <Grid x:Name="ContentGrid">

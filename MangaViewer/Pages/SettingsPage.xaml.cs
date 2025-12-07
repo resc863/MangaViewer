@@ -216,29 +216,29 @@ namespace MangaViewer.Pages
                 
                 if (folder != null)
                 {
-                    _libraryService.AddLibraryPath(folder.Path);
+                    await _libraryService.AddLibraryPathAsync(folder.Path);
                     RefreshLibraryPaths();
                     
                     if (MainWindow.RootViewModel?.LibraryViewModel != null)
                     {
-                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                        await MainWindow.RootViewModel.LibraryViewModel.RefreshLibraryAsync();
                     }
                 }
             }
             catch { }
         }
 
-        private void RemovePathBtn_Click(object sender, RoutedEventArgs e)
+        private async void RemovePathBtn_Click(object sender, RoutedEventArgs e)
         {
             // Remove selected library path
             if (_libraryPathsList.SelectedItem is string path)
             {
-                _libraryService.RemoveLibraryPath(path);
+                await _libraryService.RemoveLibraryPathAsync(path);
                 RefreshLibraryPaths();
                 
                 if (MainWindow.RootViewModel?.LibraryViewModel != null)
                 {
-                    _ = MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                    await MainWindow.RootViewModel.LibraryViewModel.RefreshLibraryAsync();
                 }
             }
         }
@@ -277,10 +277,10 @@ namespace MangaViewer.Pages
                 int index = paths.IndexOf(path);
                 if (index > 0)
                 {
-                    _libraryService.MoveLibraryPath(index, index - 1);
+                    await _libraryService.MoveLibraryPathAsync(index, index - 1);
                     RefreshLibraryPaths();
                     if (MainWindow.RootViewModel?.LibraryViewModel != null)
-                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                        await MainWindow.RootViewModel.LibraryViewModel.RefreshLibraryAsync();
                 }
             }
         }
@@ -293,10 +293,10 @@ namespace MangaViewer.Pages
                 int index = paths.IndexOf(path);
                 if (index >= 0 && index < paths.Count - 1)
                 {
-                    _libraryService.MoveLibraryPath(index, index + 1);
+                    await _libraryService.MoveLibraryPathAsync(index, index + 1);
                     RefreshLibraryPaths();
                     if (MainWindow.RootViewModel?.LibraryViewModel != null)
-                        await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                        await MainWindow.RootViewModel.LibraryViewModel.RefreshLibraryAsync();
                 }
             }
         }
@@ -305,10 +305,10 @@ namespace MangaViewer.Pages
         {
             if (sender is Button b && b.DataContext is string path)
             {
-                _libraryService.RemoveLibraryPath(path);
+                await _libraryService.RemoveLibraryPathAsync(path);
                 RefreshLibraryPaths();
                 if (MainWindow.RootViewModel?.LibraryViewModel != null)
-                    await MainWindow.RootViewModel.LibraryViewModel.LoadLibraryAsync();
+                    await MainWindow.RootViewModel.LibraryViewModel.RefreshLibraryAsync();
             }
         }
 

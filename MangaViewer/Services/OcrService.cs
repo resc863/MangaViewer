@@ -1,16 +1,14 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MangaViewer.ViewModels;
 using Windows.Foundation;
-using Windows.Globalization;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
-using Windows.Storage; // for StorageFile in legacy RecognizeAsync
+using Windows.Storage;
 using Windows.Storage.Streams;
 using MangaViewer.Services.Logging;
 
@@ -20,6 +18,7 @@ namespace MangaViewer.Services
     {
         Task<Windows.Media.Ocr.OcrResult?> RecognizeAsync(SoftwareBitmap bitmap, CancellationToken token);
     }
+    
     internal sealed class WinRtOcrEngineFacade : IOcrEngineFacade
     {
         private readonly OcrEngine? _engine;
@@ -39,21 +38,7 @@ namespace MangaViewer.Services
     }
 
     /// <summary>
-    /// OcrService
-    /// Purpose: Provide OCR processing for images with configurable language, grouping, and paragraph detection heuristics.
-    /// Features:
-    ///  - Language selection (auto or explicit tag) with engine caching per language tag.
-    ///  - Grouping modes: Word, Line, Paragraph (paragraph uses gap heuristics for vertical/horizontal layouts).
-    ///  - Paragraph grouping configurable gap factors for vertical/horizontal detection.
-    ///  - Debounced SettingsChanged event to avoid excessive reprocessing on rapid UI adjustments.
-    /// Caching: Results keyed by path + current OCR settings; invalidated whenever settings change.
-    /// Threading: Decoding & OCR executed asynchronously; UI thread only needed for event invocation (SynchronizationContext captured).
-    /// Robustness: Swallows decoding/engine failures; returns empty list on errors.
-    /// Modernization: Uses FileRandomAccessStream for file access (Windows App SDK 1.8+ compatible).
-    /// Extension Ideas:
-    ///  - Add multi-language auto-detection on a per-image basis.
-    ///  - Persist cache to disk across launches for large galleries.
-    ///  - Provide bounding box confidence scores (if underlying API exposes them).
+    /// OcrService - Provides OCR processing for images with configurable language, grouping, and paragraph detection.
     /// </summary>
     public class OcrService
     {
@@ -85,9 +70,6 @@ namespace MangaViewer.Services
             _syncContext = SynchronizationContext.Current;
         }
 
-        /// <summary>
-        /// Set the language for OCR processing.
-        /// </summary>
         public void SetLanguage(string languageTag)
         {
             languageTag ??= "auto";
@@ -99,9 +81,7 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
-        /// <summary>
-        /// Set the grouping mode for OCR results.
-        /// </summary>
+
         public void SetGrouping(OcrGrouping grouping)
         {
             if (GroupingMode != grouping)
@@ -110,9 +90,7 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
-        /// <summary>
-        /// Set the text writing mode (horizontal/vertical) for OCR processing.
-        /// </summary>
+
         public void SetWritingMode(WritingMode mode)
         {
             if (TextWritingMode != mode)
@@ -121,9 +99,7 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
-        /// <summary>
-        /// Set the paragraph gap factor for vertical paragraph detection.
-        /// </summary>
+
         public void SetParagraphGapFactorVertical(double value)
         {
             value = Math.Clamp(value, 0.05, 10.0);
@@ -133,9 +109,7 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
-        /// <summary>
-        /// Set the paragraph gap factor for horizontal paragraph detection.
-        /// </summary>
+
         public void SetParagraphGapFactorHorizontal(double value)
         {
             value = Math.Clamp(value, 0.05, 10.0);
@@ -146,9 +120,6 @@ namespace MangaViewer.Services
             }
         }
 
-        /// <summary>
-        /// Clear the cached OCR results.
-        /// </summary>
         public void ClearCache() => _ocrCache.Clear();
 
         private void OnSettingsChanged()
@@ -186,13 +157,7 @@ namespace MangaViewer.Services
             }
         }
 
-        /// <summary>
-        /// Set the debounce delay for the SettingsChanged event.
-        /// </summary>
-        public void SetSettingsChangedDebounce(TimeSpan delay)
-        {
-            _debounceDelay = delay;
-        }
+        public void SetSettingsChangedDebounce(TimeSpan delay) => _debounceDelay = delay;
 
         private OcrEngine? TryCreateEngineForLanguage(string tag)
         {
@@ -215,51 +180,48 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// Legacy synchronous recognition (no internal caching). Provided for direct StorageFile usage.
+        /// Legacy synchronous recognition for direct StorageFile usage.
         /// </summary>
         public async Task<List<OcrResult>> RecognizeAsync(StorageFile imageFile)
         {
             var engine = GetActiveEngine();
-            if (engine == null)
-            {
-                return new List<OcrResult>();
-            }
+            if (engine == null) return new List<OcrResult>();
 
             try
             {
-                using (IRandomAccessStream stream = await imageFile.OpenAsync(FileAccessMode.Read))
+                using IRandomAccessStream stream = await imageFile.OpenAsync(FileAccessMode.Read);
+                var decoder = await BitmapDecoder.CreateAsync(stream);
+
+                var transform = new BitmapTransform();
+                uint width = decoder.PixelWidth;
+                uint height = decoder.PixelHeight;
+                const uint MaxDim = 4000;
+                if (width > MaxDim || height > MaxDim)
                 {
-                    var decoder = await BitmapDecoder.CreateAsync(stream);
-
-                    var transform = new BitmapTransform();
-                    uint width = decoder.PixelWidth;
-                    uint height = decoder.PixelHeight;
-                    const uint MaxDim = 4000;
-                    if (width > MaxDim || height > MaxDim)
-                    {
-                        double scale = width > height ? (double)MaxDim / width : (double)MaxDim / height;
-                        transform.ScaledWidth = (uint)Math.Max(1, Math.Round(width * scale));
-                        transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
-                    }
-
-                    var toOcr = await DecodeForOcrAsync(decoder, transform);
-
-                    var ocr = await engine.RecognizeAsync(toOcr);
-
-                    var results = new List<OcrResult>(capacity: Math.Max(8, ocr.Lines.Count * 4));
-                    foreach (var line in ocr.Lines)
-                    {
-                        foreach (var word in line.Words)
-                        {
-                            results.Add(new OcrResult
-                            {
-                                Text = word.Text,
-                                BoundingBox = word.BoundingRect
-                            });
-                        }
-                    }
-                    return results;
+                    double scale = width > height ? (double)MaxDim / width : (double)MaxDim / height;
+                    transform.ScaledWidth = (uint)Math.Max(1, Math.Round(width * scale));
+                    transform.ScaledHeight = (uint)Math.Max(1, Math.Round(height * scale));
                 }
+
+                // Use WinRtImageDecoder's decode logic through path-based API
+                var toOcr = await _decoder.DecodeForOcrAsync(imageFile.Path, CancellationToken.None);
+                if (toOcr == null) return new List<OcrResult>();
+
+                var ocr = await engine.RecognizeAsync(toOcr);
+
+                var results = new List<OcrResult>(capacity: Math.Max(8, ocr.Lines.Count * 4));
+                foreach (var line in ocr.Lines)
+                {
+                    foreach (var word in line.Words)
+                    {
+                        results.Add(new OcrResult
+                        {
+                            Text = word.Text,
+                            BoundingBox = word.BoundingRect
+                        });
+                    }
+                }
+                return results;
             }
             catch (Exception ex)
             {
@@ -285,11 +247,11 @@ namespace MangaViewer.Services
 
             try
             {
-                var toOcr = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken);
+                var toOcr = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
                 if (toOcr == null) return new List<BoundingBoxViewModel>();
                 int imgW = toOcr.PixelWidth;
                 int imgH = toOcr.PixelHeight;
-                var ocr = await facade.RecognizeAsync(toOcr, cancellationToken);
+                var ocr = await facade.RecognizeAsync(toOcr, cancellationToken).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 if (ocr == null) return new List<BoundingBoxViewModel>();
 
@@ -359,6 +321,7 @@ namespace MangaViewer.Services
             double y2 = Math.Max(a.Y + a.Height, b.Y + b.Height);
             return new Rect(x1, y1, Math.Max(0, x2 - x1), Math.Max(0, y2 - y1));
         }
+        
         private static bool IsEmpty(Rect r) => r.Width <= 0 || r.Height <= 0;
 
         private IEnumerable<BoundingBoxViewModel> GroupParagraphs(List<Rect> lineRects, Windows.Media.Ocr.OcrResult ocr, int imgW, int imgH)
@@ -437,56 +400,6 @@ namespace MangaViewer.Services
             }
             string paraText = string.Join(Environment.NewLine, parts);
             return new BoundingBoxViewModel(paraText, rect, imgW, imgH);
-        }
-
-        /// <summary>
-        /// Open file or memory image as IRandomAccessStream for decoding.
-        /// Windows App SDK 1.8+ compatible: uses FileRandomAccessStream.OpenAsync for file paths.
-        /// </summary>
-        private static async Task<IRandomAccessStream?> OpenAsRandomAccessStreamAsync(string path, CancellationToken token)
-        {
-            try
-            {
-                if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (ImageCacheService.Instance.TryGetMemoryImageBytes(path, out var bytes) && bytes != null)
-                    {
-                        var ms = new MemoryStream(bytes, writable: false);
-                        return ms.AsRandomAccessStream();
-                    }
-                    return null;
-                }
-
-                // Windows App SDK 1.8+ approach: FileRandomAccessStream for path-based access
-                return await Windows.Storage.Streams.FileRandomAccessStream.OpenAsync(path, Windows.Storage.FileAccessMode.Read).AsTask(token);
-            }
-            catch { return null; }
-        }
-
-        private static async Task<SoftwareBitmap> DecodeForOcrAsync(BitmapDecoder decoder, BitmapTransform transform)
-        {
-            SoftwareBitmap bitmap;
-            try
-            {
-                bitmap = await decoder.GetSoftwareBitmapAsync(decoder.BitmapPixelFormat, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
-            }
-            catch
-            {
-                try
-                {
-                    bitmap = await decoder.GetSoftwareBitmapAsync(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Ignore, transform, ExifOrientationMode.RespectExifOrientation, ColorManagementMode.DoNotColorManage);
-                }
-                catch
-                {
-                    bitmap = await decoder.GetSoftwareBitmapAsync();
-                }
-            }
-
-            if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Gray8 && bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8)
-            {
-                try { bitmap = SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Gray8); } catch { }
-            }
-            return bitmap;
         }
     }
 }

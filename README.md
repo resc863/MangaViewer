@@ -88,20 +88,32 @@ MangaViewer/
   MainWindow.xaml, MainWindow.xaml.cs
   Pages/
     MangaReaderPage.xaml(.cs)
+    LibraryPage.xaml(.cs)
     SearchPage.xaml(.cs)
     GalleryDetailsPage.xaml(.cs)
     SettingsPage.xaml(.cs)
   ViewModels/
-    MangaViewModel.cs
-    SearchViewModel.cs (+ GalleryItemViewModel)
-    MangaPageViewModel.cs, BoundingBoxViewModel.cs
+    MangaViewModel.cs             # main reader state/commands
+    LibraryViewModel.cs           # library folder management
+    MangaFolderViewModel.cs       # individual manga folder item
+    SearchViewModel.cs            # search + GalleryItemViewModel
+    MangaPageViewModel.cs         # thumbnail page item
+    BoundingBoxViewModel.cs       # OCR box overlay
   Services/
     MangaManager.cs               # local folder/page mapping
     OcrService.cs                 # Windows.Media.Ocr + grouping/writing
     EhentaiService.cs             # search → image streaming (memory)
-    ImageCacheService.cs          # image/memory cache, prefetch
+    ImageCacheService.cs          # decoded BitmapImage LRU cache + prefetch
+    MemoryImageCache.cs           # streaming gallery memory byte cache (mem: keys)
+    LibraryService.cs             # library folder path management
+    BookmarkService.cs            # per-folder bookmark persistence
+    SettingsProvider.cs           # JSON-backed settings store
+    TagSettingsService.cs         # tag font size settings
     Thumbnails/*                  # decode scheduling/cache
-    TagSettingsService.cs         # tag font size (SettingsProvider-backed)
+  Helpers/
+    BaseViewModel.cs              # INotifyPropertyChanged base
+    RelayCommand.cs               # ICommand implementations
+    DispatcherHelper.cs           # UI thread marshalling
   Controls/
     TagWrapPanel.cs, ParagraphGapSliderControl.cs
   Converters/
@@ -114,6 +126,50 @@ MangaViewer/
 - Windows OCR language packs are required for better recognition.
 - Large galleries may consume more memory; adjust cache limits or clear cache in Settings.
 - This app is a client example for browsing external websites (e-hentai). Follow the site's ToS and local laws. Trademarks and copyrights belong to their owners.
+
+## Architecture & Code Quality
+
+### MVVM Pattern
+All ViewModels inherit from `BaseViewModel` which provides:
+- `INotifyPropertyChanged` implementation
+- `SetProperty<T>` helper for clean property setters with change detection
+- `OnPropertyChanged` for manual notification
+
+```csharp
+// Example usage
+public class MyViewModel : BaseViewModel
+{
+    private string _name;
+    public string Name
+    {
+        get => _name;
+        set => SetProperty(ref _name, value);
+    }
+}
+```
+
+### Service Architecture
+
+**Cache Layer (Separated Responsibilities)**
+```
+MemoryImageCache (singleton)
+├── In-memory byte cache for streaming galleries (mem: keys)
+├── LRU eviction with count/size limits
+└── Per-gallery management (add/clear/query)
+
+ImageCacheService (singleton)
+├── Decoded BitmapImage LRU cache
+├── Prefetch infrastructure (Channel<T> based)
+└── Delegates to MemoryImageCache for mem: operations
+```
+
+**Settings Layer**
+```
+SettingsProvider (static)
+├── Generic Get<T>/Set<T> methods
+├── JSON-backed persistence (%LocalAppData%\MangaViewer\settings.json)
+└── Thread-safe with ReaderWriterLockSlim
+```
 
 ## Modernization notes
 
@@ -129,6 +185,38 @@ This project has been modernized to use Windows App SDK 1.8 file picker APIs:
 - **File access**: Uses `FileRandomAccessStream.OpenAsync` for path-based file access (Windows App SDK 1.8+ recommended approach)
   - ✅ Compatible with both WinUI 3 and desktop scenarios
   - ✅ Works seamlessly with file system paths
+
+### Code Cleanup & Refactoring (Latest)
+
+**SettingsProvider Simplification**
+- Removed legacy compatibility methods (`GetDouble`, `GetBool`, `GetString`, `SetDouble`, `SetBool`, `SetString`)
+- Use generic `Get<T>` and `Set<T>` methods instead:
+```csharp
+// Before (removed)
+SettingsProvider.GetDouble("key", 0.0);
+SettingsProvider.SetBool("key", true);
+
+// After (use these)
+SettingsProvider.Get("key", 0.0);
+SettingsProvider.Set("key", true);
+```
+
+**BaseViewModel Consolidation**
+- `LibraryViewModel` and `MangaFolderViewModel` now inherit from `BaseViewModel`
+- Removed duplicate `INotifyPropertyChanged` implementations
+- Consistent MVVM pattern across all ViewModels
+
+**ImageCacheService Separation**
+- Extracted `MemoryImageCache` as dedicated class for streaming gallery byte storage
+- `ImageCacheService` now delegates memory operations to `MemoryImageCache`
+- Clearer separation of concerns: decoded images vs raw bytes
+
+**App.xaml.cs Cleanup**
+- Removed duplicate `MainWindowInstance` property (use `MainWindow` instead)
+
+**Debug Logging Cleanup**
+- Removed verbose `Debug.WriteLine` calls from production code paths
+- Use `Services/Logging/Log` for error logging
 
 ### Key differences from legacy WinRT pickers:
 1. **WindowId vs InitializeWithWindow**: New pickers use `WindowId` property directly instead of COM interop pattern
@@ -161,100 +249,109 @@ string path = result?.Path;
 
 See `LICENSE.txt`.
 
-# MangaViewer
+---
 
-Overview
+# Developer Guide
+
+## Overview
 - A WinUI3 (.NET10) manga reader.
 - Features: folder-based reading, dual-page (cover split/merged), RTL/LTR switching, thumbnail decode/prefetch, OCR overlay, streaming gallery via `mem:` keys.
 - **Modernized with Windows App SDK 1.8 file picker APIs**
 
-Entry points (public surface)
+## Entry points (public surface)
 - `App`: application startup, logging configuration, calls `ImageCacheService.InitializeUI(DispatcherQueue)`.
 - `MainWindow`: hosts a single `MangaViewModel`, handles navigation/keyboard, enables the Mica backdrop.
 - `Pages/*`: views bound to view models.
-- `ViewModels`: exposes app state/commands/events.
+- `ViewModels`: exposes app state/commands/events (all inherit from `BaseViewModel`).
 - `Services`: IO/cache/business logic.
 
-Data flow (high level)
+## Data flow (high level)
 
-1) Load folder
-- UI (OpenFolder) → `MangaViewModel.OpenFolderCommand` → uses **Windows App SDK 1.8+ FolderPicker(WindowId)** → `MangaManager.LoadFolderAsync` (natural sort) → `PageChanged` event → `MangaViewModel` updates current image paths → `ImageCacheService.Get/Prefetch`.
+### 1) Load folder
+UI (OpenFolder) → `MangaViewModel.OpenFolderCommand` → uses **Windows App SDK 1.8+ FolderPicker(WindowId)** → `MangaManager.LoadFolderAsync` (natural sort) → `PageChanged` event → `MangaViewModel` updates current image paths → `ImageCacheService.Get/Prefetch`.
 
-2) Page navigation
-- Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/Toggle*` → `PageChanged` → update left/right images, sync thumbnail selection, prefetch.
+### 2) Page navigation
+Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/Toggle*` → `PageChanged` → update left/right images, sync thumbnail selection, prefetch.
 
-3) Streaming
-- Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeholders) → `AddDownloadedFiles(mem:/path)` sequential feed → display progressively.
+### 3) Streaming
+Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeholders) → `AddDownloadedFiles(mem:/path)` sequential feed → `MemoryImageCache` stores bytes → display progressively.
 
-4) OCR
-- `RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` → update `BoundingBoxViewModel` collections.
+### 4) OCR
+`RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` → update `BoundingBoxViewModel` collections.
 
-Change checklist
-- UI thread: XAML objects (`BitmapImage`, `ObservableCollection`) must be created/modified on the UI thread. Use `DispatcherQueue` from services.
-- Cancellation/errors: long-running tasks should accept `CancellationToken`. Log errors and surface user-friendly status (`Services/Logging/Log`).
-- Performance: keep prefetch/thumbnail decode concurrency low (2–4). Use small delays to avoid UI starvation.
-- Mapping: `MangaManager` rules for cover split/RTL and page↔image mapping must stay consistent. If you change rules, update `GetImagePathsForPage`, `GetPrimaryImageIndexForPage`, and `GetPageIndexFromImageIndex` together.
-- Cache: decoded LRU capacity and memory byte cache interact. When removing memory items, evict from decoded cache too.
+## Change checklist
+- **UI thread**: XAML objects (`BitmapImage`, `ObservableCollection`) must be created/modified on the UI thread. Use `DispatcherQueue` from services.
+- **Cancellation/errors**: long-running tasks should accept `CancellationToken`. Log errors and surface user-friendly status (`Services/Logging/Log`).
+- **Performance**: keep prefetch/thumbnail decode concurrency low (2–4). Use small delays to avoid UI starvation.
+- **Mapping**: `MangaManager` rules for cover split/RTL and page↔image mapping must stay consistent. If you change rules, update `GetImagePathsForPage`, `GetPrimaryImageIndexForPage`, and `GetPageIndexFromImageIndex` together.
+- **Cache**: `ImageCacheService` (decoded LRU) and `MemoryImageCache` (byte cache) interact. When removing memory items, evict from decoded cache too.
+- **ViewModels**: Always inherit from `BaseViewModel`. Use `SetProperty` for property setters.
+- **Settings**: Use generic `SettingsProvider.Get<T>` and `Set<T>` methods.
 
-Test guide
+## Test guide
 - Natural sort across mixed names (numeric/alphabetic/mixed).
 - Verify page mapping across cover split/merged and RTL combinations.
 - Streaming `mem:` mixed with local files (replacement/placeholders).
 - OCR settings auto re-run when idle.
+- Memory cache limits and eviction behavior.
+
+---
 
 # Bookmark feature
 
-Purpose
+## Purpose
 - Save/manage bookmarks per folder for the page you are reading.
 - Auto-restore bookmarks when the same folder is opened again.
 
-Usage (UI)
+## Usage (UI)
 - Open/close the bookmark panel: top toolbar bookmark toggle (`IsBookmarkPaneOpen`).
 - Add current page to bookmarks: "Add bookmark" button (`AddBookmarkCommand`).
 - Navigate to a bookmark: click an item (`NavigateToBookmarkCommand`).
 - Remove a bookmark: click the "Remove" button on the item (`RemoveBookmarkCommand`).
 - Resize the panel: drag the left border (width is persisted in settings).
 
-Persistence
+## Persistence
 - Scope: per folder.
 - Storage file: `bookmarks.json` inside the selected folder (auto created/updated).
 - JSON schema: `{ "bookmarks": [ "full_path_1", "full_path_2", ... ] }`
 - De-duplication: adding an existing path is ignored.
 - Error tolerant: read/write errors are ignored to avoid breaking the app.
 
-Behavior
+## Behavior
 - On folder load completion, `bookmarks.json` is read and the list is rebuilt.
 - Items can appear even if the actual file is currently missing; thumbnail/navigation may fail until the file exists again.
 - When starting streaming gallery (`BeginStreamingGallery`), the bookmark list is cleared.
 
-Developer notes
-- Service: `BookmarkService` (singleton)
- - `LoadForFolder(string? folderPath)` — load current folder bookmarks into memory
- - `GetAll() : IReadOnlyList<string>` — return all bookmark paths
- - `Contains(string path) : bool`
- - `Add(string path) : bool` — persists immediately on success
- - `Remove(string path) : bool` — persists immediately on success
-- ViewModel: `MangaViewModel`
- - Collection: `Bookmarks (ObservableCollection<MangaPageViewModel>)`
- - Panel toggle: `IsBookmarkPaneOpen (bool)`
- - Commands: `AddBookmarkCommand`, `RemoveBookmarkCommand`, `NavigateToBookmarkCommand`, `ToggleBookmarkPaneCommand`
- - Folder load timing: `OnMangaLoaded` → `BookmarkService.LoadForFolder(...)` → `RebuildBookmarksFromStore()`
-- UI
- - Toolbar toggle/button: `MainWindow.xaml`
- - Panel/list/buttons: `MangaReaderPage.xaml` `BookmarksList`
- - Thumbnails: `ThumbnailDecodeScheduler.EnqueueBookmark(...)` asynchronously decodes bookmark thumbnails (separate from the viewport queue)
- - Settings key (width): `BookmarkPaneWidth` (via `SettingsProvider`)
+## Developer notes
+- **Service**: `BookmarkService` (singleton)
+  - `LoadForFolder(string? folderPath)` — load current folder bookmarks into memory
+  - `GetAll() : IReadOnlyList<string>` — return all bookmark paths
+  - `Contains(string path) : bool`
+  - `Add(string path) : bool` — persists immediately on success
+  - `Remove(string path) : bool` — persists immediately on success
+- **ViewModel**: `MangaViewModel`
+  - Collection: `Bookmarks (ObservableCollection<MangaPageViewModel>)`
+  - Panel toggle: `IsBookmarkPaneOpen (bool)`
+  - Commands: `AddBookmarkCommand`, `RemoveBookmarkCommand`, `NavigateToBookmarkCommand`, `ToggleBookmarkPaneCommand`
+  - Folder load timing: `OnMangaLoaded` → `BookmarkService.LoadForFolder(...)` → `RebuildBookmarksFromStore()`
+- **UI**
+  - Toolbar toggle/button: `MainWindow.xaml`
+  - Panel/list/buttons: `MangaReaderPage.xaml` `BookmarksList`
+  - Thumbnails: `ThumbnailDecodeScheduler.EnqueueBookmark(...)` asynchronously decodes bookmark thumbnails (separate from the viewport queue)
+  - Settings key (width): `BookmarkPaneWidth` (via `SettingsProvider.Get/Set`)
 
-Limitations
+## Limitations
 - Bookmarks are path-based. If files/folders are renamed or moved, navigation and thumbnail loading for those items may fail.
+
+---
 
 # Library feature
 
-Purpose
+## Purpose
 - Manage multiple manga library folders and browse all manga collections in a unified grid view.
 - Quick access to manga folders from registered library paths without manual folder picker each time.
 
-Usage (UI)
+## Usage (UI)
 - Navigate to Library page from main navigation (MainWindow).
 - Add library folder: Settings page → "만화 라이브러리" section → "라이브러리 폴더 추가" button (uses **Windows App SDK 1.8+ FolderPicker**).
 - View all manga: Library page displays all manga folders found in registered library paths.
@@ -262,13 +359,13 @@ Usage (UI)
 - Manage library paths: Settings page allows adding, removing, and reordering library folders.
 - Refresh library: "새로고침" button in Library page header to rescan all folders.
 
-Persistence
+## Persistence
 - Storage file: `library.json` in `%LocalAppData%\MangaViewer\` directory.
 - JSON schema: `{ "Paths": [ "library_path_1", "library_path_2", ... ] }`
 - Auto-validation: non-existent paths are filtered out when loaded.
 - Error tolerant: read/write errors are silently ignored.
 
-Behavior
+## Behavior
 - Library scan: recursively searches immediate subdirectories of each library path for folders containing image files.
 - First image detection: displays the first image (alphabetically sorted) in each manga folder as thumbnail.
 - Supported image extensions: `.jpg`, `.jpeg`, `.png`, `.bmp`, `.webp`, `.avif`, `.gif`
@@ -276,33 +373,34 @@ Behavior
 - Empty state: shows placeholder message when no library folders are registered.
 - Loading indicator: progress ring displayed during library scan.
 
-Developer notes
-- Service: `LibraryService`
- - Constructor: auto-loads library paths from `library.json`
- - `GetLibraryPaths() : List<string>` — return all registered library folder paths
- - `AddLibraryPath(string path)` — add new library folder (de-duplicated, persists immediately)
- - `RemoveLibraryPath(string path)` — remove library folder (persists immediately)
- - `MoveLibraryPath(int oldIndex, int newIndex)` — reorder library folders (persists immediately)
- - `ScanLibraryAsync() : Task<List<MangaFolderInfo>>` — scan all library paths and return manga folder information
-- ViewModel: `LibraryViewModel`
- - Collection: `MangaFolders (ObservableCollection<MangaFolderViewModel>)`
- - Property: `IsLoading (bool)` — loading state during scan
- - Command: `RefreshCommand` — trigger library rescan
- - Constructor: auto-loads library on initialization
-- Page: `LibraryPage`
- - GridView: displays manga folders in card layout (thumbnail + folder name)
- - Empty state: shows when no manga found
- - ItemClick: opens folder in reader via `MangaViewModel.OpenFolderCommand`
-- Settings integration: `SettingsPage`
- - Library path management UI (add/remove/reorder)
- - Uses **Windows App SDK 1.8+ FolderPicker(WindowId)** for folder selection
- - Auto-refreshes `LibraryViewModel` when paths change
+## Developer notes
+- **Service**: `LibraryService`
+  - Constructor: auto-loads library paths from `library.json`
+  - `GetLibraryPaths() : List<string>` — return all registered library folder paths
+  - `AddLibraryPath(string path)` — add new library folder (de-duplicated, persists immediately)
+  - `RemoveLibraryPath(string path)` — remove library folder (persists immediately)
+  - `MoveLibraryPath(int oldIndex, int newIndex)` — reorder library folders (persists immediately)
+  - `ScanLibraryAsync() : Task<List<MangaFolderInfo>>` — scan all library paths and return manga folder information
+- **ViewModel**: `LibraryViewModel` (inherits `BaseViewModel`)
+  - Collection: `MangaFolders (ObservableCollection<MangaFolderViewModel>)`
+  - Property: `IsLoading (bool)`, `IsLoaded (bool)` — loading state during scan
+  - Command: `RefreshCommand` — trigger library rescan
+  - Method: `LoadLibraryIfNeededAsync()` — lazy load on first navigation
+- **ViewModel**: `MangaFolderViewModel` (inherits `BaseViewModel`)
+  - Properties: `FolderPath`, `FolderName`, `ThumbnailPath`
+- **Page**: `LibraryPage`
+  - GridView: displays manga folders in card layout (thumbnail + folder name)
+  - Empty state: shows when no manga found
+  - ItemClick: opens folder in reader via `MangaViewModel.LoadMangaFolderAsync`
+- **Settings integration**: `SettingsPage`
+  - Library path management UI (add/remove/reorder)
+  - Uses **Windows App SDK 1.8+ FolderPicker(WindowId)** for folder selection
 
-Data model
+## Data model
 - `MangaFolderInfo`: transfer object containing folder path, name, and first image path
 - `MangaFolderViewModel`: UI-bound view model with thumbnail loading support
 
-Limitations
+## Limitations
 - Only scans immediate subdirectories (depth=1) of library paths, not recursive.
 - First image detection may be slow for folders with many non-image files.
 - Thumbnail loading uses the same thumbnail service as reader (shared cache/scheduler).

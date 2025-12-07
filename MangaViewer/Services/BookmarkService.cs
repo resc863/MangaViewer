@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace MangaViewer.Services
 {
@@ -12,7 +12,7 @@ namespace MangaViewer.Services
     /// Purpose: Persist per-folder bookmark list in a lightweight JSON file (bookmarks.json) residing in the opened
     /// manga folder. Each bookmark is the full file path of an image.
     /// Design Goals:
-    ///  - Zero serialization reflection cost (AOT friendly) by building JSON manually.
+    ///  - Zero serialization reflection cost (AOT friendly) using Source Generator.
     ///  - Robust against malformed JSON (silently ignores parse failures).
     ///  - Case-insensitive path handling to avoid duplicates across different casing.
     ///  - Simple CRUD semantics with immediate persistence on mutation (Add / Remove).
@@ -29,6 +29,11 @@ namespace MangaViewer.Services
     {
         private static readonly Lazy<BookmarkService> _instance = new(() => new BookmarkService());
         public static BookmarkService Instance => _instance.Value;
+
+        private static readonly JsonSerializerOptions s_options = new()
+        {
+            WriteIndented = true
+        };
 
         private string? _currentFolderPath;
         private readonly HashSet<string> _items = new(StringComparer.OrdinalIgnoreCase);
@@ -51,15 +56,26 @@ namespace MangaViewer.Services
                 if (!File.Exists(filePath)) { Save(); return; }
                 var json = File.ReadAllText(filePath);
                 if (string.IsNullOrWhiteSpace(json)) return;
-                ParseJson(json);
+
+                var data = JsonSerializer.Deserialize<BookmarkData>(json, s_options);
+                if (data?.Bookmarks != null)
+                {
+                    foreach (var item in data.Bookmarks)
+                    {
+                        if (!string.IsNullOrWhiteSpace(item))
+                            _items.Add(item);
+                    }
+                }
             }
             catch { }
         }
 
         /// <summary>Returns all bookmark paths (copy of internal set).</summary>
         public IReadOnlyList<string> GetAll() => _items.ToList();
+
         /// <summary>Check if path already bookmarked.</summary>
         public bool Contains(string path) => _items.Contains(path);
+
         /// <summary>Add a bookmark; persists immediately if new.</summary>
         public bool Add(string path)
         {
@@ -67,6 +83,7 @@ namespace MangaViewer.Services
             if (_items.Add(path)) { Save(); return true; }
             return false;
         }
+
         /// <summary>Remove a bookmark; persists immediately if existed.</summary>
         public bool Remove(string path)
         {
@@ -76,7 +93,7 @@ namespace MangaViewer.Services
         }
 
         /// <summary>
-        /// Persist current bookmarks to disk. Swallows IO exceptions.
+        /// Persist current bookmarks to disk using Source Generator. Swallows IO exceptions.
         /// </summary>
         private void Save()
         {
@@ -84,59 +101,17 @@ namespace MangaViewer.Services
             try
             {
                 var filePath = Path.Combine(_currentFolderPath, FileName);
-                var json = BuildJson(_items);
+                var data = new BookmarkData { Bookmarks = _items.ToList() };
+                var json = JsonSerializer.Serialize(data, s_options);
                 File.WriteAllText(filePath, json);
             }
             catch { }
         }
 
-        /// <summary>
-        /// Manual JSON builder for array of strings; escapes quotes and backslashes only.
-        /// </summary>
-        private static string BuildJson(IEnumerable<string> items)
+        public class BookmarkData
         {
-            var sb = new StringBuilder();
-            sb.Append("{\"bookmarks\": [");
-            bool first = true;
-            foreach (var it in items)
-            {
-                if (string.IsNullOrWhiteSpace(it)) continue;
-                if (!first) sb.Append(',');
-                first = false;
-                sb.Append('"');
-                foreach (char c in it)
-                {
-                    if (c == '\\') sb.Append("\\\\");
-                    else if (c == '"') sb.Append("\\\"");
-                    else sb.Append(c);
-                }
-                sb.Append('"');
-            }
-            sb.Append("]}");
-            return sb.ToString();
-        }
-
-        /// <summary>
-        /// Parse bookmarks JSON into internal set. Malformed JSON ignored.
-        /// </summary>
-        private void ParseJson(string json)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.TryGetProperty("bookmarks", out var arr) && arr.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var el in arr.EnumerateArray())
-                    {
-                        if (el.ValueKind == JsonValueKind.String)
-                        {
-                            var v = el.GetString();
-                            if (!string.IsNullOrWhiteSpace(v)) _items.Add(v);
-                        }
-                    }
-                }
-            }
-            catch { }
+            [JsonPropertyName("bookmarks")]
+            public List<string> Bookmarks { get; set; } = new();
         }
     }
 }

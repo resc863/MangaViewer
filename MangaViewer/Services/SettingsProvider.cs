@@ -12,17 +12,14 @@ namespace MangaViewer.Services
     /// Characteristics:
     ///  - Uses ReaderWriterLockSlim for concurrent access; write locks only on mutation or initial load.
     ///  - Stores values as typed objects using modern JSON serialization.
-    ///  - Provides generic Get<T>/Set<T> methods for type-safe access.
+    ///  - Provides generic Get&lt;T&gt;/Set&lt;T&gt; methods for type-safe access.
     ///  - Swallows IO/parse errors; corrupted file replaced silently on next successful write.
-    /// Extension Ideas:
-    ///  - Add change notifications (events) for reactive UI binding.
-    ///  - Provide async APIs if heavy writes become performance concern.
     /// </summary>
     public static class SettingsProvider
     {
         private static readonly string s_folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer");
         private static readonly string s_file = Path.Combine(s_folder, "settings.json");
-        private static readonly ReaderWriterLockSlim s_lock = new();
+        private static readonly ReaderWriterLockSlim s_lock = new(LockRecursionPolicy.NoRecursion);
         private static readonly JsonSerializerOptions s_options = new() 
         { 
             WriteIndented = false,
@@ -36,6 +33,7 @@ namespace MangaViewer.Services
         private static void EnsureLoaded()
         {
             if (s_loaded) return;
+            
             s_lock.EnterWriteLock();
             try
             {
@@ -71,13 +69,14 @@ namespace MangaViewer.Services
         {
             try
             {
+                Dictionary<string, object?> toSerialize;
+                
                 s_lock.EnterReadLock();
                 try
                 {
-                    var toSerialize = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+                    toSerialize = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
                     foreach (var kvp in s_cache)
                     {
-                        // Convert JsonElement back to primitive types for cleaner JSON
                         if (kvp.Value is JsonElement element)
                         {
                             toSerialize[kvp.Key] = element.ValueKind switch
@@ -95,12 +94,12 @@ namespace MangaViewer.Services
                             toSerialize[kvp.Key] = kvp.Value;
                         }
                     }
-                    
-                    var json = JsonSerializer.Serialize(toSerialize, s_options);
-                    Directory.CreateDirectory(s_folder);
-                    File.WriteAllText(s_file, json);
                 }
                 finally { s_lock.ExitReadLock(); }
+                
+                var json = JsonSerializer.Serialize(toSerialize, s_options);
+                Directory.CreateDirectory(s_folder);
+                File.WriteAllText(s_file, json);
             }
             catch { }
         }
@@ -111,17 +110,16 @@ namespace MangaViewer.Services
         public static T Get<T>(string key, T @default = default!)
         {
             EnsureLoaded();
+            
             s_lock.EnterReadLock();
             try
             {
                 if (!s_cache.TryGetValue(key, out var value))
                     return @default;
 
-                // Direct type match
                 if (value is T typedValue)
                     return typedValue;
 
-                // JsonElement conversion
                 if (value is JsonElement element)
                 {
                     try 
@@ -131,11 +129,14 @@ namespace MangaViewer.Services
                     catch { return @default; }
                 }
 
-                // Try convert for primitive types
                 try
                 {
                     if (typeof(T) == typeof(double) && value != null)
                         return (T)(object)Convert.ToDouble(value);
+                    if (typeof(T) == typeof(int) && value != null)
+                        return (T)(object)Convert.ToInt32(value);
+                    if (typeof(T) == typeof(long) && value != null)
+                        return (T)(object)Convert.ToInt64(value);
                     if (typeof(T) == typeof(bool) && value != null)
                         return (T)(object)Convert.ToBoolean(value);
                     if (typeof(T) == typeof(string))
@@ -154,21 +155,48 @@ namespace MangaViewer.Services
         public static void Set<T>(string key, T value)
         {
             EnsureLoaded();
+            
             s_lock.EnterWriteLock();
             try
             {
                 s_cache[key] = value;
             }
             finally { s_lock.ExitWriteLock(); }
+            
             Persist();
         }
 
-        // Legacy compatibility methods
-        public static double GetDouble(string key, double @default = 0) => Get(key, @default);
-        public static bool GetBool(string key, bool @default = false) => Get(key, @default);
-        public static string GetString(string key, string @default = "") => Get(key, @default);
-        public static void SetDouble(string key, double value) => Set(key, value);
-        public static void SetBool(string key, bool value) => Set(key, value);
-        public static void SetString(string key, string value) => Set(key, value);
+        /// <summary>
+        /// Check if a key exists in settings.
+        /// </summary>
+        public static bool Contains(string key)
+        {
+            EnsureLoaded();
+            
+            s_lock.EnterReadLock();
+            try
+            {
+                return s_cache.ContainsKey(key);
+            }
+            finally { s_lock.ExitReadLock(); }
+        }
+
+        /// <summary>
+        /// Remove a key from settings.
+        /// </summary>
+        public static bool Remove(string key)
+        {
+            EnsureLoaded();
+            
+            s_lock.EnterWriteLock();
+            try
+            {
+                var removed = s_cache.Remove(key);
+                if (removed)
+                    Persist();
+                return removed;
+            }
+            finally { s_lock.ExitWriteLock(); }
+        }
     }
 }

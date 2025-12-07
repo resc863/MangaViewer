@@ -5,24 +5,30 @@ using System.Runtime.CompilerServices;
 namespace MangaViewer.Helpers
 {
     /// <summary>
-    /// INotifyPropertyChanged 기본 구현. SetProperty 를 통해 변경 시에만 이벤트 발생.
+    /// INotifyPropertyChanged base implementation with optimized SetProperty that prevents unnecessary notifications.
     /// </summary>
     public class BaseViewModel : INotifyPropertyChanged
     {
         public event PropertyChangedEventHandler? PropertyChanged;
 
         /// <summary>
-        /// 백킹 필드에 새 값을 넣고 달라졌을 때만 PropertyChanged 발생.
+        /// Sets the backing field to new value and raises PropertyChanged only if value actually changed.
+        /// Returns true if value changed, false otherwise.
         /// </summary>
-        protected bool SetProperty<T>(ref T backingStore, T value, [CallerMemberName] string propertyName = "")
+        protected bool SetProperty<T>(ref T backingStore, T value, [CallerMemberName] string? propertyName = null)
         {
-            if (EqualityComparer<T>.Default.Equals(backingStore, value)) return false;
+            if (EqualityComparer<T>.Default.Equals(backingStore, value)) 
+                return false;
+            
             backingStore = value;
             OnPropertyChanged(propertyName);
             return true;
         }
 
-        protected void OnPropertyChanged([CallerMemberName] string propertyName = "") =>
+        /// <summary>
+        /// Raises PropertyChanged event for the specified property name.
+        /// </summary>
+        protected void OnPropertyChanged([CallerMemberName] string? propertyName = null) =>
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 }

@@ -219,19 +219,22 @@ namespace MangaViewer.Services
 
         /// <summary>
         /// Merge streaming downloaded files (mem: or disk paths) into placeholder pages; apply replacement logic.
+        /// Optimized to avoid unnecessary sorting.
         /// </summary>
         public void AddDownloadedFiles(IEnumerable<string> filePaths)
         {
             if (filePaths == null) return;
+            
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var list = new List<string>();
+            
             foreach (var p in filePaths)
             {
                 if (string.IsNullOrWhiteSpace(p)) continue;
                 if (seen.Add(p)) list.Add(p);
             }
+            
             if (list.Count == 0) return;
-            list.Sort(StringComparer.OrdinalIgnoreCase);
 
             foreach (var path in list)
             {
@@ -241,7 +244,10 @@ namespace MangaViewer.Services
                 if (index < 0) continue;
                 if (index >= _pages.Count) SetExpectedTotal(index + 1);
                 var vm = _pages[index];
-                if (vm.FilePath == null) vm.FilePath = path;
+                if (vm.FilePath == null) 
+                {
+                    vm.FilePath = path;
+                }
                 else
                 {
                     if (isMem && vm.FilePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) continue;
