@@ -302,6 +302,8 @@ namespace MangaViewer.ViewModels
             catch { }
 
             MangaFolderLoaded?.Invoke(this, EventArgs.Empty);
+            // Trigger initial page load
+            OnPageChanged();
         }
 
         private void RebuildBookmarksFromStore()
@@ -326,7 +328,7 @@ namespace MangaViewer.ViewModels
         /// <summary>
         /// 페이지 인덱스 변경 시 표시 이미지/선택/프리페치를 업데이트합니다.
         /// </summary>
-        private void OnPageChanged()
+        private async void OnPageChanged()
         {
             int newIndex = _mangaManager.CurrentPageIndex;
             int delta = newIndex - _previousPageIndex;
@@ -344,8 +346,24 @@ namespace MangaViewer.ViewModels
             OnPropertyChanged(nameof(LeftImageFilePath));
             OnPropertyChanged(nameof(RightImageFilePath));
 
-            LeftImageSource = !string.IsNullOrEmpty(leftPath) ? _imageCache.Get(leftPath) : null;
-            RightImageSource = !string.IsNullOrEmpty(rightPath) ? _imageCache.Get(rightPath) : null;
+            // Reset sources immediately to avoid showing old images
+            LeftImageSource = null;
+            RightImageSource = null;
+
+            // Load images asynchronously
+            if (!string.IsNullOrEmpty(leftPath))
+            {
+                var img = await _imageCache.GetAsync(leftPath);
+                if (LeftImageFilePath == leftPath) // Verify path hasn't changed
+                    LeftImageSource = img;
+            }
+
+            if (!string.IsNullOrEmpty(rightPath))
+            {
+                var img = await _imageCache.GetAsync(rightPath);
+                if (RightImageFilePath == rightPath) // Verify path hasn't changed
+                    RightImageSource = img;
+            }
 
             IsSinglePageMode = (LeftImageSource != null) ^ (RightImageSource != null);
             IsTwoPageMode = LeftImageSource != null && RightImageSource != null;
