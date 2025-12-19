@@ -14,9 +14,6 @@ using System.IO;
 
 namespace MangaViewer.ViewModels
 {
-    /// <summary>
-    /// 앱의 핵심 ViewModel - 폴더 로드/페이지 내비게이션/양면 표시/캐시 프리페치/OCR/북마크
-    /// </summary>
     public partial class MangaViewModel : BaseViewModel, IDisposable
     {
         private readonly MangaManager _mangaManager = new();
@@ -40,8 +37,12 @@ namespace MangaViewer.ViewModels
 
         private double _leftWrapperWidth, _leftWrapperHeight;
         private double _rightWrapperWidth, _rightWrapperHeight;
+        private double _singleWrapperWidth, _singleWrapperHeight;
+        private double _rasterizationScale = 1.0;
 
         private CancellationTokenSource? _ocrCts;
+        private CancellationTokenSource? _pageLoadCts;
+        private int _pageLoadVersion;
 
         private string _ocrStatusMessage = string.Empty;
         private bool _isInfoBarOpen;
@@ -56,11 +57,30 @@ namespace MangaViewer.ViewModels
         public BitmapImage? RightImageSource { get => _rightImageSource; private set => SetProperty(ref _rightImageSource, value); }
         public bool IsSinglePageMode { get => _isSinglePageMode; private set => SetProperty(ref _isSinglePageMode, value); }
         public bool IsTwoPageMode { get => _isTwoPageMode; private set => SetProperty(ref _isTwoPageMode, value); }
-        public bool IsOcrRunning { get => _isOcrRunning; private set { if (SetProperty(ref _isOcrRunning, value)) { RunOcrCommand.RaiseCanExecuteChanged(); OnPropertyChanged(nameof(IsOpenFolderEnabled)); } } }
+        public bool IsOcrRunning
+        {
+            get => _isOcrRunning;
+            private set
+            {
+                if (SetProperty(ref _isOcrRunning, value))
+                {
+                    RunOcrCommand.RaiseCanExecuteChanged();
+                    OnPropertyChanged(nameof(IsControlEnabled));
+                }
+            }
+        }
         public string OcrStatusMessage { get => _ocrStatusMessage; private set => SetProperty(ref _ocrStatusMessage, value); }
         public bool IsInfoBarOpen { get => _isInfoBarOpen; private set => SetProperty(ref _isInfoBarOpen, value); }
         public InfoBarSeverity OcrSeverity { get => _ocrSeverity; private set => SetProperty(ref _ocrSeverity, value); }
-        public bool IsStreamingGallery { get => _isStreamingGallery; private set { if (SetProperty(ref _isStreamingGallery, value)) OnPropertyChanged(nameof(IsOpenFolderEnabled)); } }
+        public bool IsStreamingGallery
+        {
+            get => _isStreamingGallery;
+            private set
+            {
+                if (SetProperty(ref _isStreamingGallery, value))
+                    OnPropertyChanged(nameof(IsOpenFolderEnabled));
+            }
+        }
         public bool IsOpenFolderEnabled => IsControlEnabled;
 
         public int SelectedThumbnailIndex
@@ -80,7 +100,17 @@ namespace MangaViewer.ViewModels
         public bool IsPaneOpen { get => _isPaneOpen; set => SetProperty(ref _isPaneOpen, value); }
         public bool IsBookmarkPaneOpen { get => _isBookmarkPaneOpen; set => SetProperty(ref _isBookmarkPaneOpen, value); }
         public bool IsNavOpen { get => _isNavOpen; set => SetProperty(ref _isNavOpen, value); }
-        public bool IsLoading { get => _isLoading; private set { if (SetProperty(ref _isLoading, value)) { OnPropertyChanged(nameof(IsControlEnabled)); OnPropertyChanged(nameof(IsOpenFolderEnabled)); } } }
+        public bool IsLoading
+        {
+            get => _isLoading;
+            private set
+            {
+                if (SetProperty(ref _isLoading, value))
+                {
+                    OnPropertyChanged(nameof(IsControlEnabled));
+                }
+            }
+        }
         public bool IsControlEnabled => !IsLoading && !IsOcrRunning;
 
         public string DirectionButtonText => _mangaManager.IsRightToLeft ? "읽기 방향: 역방향" : "읽기 방향: 정방향";
@@ -158,12 +188,10 @@ namespace MangaViewer.ViewModels
         public void BeginStreamingGallery()
         {
             IsStreamingGallery = true;
-            OnPropertyChanged(nameof(IsOpenFolderEnabled));
             CancelOcr();
             _ocrService.ClearCache();
             _mangaManager.Clear();
 
-            // Clear current images
             ClearCurrentImages();
 
             Bookmarks.Clear();
@@ -184,13 +212,12 @@ namespace MangaViewer.ViewModels
         public async Task LoadLocalFilesAsync(IReadOnlyList<string> filePaths)
         {
             IsStreamingGallery = false; // local load unless mem: detected
-            OnPropertyChanged(nameof(IsOpenFolderEnabled));
             if (filePaths == null || filePaths.Count == 0) return;
 
             bool allMem = true;
             for (int i = 0; i < filePaths.Count; i++)
             {
-                if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", System.StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
+                if (string.IsNullOrWhiteSpace(filePaths[i]) || !filePaths[i].StartsWith("mem:", StringComparison.OrdinalIgnoreCase)) { allMem = false; break; }
             }
             if (allMem)
             {
@@ -205,8 +232,7 @@ namespace MangaViewer.ViewModels
                 string? folderPath = Path.GetDirectoryName(filePaths[0]);
                 if (!string.IsNullOrWhiteSpace(folderPath))
                 {
-                    _ocrService.ClearCache();
-                    await _mangaManager.LoadFolderAsync(folderPath);
+                    await LoadFolderCoreAsync(folderPath, navigateToReader: false).ConfigureAwait(true);
                 }
             }
             catch (Exception ex)
@@ -224,10 +250,8 @@ namespace MangaViewer.ViewModels
         {
             if (IsLoading || windowHandle is null) return;
             IsStreamingGallery = false;
-            OnPropertyChanged(nameof(IsOpenFolderEnabled));
             IsLoading = true;
-            CancelOcr();
-            ClearCurrentImages();
+            BeginPageTransition();
 
             try
             {
@@ -238,11 +262,7 @@ namespace MangaViewer.ViewModels
                 var folder = await picker.PickSingleFolderAsync();
                 if (folder != null)
                 {
-                    _ocrService.ClearCache();
-                    await _mangaManager.LoadFolderAsync(folder.Path); // path-based 로드 사용
-
-                    // 폴더 로드 완료 후 자동으로 MangaReaderPage로 전환
-                    MainWindow.TryNavigate(typeof(Pages.MangaReaderPage), this);
+                    await LoadFolderCoreAsync(folder.Path, navigateToReader: true).ConfigureAwait(true);
                 }
             }
             catch (Exception ex) { Log.Error(ex, "[Folder] Error"); }
@@ -256,23 +276,32 @@ namespace MangaViewer.ViewModels
         {
             if (string.IsNullOrWhiteSpace(folderPath)) return;
             IsStreamingGallery = false;
-            OnPropertyChanged(nameof(IsOpenFolderEnabled));
             IsLoading = true;
-            CancelOcr();
-            ClearCurrentImages();
+            BeginPageTransition();
 
             try
             {
-                _ocrService.ClearCache();
-                await _mangaManager.LoadFolderAsync(folderPath);
-
-                // 폴더 로드 완료 후 자동으로 MangaReaderPage로 전환
-                MainWindow.TryNavigate(typeof(Pages.MangaReaderPage), this);
+                await LoadFolderCoreAsync(folderPath, navigateToReader: true).ConfigureAwait(true);
             }
             catch (Exception ex) { Log.Error(ex, "[LoadMangaFolder] Error"); }
             finally { IsLoading = false; }
         }
+
+        private async Task LoadFolderCoreAsync(string folderPath, bool navigateToReader)
+        {
+            _ocrService.ClearCache();
+            await _mangaManager.LoadFolderAsync(folderPath).ConfigureAwait(true);
+
+            if (navigateToReader)
+                MainWindow.TryNavigate(typeof(Pages.MangaReaderPage), this);
+        }
         #endregion
+
+        private void BeginPageTransition()
+        {
+            CancelOcr();
+            ClearCurrentImages();
+        }
 
         private void ClearCurrentImages()
         {
@@ -309,73 +338,60 @@ namespace MangaViewer.ViewModels
         private void RebuildBookmarksFromStore()
         {
             Bookmarks.Clear();
-            var list = _bookmarkService.GetAll();
-            foreach (var p in list)
+
+            var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var p in _bookmarkService.GetAll())
             {
                 if (string.IsNullOrWhiteSpace(p)) continue;
-                bool exists = false;
-                foreach (var b in Bookmarks)
-                {
-                    if (string.Equals(b.FilePath, p, System.StringComparison.OrdinalIgnoreCase)) { exists = true; break; }
-                }
-                if (!exists)
-                {
-                    Bookmarks.Add(new MangaPageViewModel { FilePath = p });
-                }
+                if (!distinct.Add(p)) continue;
+                Bookmarks.Add(new MangaPageViewModel { FilePath = p });
             }
         }
 
-        /// <summary>
-        /// 페이지 인덱스 변경 시 표시 이미지/선택/프리페치를 업데이트합니다.
-        /// </summary>
         private async void OnPageChanged()
+        {
+            try
+            {
+                await OnPageChangedCoreAsync().ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[OnPageChanged] Error");
+            }
+        }
+
+        private async Task OnPageChangedCoreAsync()
         {
             int newIndex = _mangaManager.CurrentPageIndex;
             int delta = newIndex - _previousPageIndex;
 
             CancelOcr();
-            var paths = _mangaManager.GetImagePathsForCurrentPage();
 
-            string? leftPath = paths.Count > 0 ? paths[0] : null;
-            string? rightPath = paths.Count > 1 ? paths[1] : null;
-            if (_mangaManager.IsRightToLeft && paths.Count == 2)
-                (leftPath, rightPath) = (rightPath, leftPath);
+            var (token, localVersion) = ResetPageLoadCancellation();
 
-            LeftImageFilePath = leftPath;
-            RightImageFilePath = rightPath;
-            OnPropertyChanged(nameof(LeftImageFilePath));
-            OnPropertyChanged(nameof(RightImageFilePath));
+            var (leftPath, rightPath) = GetCurrentLeftRightPaths();
+            ApplyCurrentPaths(leftPath, rightPath);
+            ResetImageSources();
+            UpdatePageMode(leftPath, rightPath);
 
-            // Reset sources immediately to avoid showing old images
-            LeftImageSource = null;
-            RightImageSource = null;
-
-            // Load images asynchronously
-            if (!string.IsNullOrEmpty(leftPath))
+            try
             {
-                var img = await _imageCache.GetAsync(leftPath);
-                if (LeftImageFilePath == leftPath) // Verify path hasn't changed
-                    LeftImageSource = img;
+                await LoadPageImagesAsync(leftPath, rightPath, token, localVersion).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
             }
 
-            if (!string.IsNullOrEmpty(rightPath))
-            {
-                var img = await _imageCache.GetAsync(rightPath);
-                if (RightImageFilePath == rightPath) // Verify path hasn't changed
-                    RightImageSource = img;
-            }
+            if (token.IsCancellationRequested || localVersion != _pageLoadVersion) return;
 
-            IsSinglePageMode = (LeftImageSource != null) ^ (RightImageSource != null);
-            IsTwoPageMode = LeftImageSource != null && RightImageSource != null;
-
-            int primaryImageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
-            if (_selectedThumbnailIndex != primaryImageIndex)
-                SelectedThumbnailIndex = primaryImageIndex;
+            ScheduleViewportRefreshIfNeeded();
+            UpdateSelectedThumbnail();
 
             OnPropertyChanged(nameof(DirectionButtonText));
             OnPropertyChanged(nameof(CoverButtonText));
 
-            TryPrefetchAhead();
+            TryPrefetchAround();
             RunOcrCommand.RaiseCanExecuteChanged();
             ClearOcr();
 
@@ -386,19 +402,115 @@ namespace MangaViewer.ViewModels
             PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        private void TryPrefetchAhead()
+        private (CancellationToken token, int localVersion) ResetPageLoadCancellation()
+        {
+            _pageLoadCts?.Cancel();
+            _pageLoadCts?.Dispose();
+            _pageLoadCts = new CancellationTokenSource();
+            var token = _pageLoadCts.Token;
+            int localVersion = Interlocked.Increment(ref _pageLoadVersion);
+            return (token, localVersion);
+        }
+
+        private (string? leftPath, string? rightPath) GetCurrentLeftRightPaths()
+        {
+            var paths = _mangaManager.GetImagePathsForCurrentPage();
+
+            string? leftPath = paths.Count > 0 ? paths[0] : null;
+            string? rightPath = paths.Count > 1 ? paths[1] : null;
+            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+                (leftPath, rightPath) = (rightPath, leftPath);
+
+            return (leftPath, rightPath);
+        }
+
+        private void ApplyCurrentPaths(string? leftPath, string? rightPath)
+        {
+            LeftImageFilePath = leftPath;
+            RightImageFilePath = rightPath;
+            OnPropertyChanged(nameof(LeftImageFilePath));
+            OnPropertyChanged(nameof(RightImageFilePath));
+        }
+
+        private void ResetImageSources()
+        {
+            LeftImageSource = null;
+            RightImageSource = null;
+        }
+
+        private void UpdatePageMode(string? leftPath, string? rightPath)
+        {
+            IsSinglePageMode = (!string.IsNullOrEmpty(leftPath)) ^ (!string.IsNullOrEmpty(rightPath));
+            IsTwoPageMode = !string.IsNullOrEmpty(leftPath) && !string.IsNullOrEmpty(rightPath);
+        }
+
+        private async Task LoadPageImagesAsync(string? leftPath, string? rightPath, CancellationToken token, int localVersion)
+        {
+            if (!string.IsNullOrEmpty(leftPath))
+            {
+                token.ThrowIfCancellationRequested();
+                double w = IsTwoPageMode ? _leftWrapperWidth : _singleWrapperWidth;
+                double h = IsTwoPageMode ? _leftWrapperHeight : _singleWrapperHeight;
+                var img = await _imageCache.GetForViewportAsync(leftPath, Math.Max(1, w), Math.Max(1, h), _rasterizationScale).ConfigureAwait(true);
+                if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && LeftImageFilePath == leftPath)
+                    LeftImageSource = img;
+            }
+
+            if (!string.IsNullOrEmpty(rightPath))
+            {
+                token.ThrowIfCancellationRequested();
+                var img = await _imageCache.GetForViewportAsync(rightPath, Math.Max(1, _rightWrapperWidth), Math.Max(1, _rightWrapperHeight), _rasterizationScale).ConfigureAwait(true);
+                if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && RightImageFilePath == rightPath)
+                    RightImageSource = img;
+            }
+        }
+
+        private void ScheduleViewportRefreshIfNeeded()
+        {
+            if (!IsSinglePageMode) return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(60).ConfigureAwait(false);
+                    await RefreshCurrentPageImagesForViewportAsync().ConfigureAwait(false);
+                }
+                catch { }
+            });
+        }
+
+        private void UpdateSelectedThumbnail()
+        {
+            int primaryImageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
+            if (_selectedThumbnailIndex != primaryImageIndex)
+                SelectedThumbnailIndex = primaryImageIndex;
+        }
+
+        private void TryPrefetchAround()
         {
             try
             {
                 var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 for (int i = 1; i <= 2; i++)
                 {
-                    int idx = _mangaManager.CurrentPageIndex + i;
-                    if (idx >= _mangaManager.TotalPages) break;
-                    foreach (var p in _mangaManager.GetImagePathsForPage(idx))
-                        if (!string.IsNullOrEmpty(p)) set.Add(p);
+                    int idxFwd = _mangaManager.CurrentPageIndex + i;
+                    if (idxFwd < _mangaManager.TotalPages)
+                    {
+                        foreach (var p in _mangaManager.GetImagePathsForPage(idxFwd))
+                            if (!string.IsNullOrEmpty(p)) set.Add(p);
+                    }
+
+                    int idxBack = _mangaManager.CurrentPageIndex - i;
+                    if (idxBack >= 0)
+                    {
+                        foreach (var p in _mangaManager.GetImagePathsForPage(idxBack))
+                            if (!string.IsNullOrEmpty(p)) set.Add(p);
+                    }
                 }
-                if (set.Count > 0) _imageCache.Prefetch(set);
+
+                if (set.Count > 0)
+                    _imageCache.Prefetch(set);
             }
             catch (Exception ex) { Log.Error(ex, "[Prefetch] Error"); }
         }
@@ -431,6 +543,23 @@ namespace MangaViewer.ViewModels
             RemoveBookmarkCommand.RaiseCanExecuteChanged();
         }
 
+        public void UpdateRasterizationScale(double scale)
+        {
+            if (scale <= 0) scale = 1.0;
+            if (Math.Abs(_rasterizationScale - scale) > 0.0001)
+                _rasterizationScale = scale;
+        }
+
+        public void UpdateSingleOcrContainerSize(double w, double h)
+        {
+            if (w <= 0 || h <= 0) return;
+            if (Math.Abs(w - _singleWrapperWidth) > .5 || Math.Abs(h - _singleWrapperHeight) > .5)
+            {
+                _singleWrapperWidth = w;
+                _singleWrapperHeight = h;
+            }
+        }
+
         public void UpdateLeftOcrContainerSize(double w, double h)
         {
             if (w <= 0 || h <= 0) return;
@@ -448,46 +577,43 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private void SetOcrStatus(string message, InfoBarSeverity severity = InfoBarSeverity.Informational, bool open = true)
+        /// <summary>
+        /// Re-decode currently displayed images to match the latest viewport size.
+        /// OCR input remains unchanged (uses original file path).
+        /// </summary>
+        public async Task RefreshCurrentPageImagesForViewportAsync()
         {
-            OcrStatusMessage = message;
-            OcrSeverity = severity;
-            IsInfoBarOpen = open;
-        }
+            if (LeftImageFilePath == null && RightImageFilePath == null) return;
+            if (_pageLoadCts == null) return;
 
-        private void AddCurrentBookmark()
-        {
-            if (_mangaManager.TotalImages <= 0) return;
-            int imageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
-            if (imageIndex < 0) return;
-            if (imageIndex >= Thumbnails.Count) return;
-            var path = Thumbnails[imageIndex].FilePath;
-            if (string.IsNullOrWhiteSpace(path)) return;
-            if (_bookmarkService.Add(path))
-            {
-                foreach (var b in Bookmarks)
-                    if (string.Equals(b.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
-                Bookmarks.Add(new MangaPageViewModel { FilePath = path });
-            }
-        }
+            var token = _pageLoadCts.Token;
+            int localVersion = _pageLoadVersion;
 
-        private void RemoveBookmark(MangaPageViewModel? vm)
-        {
-            if (vm?.FilePath == null) return;
-            if (_bookmarkService.Remove(vm.FilePath))
+            try
             {
-                Bookmarks.Remove(vm);
-            }
-        }
+                if (!string.IsNullOrEmpty(LeftImageFilePath))
+                {
+                    double w = IsTwoPageMode ? _leftWrapperWidth : _singleWrapperWidth;
+                    double h = IsTwoPageMode ? _leftWrapperHeight : _singleWrapperHeight;
+                    if (w > 0 && h > 0)
+                    {
+                        var img = await _imageCache.GetForViewportAsync(LeftImageFilePath, w, h, _rasterizationScale).ConfigureAwait(true);
+                        if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && LeftImageFilePath != null)
+                            LeftImageSource = img;
+                    }
+                }
 
-        private void NavigateToBookmark(MangaPageViewModel? vm)
-        {
-            if (vm?.FilePath == null) return;
-            int idx = _mangaManager.FindImageIndexByPath(vm.FilePath);
-            if (idx >= 0)
-            {
-                SelectedThumbnailIndex = idx;
+                if (!string.IsNullOrEmpty(RightImageFilePath))
+                {
+                    if (_rightWrapperWidth > 0 && _rightWrapperHeight > 0)
+                    {
+                        var img = await _imageCache.GetForViewportAsync(RightImageFilePath, _rightWrapperWidth, _rightWrapperHeight, _rasterizationScale).ConfigureAwait(true);
+                        if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && RightImageFilePath != null)
+                            RightImageSource = img;
+                    }
+                }
             }
+            catch { }
         }
 
         private async Task RunOcrAsync()
@@ -560,6 +686,50 @@ namespace MangaViewer.ViewModels
             _rightOcrBoxes.Clear();
         }
 
+        private void SetOcrStatus(string message, InfoBarSeverity severity = InfoBarSeverity.Informational, bool open = true)
+        {
+            OcrStatusMessage = message;
+            OcrSeverity = severity;
+            IsInfoBarOpen = open;
+        }
+
+        private void AddCurrentBookmark()
+        {
+            if (_mangaManager.TotalImages <= 0) return;
+            int imageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
+            if (imageIndex < 0) return;
+            if (imageIndex >= Thumbnails.Count) return;
+
+            var path = Thumbnails[imageIndex].FilePath;
+            if (string.IsNullOrWhiteSpace(path)) return;
+
+            if (!_bookmarkService.Add(path)) return;
+
+            foreach (var b in Bookmarks)
+                if (string.Equals(b.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
+
+            Bookmarks.Add(new MangaPageViewModel { FilePath = path });
+        }
+
+        private void RemoveBookmark(MangaPageViewModel? vm)
+        {
+            if (vm?.FilePath == null) return;
+            if (_bookmarkService.Remove(vm.FilePath))
+            {
+                Bookmarks.Remove(vm);
+            }
+        }
+
+        private void NavigateToBookmark(MangaPageViewModel? vm)
+        {
+            if (vm?.FilePath == null) return;
+            int idx = _mangaManager.FindImageIndexByPath(vm.FilePath);
+            if (idx >= 0)
+            {
+                SelectedThumbnailIndex = idx;
+            }
+        }
+
         public void CreatePlaceholderPages(int count) => _mangaManager.CreatePlaceholders(count);
         public void ReplacePlaceholderWithFile(int index, string path)
         {
@@ -573,6 +743,9 @@ namespace MangaViewer.ViewModels
             CancelOcr();
             _ocrCts?.Dispose();
             _ocrCts = null;
+            _pageLoadCts?.Cancel();
+            _pageLoadCts?.Dispose();
+            _pageLoadCts = null;
             _mangaManager.MangaLoaded -= OnMangaLoaded;
             _mangaManager.PageChanged -= OnPageChanged;
             _ocrService.SettingsChanged -= OnOcrSettingsChanged;

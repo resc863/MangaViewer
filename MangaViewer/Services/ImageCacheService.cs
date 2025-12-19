@@ -314,6 +314,146 @@ namespace MangaViewer.Services
         }
         #endregion
 
+        /// <summary>
+        /// Display (viewport-fit) cache is separate from the general decoded-cache.
+        /// Keyed by: path + decodeLongSide
+        /// </summary>
+        private readonly Dictionary<string, LinkedListNode<DisplayCacheEntry>> _displayMap = new(StringComparer.OrdinalIgnoreCase);
+        private readonly LinkedList<DisplayCacheEntry> _displayLru = new();
+        private int _displayCapacity = 24;
+
+        private record DisplayCacheEntry(string Key, string Path, int LongSide, BitmapImage Image);
+
+        private static string MakeDisplayKey(string path, int longSide) => $"{path}|dls={longSide}";
+
+        private BitmapImage? TryGetDisplayCached(string path, int longSide)
+        {
+            string key = MakeDisplayKey(path, longSide);
+            _lruLock.EnterUpgradeableReadLock();
+            try
+            {
+                if (_displayMap.TryGetValue(key, out var node))
+                {
+                    _lruLock.EnterWriteLock();
+                    try
+                    {
+                        _displayLru.Remove(node);
+                        _displayLru.AddFirst(node);
+                    }
+                    finally { _lruLock.ExitWriteLock(); }
+                    return node.Value.Image;
+                }
+            }
+            finally { _lruLock.ExitUpgradeableReadLock(); }
+            return null;
+        }
+
+        private void AddDisplayCache(string path, int longSide, BitmapImage bmp)
+        {
+            string key = MakeDisplayKey(path, longSide);
+            _lruLock.EnterWriteLock();
+            try
+            {
+                if (_displayMap.ContainsKey(key)) return;
+                var entry = new DisplayCacheEntry(key, path, longSide, bmp);
+                var node = new LinkedListNode<DisplayCacheEntry>(entry);
+                _displayLru.AddFirst(node);
+                _displayMap[key] = node;
+                TrimDisplay_NoLock();
+            }
+            finally { _lruLock.ExitWriteLock(); }
+        }
+
+        private void TrimDisplay_NoLock()
+        {
+            while (_displayLru.Count > _displayCapacity)
+            {
+                var last = _displayLru.Last;
+                if (last == null) break;
+                _displayLru.RemoveLast();
+                _displayMap.Remove(last.Value.Key);
+            }
+        }
+
+        /// <summary>
+        /// Get a BitmapImage decoded to fit the given viewport size (in DIPs) WITHOUT breaking aspect ratio.
+        /// Uses DecodePixelWidth only (long side target) so WinUI keeps original aspect ratio.
+        /// </summary>
+        public async Task<BitmapImage?> GetForViewportAsync(string path, double viewportWidthDip, double viewportHeightDip, double rasterizationScale)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            if (viewportWidthDip <= 0 || viewportHeightDip <= 0) return await GetAsync(path).ConfigureAwait(false);
+
+            rasterizationScale = Math.Max(0.1, rasterizationScale);
+            int targetW = (int)Math.Clamp(Math.Ceiling(viewportWidthDip * rasterizationScale), 1, 16384);
+            int targetH = (int)Math.Clamp(Math.Ceiling(viewportHeightDip * rasterizationScale), 1, 16384);
+            int longSide = Math.Max(targetW, targetH);
+
+            // 1) Display cache fast path
+            var cached = TryGetDisplayCached(path, longSide);
+            if (cached != null) return cached;
+
+            // 2) Load bytes
+            byte[]? memBytes = null;
+            if (_memoryCache.TryGet(path, out var b))
+            {
+                memBytes = b;
+            }
+            else if (File.Exists(path))
+            {
+                try
+                {
+                    memBytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+                    _memoryCache.Add(path, memBytes);
+                }
+                catch { return null; }
+            }
+
+            if (memBytes == null) return null;
+
+            // 3) Create BitmapImage on UI thread with DecodePixelWidth only
+            return await CreateViewportBitmapOnUiAsync(memBytes, path, longSide).ConfigureAwait(false);
+        }
+
+        private async Task<BitmapImage?> CreateViewportBitmapOnUiAsync(byte[] data, string path, int decodeLongSide)
+        {
+            if (_dispatcher == null) return null;
+
+            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool enqueued = _dispatcher.TryEnqueue(async () =>
+            {
+                try
+                {
+                    var cached = TryGetDisplayCached(path, decodeLongSide);
+                    if (cached != null)
+                    {
+                        tcs.TrySetResult(cached);
+                        return;
+                    }
+
+                    var img = new BitmapImage
+                    {
+                        DecodePixelWidth = decodeLongSide
+                    };
+
+                    using var ras = new InMemoryRandomAccessStream();
+                    await ras.WriteAsync(data.AsBuffer());
+                    ras.Seek(0);
+                    await img.SetSourceAsync(ras);
+
+                    AddDisplayCache(path, decodeLongSide, img);
+                    tcs.TrySetResult(img);
+                }
+                catch
+                {
+                    tcs.TrySetResult(null);
+                }
+            });
+
+            if (!enqueued) return null;
+            return await tcs.Task.ConfigureAwait(false);
+        }
+
         private BitmapImage? CreateBitmapOnUi(Func<BitmapImage> factory)
         {
             if (_dispatcher != null && _dispatcher.HasThreadAccess)
@@ -342,7 +482,7 @@ namespace MangaViewer.Services
         {
             if (_dispatcher == null) return null;
 
-            var tcs = new TaskCompletionSource<BitmapImage?>();
+            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             bool enqueued = _dispatcher.TryEnqueue(async () =>
             {
@@ -353,18 +493,18 @@ namespace MangaViewer.Services
                     await ras.WriteAsync(data.AsBuffer());
                     ras.Seek(0);
                     await img.SetSourceAsync(ras);
-                    
+
                     AddToCache(path, img);
-                    tcs.SetResult(img);
+                    tcs.TrySetResult(img);
                 }
                 catch
                 {
-                    tcs.SetResult(null);
+                    tcs.TrySetResult(null);
                 }
             });
 
             if (!enqueued) return null;
-            return await tcs.Task;
+            return await tcs.Task.ConfigureAwait(false);
         }
 
         private void Trim()
