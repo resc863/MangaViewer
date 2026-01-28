@@ -10,7 +10,7 @@ namespace MangaViewer.Services
     /// <summary>
     /// BookmarkService
     /// Purpose: Persist per-folder bookmark list in a lightweight JSON file (bookmarks.json) residing in the opened
-    /// manga folder. Each bookmark is the full file path of an image.
+    /// manga folder. Each bookmark is stored as a relative path from the opened manga folder.
     /// Design Goals:
     ///  - Zero serialization reflection cost (AOT friendly) using Source Generator.
     ///  - Robust against malformed JSON (silently ignores parse failures).
@@ -23,7 +23,7 @@ namespace MangaViewer.Services
     ///  - Add incremental save debounce (batch writes) if folders contain very large bookmark churn.
     ///  - Store relative paths to improve portability when folder root moves.
     ///  - Add versioning or additional metadata (e.g., note, timestamp) to JSON shape.
-    /// JSON Shape: { "bookmarks": ["C:\\Full\\Path1.jpg", "C:\\Full\\Path2.png", ...] }
+    /// JSON Shape: { "bookmarks": ["001.jpg", "sub\\002.png", ...] }
     /// </summary>
     public sealed class BookmarkService
     {
@@ -62,8 +62,9 @@ namespace MangaViewer.Services
                 {
                     foreach (var item in data.Bookmarks)
                     {
-                        if (!string.IsNullOrWhiteSpace(item))
-                            _items.Add(item);
+                        var fullPath = TryResolveToFullPath(item);
+                        if (!string.IsNullOrWhiteSpace(fullPath))
+                            _items.Add(fullPath);
                     }
                 }
             }
@@ -80,7 +81,9 @@ namespace MangaViewer.Services
         public bool Add(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return false;
-            if (_items.Add(path)) { Save(); return true; }
+            var fullPath = TryNormalizeToFullPath(path);
+            if (string.IsNullOrWhiteSpace(fullPath)) return false;
+            if (_items.Add(fullPath)) { Save(); return true; }
             return false;
         }
 
@@ -88,7 +91,9 @@ namespace MangaViewer.Services
         public bool Remove(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return false;
-            if (_items.Remove(path)) { Save(); return true; }
+            var fullPath = TryNormalizeToFullPath(path);
+            if (string.IsNullOrWhiteSpace(fullPath)) return false;
+            if (_items.Remove(fullPath)) { Save(); return true; }
             return false;
         }
 
@@ -101,11 +106,83 @@ namespace MangaViewer.Services
             try
             {
                 var filePath = Path.Combine(_currentFolderPath, FileName);
-                var data = new BookmarkData { Bookmarks = _items.ToList() };
+                var data = new BookmarkData
+                {
+                    Bookmarks = _items
+                        .Select(TryGetRelativePath)
+                        .Where(static p => !string.IsNullOrWhiteSpace(p))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList()!
+                };
                 var json = JsonSerializer.Serialize(data, s_options);
                 File.WriteAllText(filePath, json);
             }
             catch { }
+        }
+
+        private string? TryGetRelativePath(string? fullPath)
+        {
+            if (string.IsNullOrWhiteSpace(fullPath)) return null;
+            if (string.IsNullOrWhiteSpace(_currentFolderPath)) return null;
+
+            try
+            {
+                var normalizedFull = Path.GetFullPath(fullPath);
+                var normalizedRoot = Path.GetFullPath(_currentFolderPath);
+
+                var relative = Path.GetRelativePath(normalizedRoot, normalizedFull);
+                if (relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+                    string.Equals(relative, "..", StringComparison.Ordinal))
+                {
+                    return null;
+                }
+
+                return relative;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private string? TryNormalizeToFullPath(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return null;
+            if (string.IsNullOrWhiteSpace(_currentFolderPath)) return null;
+
+            try
+            {
+                var candidate = path;
+                if (!Path.IsPathRooted(candidate))
+                    candidate = Path.Combine(_currentFolderPath, candidate);
+
+                var full = Path.GetFullPath(candidate);
+                var root = Path.GetFullPath(_currentFolderPath);
+
+                if (!full.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(full, root, StringComparison.OrdinalIgnoreCase))
+                {
+                    return null;
+                }
+
+                return full;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private string? TryResolveToFullPath(string? storedPath)
+        {
+            if (string.IsNullOrWhiteSpace(storedPath)) return null;
+            if (string.IsNullOrWhiteSpace(_currentFolderPath)) return null;
+
+            // Back-compat: allow previously-saved absolute paths.
+            if (Path.IsPathRooted(storedPath))
+                return TryNormalizeToFullPath(storedPath);
+
+            return TryNormalizeToFullPath(storedPath);
         }
 
         public class BookmarkData
