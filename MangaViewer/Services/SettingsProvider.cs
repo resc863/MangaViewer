@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 
@@ -13,6 +15,7 @@ namespace MangaViewer.Services
     ///  - Uses ReaderWriterLockSlim for concurrent access; write locks only on mutation or initial load.
     ///  - Stores values as typed objects using modern JSON serialization.
     ///  - Provides generic Get&lt;T&gt;/Set&lt;T&gt; methods for type-safe access.
+    ///  - Provides GetSecret/SetSecret methods for DPAPI-encrypted sensitive values (e.g. API keys).
     ///  - Swallows IO/parse errors; corrupted file replaced silently on next successful write.
     /// </summary>
     public static class SettingsProvider
@@ -187,7 +190,7 @@ namespace MangaViewer.Services
         public static bool Remove(string key)
         {
             EnsureLoaded();
-            
+
             s_lock.EnterWriteLock();
             try
             {
@@ -197,6 +200,59 @@ namespace MangaViewer.Services
                 return removed;
             }
             finally { s_lock.ExitWriteLock(); }
+        }
+
+        private const string SecretPrefix = "dpapi:";
+
+        /// <summary>
+        /// Get a DPAPI-encrypted secret. Automatically migrates legacy plaintext values on first read.
+        /// </summary>
+        public static string GetSecret(string key, string @default = "")
+        {
+            var raw = Get<string>(key, "");
+            if (string.IsNullOrEmpty(raw))
+                return @default;
+
+            if (raw.StartsWith(SecretPrefix, StringComparison.Ordinal))
+            {
+                try
+                {
+                    var encrypted = Convert.FromBase64String(raw[SecretPrefix.Length..]);
+                    var decrypted = ProtectedData.Unprotect(encrypted, null, DataProtectionScope.CurrentUser);
+                    return Encoding.UTF8.GetString(decrypted);
+                }
+                catch
+                {
+                    return @default;
+                }
+            }
+
+            // Legacy plaintext value: encrypt and persist
+            SetSecret(key, raw);
+            return raw;
+        }
+
+        /// <summary>
+        /// Store a secret encrypted with DPAPI (CurrentUser scope).
+        /// </summary>
+        public static void SetSecret(string key, string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                Set(key, "");
+                return;
+            }
+
+            try
+            {
+                var bytes = Encoding.UTF8.GetBytes(value);
+                var encrypted = ProtectedData.Protect(bytes, null, DataProtectionScope.CurrentUser);
+                Set(key, SecretPrefix + Convert.ToBase64String(encrypted));
+            }
+            catch
+            {
+                Set(key, value);
+            }
         }
     }
 }

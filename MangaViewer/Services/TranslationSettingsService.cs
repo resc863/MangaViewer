@@ -31,30 +31,30 @@ namespace MangaViewer.Services
 
         public string GoogleApiKey
         {
-            get => SettingsProvider.Get("TranslationApiKey_Google", "");
+            get => SettingsProvider.GetSecret("TranslationApiKey_Google");
             set
             {
-                SettingsProvider.Set("TranslationApiKey_Google", value);
+                SettingsProvider.SetSecret("TranslationApiKey_Google", value);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
 
         public string OpenAIApiKey
         {
-            get => SettingsProvider.Get("TranslationApiKey_OpenAI", "");
+            get => SettingsProvider.GetSecret("TranslationApiKey_OpenAI");
             set
             {
-                SettingsProvider.Set("TranslationApiKey_OpenAI", value);
+                SettingsProvider.SetSecret("TranslationApiKey_OpenAI", value);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
 
         public string AnthropicApiKey
         {
-            get => SettingsProvider.Get("TranslationApiKey_Anthropic", "");
+            get => SettingsProvider.GetSecret("TranslationApiKey_Anthropic");
             set
             {
-                SettingsProvider.Set("TranslationApiKey_Anthropic", value);
+                SettingsProvider.SetSecret("TranslationApiKey_Anthropic", value);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
