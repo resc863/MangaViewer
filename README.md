@@ -1,6 +1,6 @@
 # MangaViewer (WinUI 3)
 
-A WinUI 3-based manga (image) reader for Windows that supports local folders, single/two-page view, reading direction toggle, cover separation, a right-side thumbnail pane, OCR overlays/copy, and e-hentai search with streaming read.
+A WinUI 3-based manga (image) reader for Windows that supports local folders, single/two-page view, reading direction toggle, cover separation, a right-side thumbnail pane, OCR overlays/copy, OCR-based translation (Google Gemini / OpenAI / Anthropic), and e-hentai search with streaming read.
 
 ## Features
 
@@ -12,10 +12,27 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
   - Slide animation and prefetch when navigating pages
   - Mica titlebar and translucent UI
 
-- OCR (Windows.Media.Ocr)
-  - Languages: Auto/JA/KO/EN
-  - Grouping: Word/Line/Paragraph (vertical/horizontal, gap heuristics)
-  - Tap overlay boxes to copy recognized text to clipboard
+- OCR
+  - Backends: Windows Built-in (Windows.Media.Ocr) / Ollama (e.g., `glm-ocr:latest`)
+  - Windows Built-in:
+    - Languages: Auto/JA/KO/EN
+    - Grouping: Word/Line/Paragraph (vertical/horizontal, gap heuristics)
+    - Tap overlay boxes to copy recognized text to clipboard
+  - Ollama:
+    - Full page text recognition via `OllamaSharp.OllamaApiClient` (used as `IChatClient`)
+    - Message payload: `TextContent("Text Recognition")` + `DataContent(imageBytes, mimeType)`
+    - Configurable endpoint and model
+    - Translation toggle: run translation immediately after Ollama OCR completes
+
+- Translation (OCR result translation)
+  - Translates Ollama OCR output to Korean via LLM API
+  - Providers: **Google Gemini** / **OpenAI** / **Anthropic (Claude)**
+  - Per-provider API key and model configuration
+    - Google: fetch model list button (available after entering API key)
+    - OpenAI: manual model name input, custom endpoint supported (OpenAI-compatible APIs, default: `https://api.openai.com/v1/`)
+    - Anthropic: manual model name input
+  - Per-page OCR/translation state preserved independently (state restored on page revisit)
+  - Translation result cache (prevents redundant requests for identical text/provider/model combinations)
 
 - Search + Streaming
   - e-hentai search results grid (infinite scroll, delayed thumbnail decoding)
@@ -28,7 +45,8 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
   - Tap tags to run a new search with that condition
 
 - Settings
-  - OCR language/grouping/writing mode/paragraph gap
+  - OCR backend (Windows/Ollama), language/grouping/writing mode/paragraph gap, Ollama endpoint/model
+  - Translation: provider (Google/OpenAI/Anthropic), API key (공급자별 별도 저장), model
   - Tag font size, thumbnail decode width
   - Image memory cache stats/limits (count/size), clear all/per gallery
 
@@ -38,7 +56,7 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 - `MangaReaderPage`: reader (thumbnail pane + main page view + OCR canvas)
 - `SearchPage`: query, results grid, infinite scroll, streaming open
 - `GalleryDetailsPage`: item metadata
-- `SettingsPage`: OCR/thumbnail/cache/tag options
+- `SettingsPage`: OCR/translation/thumbnail/cache/tag options
 
 ## Shortcuts
 
@@ -76,9 +94,9 @@ dotnet run --project .\MangaViewer\MangaViewer.csproj -c Debug -p:Platform=x64
 
 ## Usage
 
-- Reader: open a folder → navigate via thumbnails/pages; run OCR and tap boxes to copy text
+- Reader: open a folder → navigate via thumbnails/pages; run OCR (tap boxes to copy text or view full page text via Ollama); enable Translation toggle to translate Ollama OCR result via LLM
 - Search: run a query → click an item to start streaming (memory cache only, no disk save)
-- Settings: adjust OCR/thumbnail/cache/tag options
+- Settings: adjust OCR/thumbnail/cache/tag options; configure translation provider, API key and model
 
 ## Project Structure (short)
 
@@ -101,7 +119,11 @@ MangaViewer/
     BoundingBoxViewModel.cs       # OCR box overlay
   Services/
     MangaManager.cs               # local folder/page mapping
-    OcrService.cs                 # Windows.Media.Ocr + grouping/writing
+    OcrService.cs                 # Windows.Media.Ocr + grouping/writing + Ollama OCR
+    TranslationSettingsService.cs # translation provider/model/API key settings
+    GoogleGenAIChatClient.cs      # Google Gemini API (IChatClient)
+    OpenAIChatClient.cs           # OpenAI API (IChatClient)
+    AnthropicChatClient.cs        # Anthropic Claude API (IChatClient)
     EhentaiService.cs             # search → image streaming (memory)
     ImageCacheService.cs          # decoded BitmapImage LRU cache + prefetch
     MemoryImageCache.cs           # streaming gallery memory byte cache (mem: keys)
@@ -169,6 +191,28 @@ SettingsProvider (static)
 ├── Generic Get<T>/Set<T> methods
 ├── JSON-backed persistence (%LocalAppData%\MangaViewer\settings.json)
 └── Thread-safe with ReaderWriterLockSlim
+```
+
+**ChatClient Layer (Translation Providers)**
+```
+GoogleGenAIChatClient (IChatClient)
+├── Uses Google.GenAI.Client directly (NOT via .AsIChatClient() adapter)
+├── BuildPrompt(): flattens ChatMessage list to plain text string
+├── GetStreamingResponseAsync: not supported (throws NotImplementedException)
+└── Passes MaxOutputTokens from ChatOptions via GenerateContentConfig
+
+OpenAIChatClient (IChatClient)
+├── Uses OpenAI.OpenAIClient → .GetChatClient(model).AsIChatClient()
+├── Supports custom endpoint for OpenAI-compatible APIs
+└── Falls back to standard client when endpoint matches default
+
+AnthropicChatClient (IChatClient)
+├── Uses new AnthropicClient() { ApiKey = apiKey }.AsIChatClient(model)
+└── Full IChatClient delegation (both streaming and non-streaming)
+
+OllamaApiClient (OllamaSharp, used in OcrService — not a translation client)
+├── Instantiated as IChatClient in OcrService.GetOllamaTextAsync
+└── Sends TextContent("Text Recognition") + DataContent(imageBytes, mimeType)
 ```
 
 ## Modernization notes
@@ -277,7 +321,10 @@ Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/T
 Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeholders) → `AddDownloadedFiles(mem:/path)` sequential feed → `MemoryImageCache` stores bytes → display progressively.
 
 ### 4) OCR
-`RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` → update `BoundingBoxViewModel` collections.
+`RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` (Windows) or `OcrService.GetOllamaTextAsync` (Ollama) → update `BoundingBoxViewModel` collections or text properties.
+
+### 5) Translation
+`IsTranslationActive = true` (or Ollama OCR completes with translation toggle enabled) → `MangaViewModel.RunTranslationAsync` → `TranslateTextAsync(text)` → instantiates `IChatClient` per `TranslationSettingsService.Provider` (`GoogleGenAIChatClient` / `OpenAIChatClient` / `AnthropicChatClient`) → `GetResponseAsync(messages)` with Korean translation prompt → result cached by `"{provider}|{model}|{text}"` key → `TranslatedLeftOcrText` / `TranslatedRightOcrText` updated.
 
 ## Change checklist
 - **UI thread**: XAML objects (`BitmapImage`, `ObservableCollection`) must be created/modified on the UI thread. Use `DispatcherQueue` from services.

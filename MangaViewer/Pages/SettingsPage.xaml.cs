@@ -22,6 +22,9 @@ namespace MangaViewer.Pages
         private ComboBox _langCombo = null!;
         private ComboBox _groupCombo = null!;
         private ComboBox _writingCombo = null!;
+        private ComboBox _ocrBackendCombo = null!;
+        private TextBox _ollamaEndpointBox = null!;
+        private StackPanel _ollamaSettingsPanel = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
@@ -73,6 +76,8 @@ namespace MangaViewer.Pages
             if (_langCombo.SelectedIndex != langIndex) _langCombo.SelectedIndex = langIndex;
             if (_groupCombo.SelectedIndex != (int)_ocr.GroupingMode) _groupCombo.SelectedIndex = (int)_ocr.GroupingMode;
             if (_writingCombo.SelectedIndex != (int)_ocr.TextWritingMode) _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
+            if (_ocrBackendCombo.SelectedIndex != (int)_ocr.Backend) _ocrBackendCombo.SelectedIndex = (int)_ocr.Backend;
+            UpdateOllamaSettingsVisibility();
         }
 
         private void BuildUi()
@@ -102,6 +107,18 @@ namespace MangaViewer.Pages
             
             stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
+            _ocrBackendCombo = new ComboBox { Width = 220 };
+            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Windows 내장 OCR", Tag = "builtin" });
+            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Ollama (glm-ocr)", Tag = "ollama" });
+            _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
+            stack.Children.Add(Row("OCR 엔진:", _ocrBackendCombo));
+
+            _ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
+            _ollamaEndpointBox.LostFocus += OllamaEndpointBox_LostFocus;
+            _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
+            _ollamaSettingsPanel.Children.Add(Row("Ollama 주소:", _ollamaEndpointBox));
+            stack.Children.Add(_ollamaSettingsPanel);
+
             _langCombo = new ComboBox { Width = 160 };
             _langCombo.Items.Add(new ComboBoxItem { Content = "자동", Tag = "auto" });
             _langCombo.Items.Add(new ComboBoxItem { Content = "일본어", Tag = "ja" });
@@ -126,6 +143,176 @@ namespace MangaViewer.Pages
 
             // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
+
+            // Translation section header
+            stack.Children.Add(new TextBlock { Text = "번역 설정", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+
+            var translationProviderCombo = new ComboBox { Width = 160 };
+            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Google", Tag = "Google" });
+            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "OpenAI", Tag = "OpenAI" });
+            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Anthropic", Tag = "Anthropic" });
+
+            var translationApiKeyBox = new PasswordBox { Width = 260 };
+            var translationSettings = TranslationSettingsService.Instance;
+
+            // OpenAI / Anthropic 용 모델 텍스트 입력
+            var translationModelBox = new TextBox { Width = 260 };
+
+            // Google 전용 모델 콤보 + 목록 가져오기 버튼
+            var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = "모델을 선택하세요" };
+            var fetchGoogleModelsBtn = new Button { Content = "목록 가져오기", Margin = new Thickness(8, 0, 0, 0) };
+            var googleModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
+            var googleModelInner = new StackPanel { Orientation = Orientation.Horizontal };
+            googleModelInner.Children.Add(googleModelCombo);
+            googleModelInner.Children.Add(fetchGoogleModelsBtn);
+            googleModelInner.Children.Add(googleModelStatus);
+
+            var textModelRow = Row("모델:", translationModelBox);
+            var googleModelRow = Row("모델:", googleModelInner);
+
+            // 저장된 Google 모델 초기값 로드
+            if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.Model))
+            {
+                var savedId = translationSettings.Model;
+                googleModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
+                googleModelCombo.SelectedIndex = 0;
+            }
+
+            Action<string> updateModelRowVisibility = (provider) =>
+            {
+                textModelRow.Visibility = provider == "Google" ? Visibility.Collapsed : Visibility.Visible;
+                googleModelRow.Visibility = provider == "Google" ? Visibility.Visible : Visibility.Collapsed;
+            };
+
+            Action updateApiKeyBox = () =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                translationApiKeyBox.Password = provider switch
+                {
+                    "Google" => translationSettings.GoogleApiKey,
+                    "OpenAI" => translationSettings.OpenAIApiKey,
+                    "Anthropic" => translationSettings.AnthropicApiKey,
+                    _ => ""
+                };
+            };
+
+            // 초기값 설정
+            var currentProvider = translationSettings.Provider;
+            var providerItem = translationProviderCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == currentProvider)
+                               ?? (ComboBoxItem)translationProviderCombo.Items[0];
+            translationProviderCombo.SelectedItem = providerItem;
+            translationModelBox.Text = translationSettings.Model;
+            updateApiKeyBox();
+            updateModelRowVisibility(currentProvider);
+
+            translationProviderCombo.SelectionChanged += (s, e) =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                translationSettings.Provider = provider;
+
+                if (provider == "OpenAI" && (translationModelBox.Text == "gemini-2.0-flash" || translationModelBox.Text == "claude-3-5-sonnet-20240620"))
+                    translationModelBox.Text = "gpt-4o";
+                else if (provider == "Anthropic" && (translationModelBox.Text == "gemini-2.0-flash" || translationModelBox.Text == "gpt-4o"))
+                    translationModelBox.Text = "claude-3-5-sonnet-20240620";
+
+                if (provider != "Google")
+                    translationSettings.Model = translationModelBox.Text;
+
+                updateModelRowVisibility(provider);
+                updateApiKeyBox();
+            };
+
+            translationModelBox.LostFocus += (s, e) => translationSettings.Model = translationModelBox.Text;
+
+            googleModelCombo.SelectionChanged += (s, e) =>
+            {
+                if (googleModelCombo.SelectedItem is ComboBoxItem item)
+                    translationSettings.Model = (string)item.Tag;
+            };
+
+            fetchGoogleModelsBtn.Click += async (s, e) =>
+            {
+                // API 키 우선 저장
+                translationSettings.GoogleApiKey = translationApiKeyBox.Password;
+
+                if (string.IsNullOrWhiteSpace(translationSettings.GoogleApiKey))
+                {
+                    googleModelStatus.Text = "API 키를 먼저 입력하세요";
+                    return;
+                }
+
+                fetchGoogleModelsBtn.IsEnabled = false;
+                googleModelStatus.Text = "가져오는 중...";
+
+                try
+                {
+                    var savedSelection = googleModelCombo.SelectedItem is ComboBoxItem sel
+                        ? (string)sel.Tag
+                        : translationSettings.Model;
+
+                    googleModelCombo.Items.Clear();
+
+                    var gClient = new Google.GenAI.Client(apiKey: translationSettings.GoogleApiKey);
+                    var pager = await gClient.Models.ListAsync();
+
+                    var modelIds = new List<string>();
+                    await foreach (var model in pager)
+                    {
+                        if (model.Name is not null)
+                        {
+                            // Name 형식: "models/gemini-2.0-flash" → prefix 제거
+                            var id = model.Name.StartsWith("models/") ? model.Name[7..] : model.Name;
+                            modelIds.Add(id);
+                        }
+                    }
+
+                    // Gemini 모델 우선, 이후 가나다순
+                    modelIds.Sort((a, b) =>
+                    {
+                        bool aG = a.StartsWith("gemini", StringComparison.OrdinalIgnoreCase);
+                        bool bG = b.StartsWith("gemini", StringComparison.OrdinalIgnoreCase);
+                        if (aG != bG) return aG ? -1 : 1;
+                        return string.Compare(a, b, StringComparison.OrdinalIgnoreCase);
+                    });
+
+                    foreach (var id in modelIds)
+                        googleModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
+
+                    // 이전 선택 복원
+                    var toSelect = googleModelCombo.Items.OfType<ComboBoxItem>()
+                        .FirstOrDefault(i => (string)i.Tag == savedSelection);
+                    if (toSelect is not null)
+                        googleModelCombo.SelectedItem = toSelect;
+                    else if (googleModelCombo.Items.Count > 0)
+                        googleModelCombo.SelectedIndex = 0;
+
+                    googleModelStatus.Text = $"{modelIds.Count}개";
+                }
+                catch (Exception ex)
+                {
+                    googleModelStatus.Text = "오류: " + ex.Message;
+                }
+                finally
+                {
+                    fetchGoogleModelsBtn.IsEnabled = true;
+                }
+            };
+
+            translationApiKeyBox.LostFocus += (s, e) =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                switch (provider)
+                {
+                    case "Google": translationSettings.GoogleApiKey = translationApiKeyBox.Password; break;
+                    case "OpenAI": translationSettings.OpenAIApiKey = translationApiKeyBox.Password; break;
+                    case "Anthropic": translationSettings.AnthropicApiKey = translationApiKeyBox.Password; break;
+                }
+            };
+
+            stack.Children.Add(Row("공급자:", translationProviderCombo));
+            stack.Children.Add(textModelRow);
+            stack.Children.Add(googleModelRow);
+            stack.Children.Add(Row("API 키:", translationApiKeyBox));
 
             // Tag section header (separate grouping from OCR settings)
             stack.Children.Add(new TextBlock { Text = "태그 표시", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
@@ -417,7 +604,33 @@ namespace MangaViewer.Pages
 
             _groupCombo.SelectedIndex = (int)_ocr.GroupingMode;
             _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
+            _ocrBackendCombo.SelectedIndex = (int)_ocr.Backend;
+            _ollamaEndpointBox.Text = _ocr.OllamaEndpoint;
+            UpdateOllamaSettingsVisibility();
             RefreshCacheView();
+        }
+
+        private void OcrBackendCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_ocrBackendCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+            {
+                _ocr.SetBackend(tag == "ollama" ? OcrService.OcrBackend.Ollama : OcrService.OcrBackend.WindowsBuiltIn);
+                UpdateOllamaSettingsVisibility();
+            }
+        }
+
+        private void OllamaEndpointBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            var text = _ollamaEndpointBox.Text?.Trim();
+            if (!string.IsNullOrWhiteSpace(text))
+                _ocr.SetOllamaEndpoint(text);
+        }
+
+        private void UpdateOllamaSettingsVisibility()
+        {
+            _ollamaSettingsPanel.Visibility = _ocr.Backend == OcrService.OcrBackend.Ollama
+                ? Visibility.Visible
+                : Visibility.Collapsed;
         }
 
         private void LangCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

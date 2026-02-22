@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Controls;
 using MangaViewer.Services.Thumbnails;
 using MangaViewer.Services.Logging;
 using System.IO;
+using Microsoft.Extensions.AI;
 
 namespace MangaViewer.ViewModels
 {
@@ -41,8 +42,13 @@ namespace MangaViewer.ViewModels
         private double _rasterizationScale = 1.0;
 
         private CancellationTokenSource? _ocrCts;
+        private int _ocrVersion;
         private CancellationTokenSource? _pageLoadCts;
         private int _pageLoadVersion;
+
+        private readonly Dictionary<string, string> _translationCache = new(StringComparer.Ordinal);
+        private readonly Dictionary<int, bool> _pageOcrStates = new();
+        private readonly Dictionary<int, bool> _pageTranslationStates = new();
 
         private string _ocrStatusMessage = string.Empty;
         private bool _isInfoBarOpen;
@@ -64,11 +70,68 @@ namespace MangaViewer.ViewModels
             {
                 if (SetProperty(ref _isOcrRunning, value))
                 {
-                    RunOcrCommand.RaiseCanExecuteChanged();
                     OnPropertyChanged(nameof(IsControlEnabled));
                 }
             }
         }
+        private bool _isOcrActive;
+        public bool IsOcrActive
+        {
+            get => _isOcrActive;
+            set
+            {
+                if (SetProperty(ref _isOcrActive, value))
+                {
+                    int pageIndex = _mangaManager.CurrentPageIndex;
+                    if (pageIndex >= 0)
+                        _pageOcrStates[pageIndex] = value;
+                    if (_isOcrActive)
+                    {
+                        _ = RunOcrAsync();
+                    }
+                    else
+                    {
+                        CancelOcr();
+                        ClearOcr();
+                    }
+                    OnPropertyChanged(nameof(IsTranslationToggleEnabled));
+                }
+            }
+        }
+
+        private bool _isTranslationActive;
+        public bool IsTranslationActive
+        {
+            get => _isTranslationActive;
+            set
+            {
+                if (SetProperty(ref _isTranslationActive, value))
+                {
+                    int pageIndex = _mangaManager.CurrentPageIndex;
+                    if (pageIndex >= 0)
+                        _pageTranslationStates[pageIndex] = value;
+                    OnPropertyChanged(nameof(IsTranslationVisible));
+                    if (_isTranslationActive && _isOcrActive)
+                    {
+                        _ = RunTranslationAsync();
+                    }
+                    else
+                    {
+                        TranslatedLeftOcrText = string.Empty;
+                        TranslatedRightOcrText = string.Empty;
+                    }
+                }
+            }
+        }
+
+        public bool IsTranslationToggleEnabled => IsOcrActive;
+        public bool IsTranslationVisible => IsTranslationActive && IsOcrActive && (!string.IsNullOrEmpty(TranslatedLeftOcrText) || !string.IsNullOrEmpty(TranslatedRightOcrText));
+
+        private string _translatedLeftOcrText = string.Empty;
+        private string _translatedRightOcrText = string.Empty;
+        public string TranslatedLeftOcrText { get => _translatedLeftOcrText; private set { SetProperty(ref _translatedLeftOcrText, value); OnPropertyChanged(nameof(IsTranslationVisible)); } }
+        public string TranslatedRightOcrText { get => _translatedRightOcrText; private set { SetProperty(ref _translatedRightOcrText, value); OnPropertyChanged(nameof(IsTranslationVisible)); } }
+
         public string OcrStatusMessage { get => _ocrStatusMessage; private set => SetProperty(ref _ocrStatusMessage, value); }
         public bool IsInfoBarOpen { get => _isInfoBarOpen; private set => SetProperty(ref _isInfoBarOpen, value); }
         public InfoBarSeverity OcrSeverity { get => _ocrSeverity; private set => SetProperty(ref _ocrSeverity, value); }
@@ -108,10 +171,12 @@ namespace MangaViewer.ViewModels
                 if (SetProperty(ref _isLoading, value))
                 {
                     OnPropertyChanged(nameof(IsControlEnabled));
+                    OnPropertyChanged(nameof(IsOcrToggleEnabled));
                 }
             }
         }
         public bool IsControlEnabled => !IsLoading && !IsOcrRunning;
+        public bool IsOcrToggleEnabled => !IsLoading && _mangaManager.TotalImages > 0;
 
         public string DirectionButtonText => _mangaManager.IsRightToLeft ? "읽기 방향: 역방향" : "읽기 방향: 정방향";
         public string CoverButtonText => _mangaManager.IsCoverSeparate ? "표지: 한 장으로 보기" : "표지: 두 장으로 보기";
@@ -127,7 +192,6 @@ namespace MangaViewer.ViewModels
         public RelayCommand ToggleNavPaneCommand { get; }
         public RelayCommand GoLeftCommand { get; }
         public RelayCommand GoRightCommand { get; }
-        public AsyncRelayCommand RunOcrCommand { get; }
         public RelayCommand AddBookmarkCommand { get; }
         public RelayCommand RemoveBookmarkCommand { get; }
         public RelayCommand NavigateToBookmarkCommand { get; }
@@ -136,6 +200,13 @@ namespace MangaViewer.ViewModels
         private readonly ObservableCollection<BoundingBoxViewModel> _rightOcrBoxes = new();
         public ReadOnlyObservableCollection<BoundingBoxViewModel> LeftOcrBoxes { get; }
         public ReadOnlyObservableCollection<BoundingBoxViewModel> RightOcrBoxes { get; }
+
+        private string _leftOcrText = string.Empty;
+        private string _rightOcrText = string.Empty;
+        public string LeftOcrText { get => _leftOcrText; private set => SetProperty(ref _leftOcrText, value); }
+        public string RightOcrText { get => _rightOcrText; private set => SetProperty(ref _rightOcrText, value); }
+        public bool IsOllamaMode => _ocrService.Backend == OcrService.OcrBackend.Ollama;
+        public bool IsOllamaOcrTextVisible => IsOllamaMode && (!string.IsNullOrEmpty(_leftOcrText) || !string.IsNullOrEmpty(_rightOcrText));
 
         private BoundingBoxViewModel? _selectedOcrBox;
         public BoundingBoxViewModel? SelectedOcrBox { get => _selectedOcrBox; set => SetProperty(ref _selectedOcrBox, value); }
@@ -157,6 +228,7 @@ namespace MangaViewer.ViewModels
             _mangaManager.MangaLoaded += OnMangaLoaded;
             _mangaManager.PageChanged += OnPageChanged;
             _ocrService.SettingsChanged += OnOcrSettingsChanged;
+            TranslationSettingsService.Instance.SettingsChanged += OnTranslationSettingsChanged;
 
             OpenFolderCommand = new AsyncRelayCommand(async p => await OpenFolderAsync(p), _ => IsOpenFolderEnabled);
             NextPageCommand = new RelayCommand(_ => _mangaManager.GoToNextPage(), _ => _mangaManager.TotalImages > 0);
@@ -168,7 +240,6 @@ namespace MangaViewer.ViewModels
             ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
-            RunOcrCommand = new AsyncRelayCommand(async _ => await RunOcrAsync(), _ => _mangaManager.TotalImages > 0 && !IsOcrRunning);
             AddBookmarkCommand = new RelayCommand(_ => AddCurrentBookmark(), _ => _mangaManager.TotalImages > 0);
             RemoveBookmarkCommand = new RelayCommand(o => RemoveBookmark(o as MangaPageViewModel), _ => Bookmarks.Count > 0);
             NavigateToBookmarkCommand = new RelayCommand(o => NavigateToBookmark(o as MangaPageViewModel));
@@ -176,10 +247,17 @@ namespace MangaViewer.ViewModels
 
         private async void OnOcrSettingsChanged(object? sender, EventArgs e)
         {
+            OnPropertyChanged(nameof(IsOllamaMode));
+            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
             if (IsOcrRunning) return;
             if (LeftImageFilePath == null && RightImageFilePath == null) return;
-            if (!RunOcrCommand.CanExecute(null)) return;
+            if (!IsOcrActive) return;
             await RunOcrAsync();
+        }
+
+        private void OnTranslationSettingsChanged(object? sender, EventArgs e)
+        {
+            _translationCache.Clear();
         }
 
         /// <summary>
@@ -192,6 +270,8 @@ namespace MangaViewer.ViewModels
             _ocrService.ClearCache();
             _mangaManager.Clear();
 
+            _pageOcrStates.Clear();
+            _pageTranslationStates.Clear();
             ClearCurrentImages();
 
             Bookmarks.Clear();
@@ -320,6 +400,8 @@ namespace MangaViewer.ViewModels
         private void OnMangaLoaded()
         {
             _previousPageIndex = 0;
+            _pageOcrStates.Clear();
+            _pageTranslationStates.Clear();
             OnPropertyChanged(nameof(Thumbnails));
             UpdateCommandStates();
 
@@ -392,7 +474,6 @@ namespace MangaViewer.ViewModels
             OnPropertyChanged(nameof(CoverButtonText));
 
             TryPrefetchAround();
-            RunOcrCommand.RaiseCanExecuteChanged();
             ClearOcr();
 
             if (delta != 0)
@@ -400,6 +481,13 @@ namespace MangaViewer.ViewModels
 
             _previousPageIndex = newIndex;
             PageViewChanged?.Invoke(this, EventArgs.Empty);
+
+            RestorePageOcrTranslationState(newIndex);
+
+            if (IsOcrActive)
+            {
+                _ = RunOcrAsync();
+            }
         }
 
         private (CancellationToken token, int localVersion) ResetPageLoadCancellation()
@@ -538,9 +626,9 @@ namespace MangaViewer.ViewModels
             ToggleBookmarkPaneCommand.RaiseCanExecuteChanged();
             GoLeftCommand.RaiseCanExecuteChanged();
             GoRightCommand.RaiseCanExecuteChanged();
-            RunOcrCommand.RaiseCanExecuteChanged();
             AddBookmarkCommand.RaiseCanExecuteChanged();
             RemoveBookmarkCommand.RaiseCanExecuteChanged();
+            OnPropertyChanged(nameof(IsOcrToggleEnabled));
         }
 
         public void UpdateRasterizationScale(double scale)
@@ -618,8 +706,15 @@ namespace MangaViewer.ViewModels
 
         private async Task RunOcrAsync()
         {
-            if (IsOcrRunning) return;
             CancelOcr();
+            int localVersion = Interlocked.Increment(ref _ocrVersion);
+            while (IsOcrRunning)
+            {
+                await Task.Delay(10);
+                if (localVersion != _ocrVersion) return;
+            }
+            if (localVersion != _ocrVersion) return;
+
             var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
             if (originalPaths.Count == 0) return;
 
@@ -636,19 +731,10 @@ namespace MangaViewer.ViewModels
             try
             {
                 ClearOcr();
-                SetOcrStatus($"OCR 실행 중... ({paths.Count} images)", InfoBarSeverity.Informational, true);
-                int totalBoxes = 0;
-                for (int i = 0; i < paths.Count; i++)
-                {
-                    string p = paths[i];
-                    if (string.IsNullOrWhiteSpace(p)) continue;
-                    token.ThrowIfCancellationRequested();
-                    var boxes = await _ocrService.GetOcrAsync(p, token);
-                    foreach (var b in boxes)
-                        if (i == 0) _leftOcrBoxes.Add(b); else _rightOcrBoxes.Add(b);
-                    totalBoxes += boxes.Count;
-                }
-                SetOcrStatus($"OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
+                if (_ocrService.Backend == OcrService.OcrBackend.Ollama)
+                    await RunOllamaOcrAsync(paths, token);
+                else
+                    await RunWinRtOcrAsync(paths, token);
             }
             catch (OperationCanceledException)
             {
@@ -665,9 +751,138 @@ namespace MangaViewer.ViewModels
                 IsOcrRunning = false;
                 OnPropertyChanged(nameof(IsControlEnabled));
                 OcrCompleted?.Invoke(this, EventArgs.Empty);
-                RunOcrCommand.RaiseCanExecuteChanged();
                 _ocrCts?.Dispose();
                 _ocrCts = null;
+            }
+        }
+
+        private async Task RunWinRtOcrAsync(List<string> paths, CancellationToken token)
+        {
+            SetOcrStatus($"OCR 실행 중... ({paths.Count} images)", InfoBarSeverity.Informational, true);
+            int totalBoxes = 0;
+            for (int i = 0; i < paths.Count; i++)
+            {
+                string p = paths[i];
+                if (string.IsNullOrWhiteSpace(p)) continue;
+                token.ThrowIfCancellationRequested();
+                var boxes = await _ocrService.GetOcrAsync(p, token);
+                foreach (var b in boxes)
+                    if (i == 0) _leftOcrBoxes.Add(b); else _rightOcrBoxes.Add(b);
+                totalBoxes += boxes.Count;
+            }
+            SetOcrStatus($"OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
+        }
+
+        private async Task RunOllamaOcrAsync(List<string> paths, CancellationToken token)
+        {
+            SetOcrStatus("Ollama OCR 실행 중...", InfoBarSeverity.Informational, true);
+
+            if (paths.Count > 0 && !string.IsNullOrWhiteSpace(paths[0]))
+            {
+                token.ThrowIfCancellationRequested();
+                LeftOcrText = await _ocrService.GetOllamaTextAsync(paths[0], token).ConfigureAwait(true);
+            }
+
+            if (paths.Count > 1 && !string.IsNullOrWhiteSpace(paths[1]))
+            {
+                token.ThrowIfCancellationRequested();
+                RightOcrText = await _ocrService.GetOllamaTextAsync(paths[1], token).ConfigureAwait(true);
+            }
+
+            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
+            SetOcrStatus("Ollama OCR 완료", InfoBarSeverity.Success, true);
+
+            if (IsTranslationActive)
+            {
+                _ = RunTranslationAsync();
+            }
+        }
+
+        private async Task RunTranslationAsync()
+        {
+            if (string.IsNullOrWhiteSpace(LeftOcrText) && string.IsNullOrWhiteSpace(RightOcrText)) return;
+
+            SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, true);
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(LeftOcrText))
+                {
+                    TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText);
+                }
+
+                if (!string.IsNullOrWhiteSpace(RightOcrText))
+                {
+                    TranslatedRightOcrText = await TranslateTextAsync(RightOcrText);
+                }
+
+                SetOcrStatus("번역 완료", InfoBarSeverity.Success, true);
+            }
+            catch (Exception ex)
+            {
+                SetOcrStatus("번역 오류: " + ex.Message, InfoBarSeverity.Error, true);
+                Log.Error(ex, "RunTranslationAsync failed");
+            }
+        }
+
+        private async Task<string> TranslateTextAsync(string text)
+        {
+            var settings = TranslationSettingsService.Instance;
+            Microsoft.Extensions.AI.IChatClient? client = null;
+
+            if (settings.Provider == "Google")
+            {
+                client = new MangaViewer.Services.GoogleGenAIChatClient(settings.GoogleApiKey, settings.Model);
+            }
+            else if (settings.Provider == "OpenAI")
+            {
+                client = new MangaViewer.Services.OpenAIChatClient(settings.OpenAIApiKey, settings.Model);
+            }
+            else if (settings.Provider == "Anthropic")
+            {
+                client = new AnthropicChatClient(settings.AnthropicApiKey, settings.Model);
+            }
+
+            if (client == null) return "번역 공급자를 설정해주세요.";
+
+            string cacheKey = $"{settings.Provider}|{settings.Model}|{text}";
+            if (_translationCache.TryGetValue(cacheKey, out string? cached))
+                return cached;
+
+            var messages = new List<ChatMessage>
+            {
+                new ChatMessage(ChatRole.User, $"Translate the following text to Korean. Only output the translated text without any additional comments or explanations:\n\n{text}")
+            };
+
+            var response = await client.GetResponseAsync(messages);
+            string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
+            _translationCache[cacheKey] = result;
+            return result;
+        }
+
+        private void RestorePageOcrTranslationState(int pageIndex)
+        {
+            bool ocrState = _pageOcrStates.TryGetValue(pageIndex, out bool o) && o;
+            bool transState = _pageTranslationStates.TryGetValue(pageIndex, out bool t) && t;
+
+            if (_isOcrActive != ocrState)
+            {
+                _isOcrActive = ocrState;
+                OnPropertyChanged(nameof(IsOcrActive));
+                OnPropertyChanged(nameof(IsTranslationToggleEnabled));
+            }
+
+            if (_isTranslationActive != transState)
+            {
+                _isTranslationActive = transState;
+                OnPropertyChanged(nameof(IsTranslationActive));
+                OnPropertyChanged(nameof(IsTranslationVisible));
+            }
+
+            if (!_isTranslationActive)
+            {
+                TranslatedLeftOcrText = string.Empty;
+                TranslatedRightOcrText = string.Empty;
             }
         }
 
@@ -684,6 +899,10 @@ namespace MangaViewer.ViewModels
         {
             _leftOcrBoxes.Clear();
             _rightOcrBoxes.Clear();
+            LeftOcrText = string.Empty;
+            RightOcrText = string.Empty;
+            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
+            OcrCompleted?.Invoke(this, EventArgs.Empty);
         }
 
         private void SetOcrStatus(string message, InfoBarSeverity severity = InfoBarSeverity.Informational, bool open = true)
@@ -749,6 +968,7 @@ namespace MangaViewer.ViewModels
             _mangaManager.MangaLoaded -= OnMangaLoaded;
             _mangaManager.PageChanged -= OnPageChanged;
             _ocrService.SettingsChanged -= OnOcrSettingsChanged;
+            TranslationSettingsService.Instance.SettingsChanged -= OnTranslationSettingsChanged;
             GC.SuppressFinalize(this);
         }
     }

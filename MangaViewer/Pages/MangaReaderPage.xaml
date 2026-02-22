@@ -118,27 +118,134 @@
                             <TranslateTransform x:Name="PageTranslate" />
                         </Grid.RenderTransform>
                         <Grid Background="Transparent">
-                            <!-- Single Page Mode -->
-                            <Grid x:Name="SingleWrapper" Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
-                                <Canvas x:Name="SingleOverlay" Background="Transparent" />
-                            </Grid>
-                            <!-- Two Page Mode -->
-                            <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="0"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
-                                    <Canvas x:Name="LeftOverlay" Background="Transparent" />
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <!-- Row 0: Images -->
+                            <Grid Grid.Row="0" Background="Transparent">
+                                <!-- Single Page Mode -->
+                                <Grid x:Name="SingleWrapper" Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Image x:Name="SingleImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
+                                    <Canvas x:Name="SingleOverlay" Background="Transparent" />
                                 </Grid>
-                                <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                    <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
-                                    <Canvas x:Name="RightOverlay" Background="Transparent" />
+                                <!-- Two Page Mode -->
+                                <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="0"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                                        <Image x:Name="LeftImage" Source="{Binding LeftImageSource}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
+                                        <Canvas x:Name="LeftOverlay" Background="Transparent" />
+                                    </Grid>
+                                    <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
+                                        <Image x:Name="RightImage" Source="{Binding RightImageSource}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
+                                        <Canvas x:Name="RightOverlay" Background="Transparent" />
+                                    </Grid>
                                 </Grid>
                             </Grid>
+
+                            <!-- Row 1: OCR Text Boxes (+ Translation) -->
+                            <Border Grid.Row="1"
+                                    Padding="8,6,8,8"
+                                    Visibility="{Binding IsOllamaOcrTextVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                <Grid>
+                                    <!-- Single page mode -->
+                                    <Grid Visibility="{Binding IsSinglePageMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*" x:Name="SingleTranslationColumn"/>
+                                        </Grid.ColumnDefinitions>
+                                        <!-- OCR 원문 -->
+                                        <ScrollViewer Grid.Column="0"
+                                                      MaxHeight="200"
+                                                      Margin="0,0,4,0"
+                                                      VerticalScrollBarVisibility="Auto">
+                                            <TextBox Text="{Binding LeftOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="OCR 텍스트"/>
+                                        </ScrollViewer>
+                                        <!-- 번역 결과 -->
+                                        <ScrollViewer Grid.Column="1"
+                                                      MaxHeight="200"
+                                                      Margin="4,0,0,0"
+                                                      VerticalScrollBarVisibility="Auto"
+                                                      Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <TextBox Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="번역 결과"/>
+                                        </ScrollViewer>
+                                    </Grid>
+                                    <!-- Two page mode -->
+                                    <Grid Visibility="{Binding IsTwoPageMode, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <!-- 왼쪽 OCR 원문 -->
+                                        <ScrollViewer Grid.Column="0"
+                                                      MaxHeight="200"
+                                                      Margin="0,0,4,0"
+                                                      VerticalScrollBarVisibility="Auto">
+                                            <TextBox Text="{Binding LeftOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="왼쪽 OCR 텍스트"/>
+                                        </ScrollViewer>
+                                        <!-- 왼쪽 번역 결과 -->
+                                        <ScrollViewer Grid.Column="1"
+                                                      MaxHeight="200"
+                                                      Margin="0,0,8,0"
+                                                      VerticalScrollBarVisibility="Auto"
+                                                      Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <TextBox Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="왼쪽 번역"/>
+                                        </ScrollViewer>
+                                        <!-- 오른쪽 OCR 원문 -->
+                                        <ScrollViewer Grid.Column="2"
+                                                      MaxHeight="200"
+                                                      Margin="8,0,4,0"
+                                                      VerticalScrollBarVisibility="Auto">
+                                            <TextBox Text="{Binding RightOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="오른쪽 OCR 텍스트"/>
+                                        </ScrollViewer>
+                                        <!-- 오른쪽 번역 결과 -->
+                                        <ScrollViewer Grid.Column="3"
+                                                      MaxHeight="200"
+                                                      Margin="4,0,0,0"
+                                                      VerticalScrollBarVisibility="Auto"
+                                                      Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                            <TextBox Text="{Binding TranslatedRightOcrText, Mode=OneWay}"
+                                                     IsReadOnly="True"
+                                                     TextWrapping="Wrap"
+                                                     AcceptsReturn="True"
+                                                     FontFamily="Segoe UI"
+                                                     PlaceholderText="오른쪽 번역"/>
+                                        </ScrollViewer>
+                                    </Grid>
+                                </Grid>
+                            </Border>
                         </Grid>
                     </Grid>
                 </Grid>

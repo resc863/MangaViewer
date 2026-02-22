@@ -79,11 +79,16 @@
                         </AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarSeparator/>
-                    <AppBarButton Label="OCR" Command="{Binding RunOcrCommand}">
-                        <AppBarButton.Icon>
+                    <AppBarToggleButton Label="OCR" IsEnabled="{Binding IsOcrToggleEnabled}" IsChecked="{Binding IsOcrActive, Mode=TwoWay}">
+                        <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE8C3;" FontFamily="Segoe MDL2 Assets"/>
-                        </AppBarButton.Icon>
-                    </AppBarButton>
+                        </AppBarToggleButton.Icon>
+                    </AppBarToggleButton>
+                    <AppBarToggleButton Label="번역" IsEnabled="{Binding IsTranslationToggleEnabled}" IsChecked="{Binding IsTranslationActive, Mode=TwoWay}">
+                        <AppBarToggleButton.Icon>
+                            <FontIcon Glyph="&#xE8C1;" FontFamily="Segoe MDL2 Assets"/>
+                        </AppBarToggleButton.Icon>
+                    </AppBarToggleButton>
                 </CommandBar.PrimaryCommands>
             </CommandBar>
             <!-- Drag region for system title bar behaviors -->

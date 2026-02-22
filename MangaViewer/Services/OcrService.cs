@@ -5,6 +5,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MangaViewer.ViewModels;
+using Microsoft.Extensions.AI;
+using OllamaSharp;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -47,6 +49,7 @@ namespace MangaViewer.Services
 
         public enum OcrGrouping { Word = 0, Line = 1, Paragraph = 2 }
         public enum WritingMode { Auto = 0, Horizontal = 1, Vertical = 2 }
+        public enum OcrBackend { WindowsBuiltIn = 0, Ollama = 1 }
 
         public event EventHandler? SettingsChanged;
         public string CurrentLanguage { get; private set; } = "auto";
@@ -54,9 +57,13 @@ namespace MangaViewer.Services
         public WritingMode TextWritingMode { get; private set; } = WritingMode.Auto;
         public double ParagraphGapFactorVertical { get; private set; } = 1.50;
         public double ParagraphGapFactorHorizontal { get; private set; } = 1.25;
+        public OcrBackend Backend { get; private set; } = OcrBackend.WindowsBuiltIn;
+        public string OllamaEndpoint { get; private set; } = "http://localhost:11434";
+        public string OllamaModel { get; private set; } = "glm-ocr:latest";
 
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _ollamaCache = new(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource? _debounceCts;
         private readonly object _debounceGate = new();
         private readonly SynchronizationContext? _syncContext;
@@ -68,6 +75,10 @@ namespace MangaViewer.Services
         {
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
             _syncContext = SynchronizationContext.Current;
+
+            Backend = (OcrBackend)SettingsProvider.Get("OcrBackend", 0);
+            OllamaEndpoint = SettingsProvider.Get("OllamaEndpoint", "http://localhost:11434");
+            OllamaModel = SettingsProvider.Get("OllamaModel", "glm-ocr:latest");
         }
 
         public void SetLanguage(string languageTag)
@@ -120,7 +131,131 @@ namespace MangaViewer.Services
             }
         }
 
-        public void ClearCache() => _ocrCache.Clear();
+        public void SetBackend(OcrBackend backend)
+        {
+            if (Backend != backend)
+            {
+                Backend = backend;
+                SettingsProvider.Set("OcrBackend", (int)backend);
+                OnSettingsChanged();
+            }
+        }
+
+        public void SetOllamaEndpoint(string endpoint)
+        {
+            if (string.IsNullOrWhiteSpace(endpoint)) return;
+            endpoint = endpoint.TrimEnd('/');
+            if (!string.Equals(OllamaEndpoint, endpoint, StringComparison.OrdinalIgnoreCase))
+            {
+                OllamaEndpoint = endpoint;
+                SettingsProvider.Set("OllamaEndpoint", endpoint);
+            }
+        }
+
+        public void SetOllamaModel(string model)
+        {
+            if (string.IsNullOrWhiteSpace(model)) return;
+            if (!string.Equals(OllamaModel, model, StringComparison.OrdinalIgnoreCase))
+            {
+                OllamaModel = model;
+                SettingsProvider.Set("OllamaModel", model);
+            }
+        }
+
+        public async Task<string> GetOllamaTextAsync(string imagePath, CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(imagePath)) return string.Empty;
+            string cacheKey = $"{imagePath}|model={OllamaModel}";
+            if (_ollamaCache.TryGetValue(cacheKey, out var cached))
+                return cached;
+
+            try
+            {
+                byte[]? imageBytes = null;
+                string mimeType;
+
+                if (imagePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var bitmap = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                    if (bitmap != null)
+                        imageBytes = await EncodeSoftwareBitmapToJpegAsync(bitmap).ConfigureAwait(false);
+                    mimeType = "image/jpeg";
+                }
+                else
+                {
+                    imageBytes = await File.ReadAllBytesAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                    mimeType = GetImageMimeType(imagePath);
+                }
+
+                if (imageBytes == null || imageBytes.Length == 0) return string.Empty;
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                IChatClient chatClient = new OllamaApiClient(new Uri(OllamaEndpoint), OllamaModel);
+
+                var messages = new List<ChatMessage>
+                {
+                    new ChatMessage(ChatRole.User,
+                    [
+                        new TextContent("Text Recognition"),
+                        new DataContent(imageBytes, mimeType)
+                    ])
+                };
+
+                var response = await chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(false);
+                string result = response.Text ?? string.Empty;
+                _ollamaCache[cacheKey] = result;
+                return result;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "[OcrService] Ollama OCR failed");
+                return string.Empty;
+            }
+        }
+
+        private static string GetImageMimeType(string path)
+        {
+            return Path.GetExtension(path).ToLowerInvariant() switch
+            {
+                ".jpg" or ".jpeg" => "image/jpeg",
+                ".png" => "image/png",
+                ".webp" => "image/webp",
+                ".gif" => "image/gif",
+                _ => "image/jpeg"
+            };
+        }
+
+        private static async Task<byte[]?> EncodeSoftwareBitmapToJpegAsync(SoftwareBitmap bitmap)
+        {
+            try
+            {
+                var encodable = bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8
+                    ? SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied)
+                    : bitmap;
+
+                using var ms = new InMemoryRandomAccessStream();
+                var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, ms);
+                encoder.SetSoftwareBitmap(encodable);
+                await encoder.FlushAsync();
+
+                var reader = new DataReader(ms.GetInputStreamAt(0));
+                uint size = (uint)ms.Size;
+                await reader.LoadAsync(size);
+                var bytes = new byte[size];
+                reader.ReadBytes(bytes);
+                reader.DetachStream();
+                return bytes;
+            }
+            catch { return null; }
+        }
+
+        public void ClearCache()
+        {
+            _ocrCache.Clear();
+            _ollamaCache.Clear();
+        }
 
         private void OnSettingsChanged()
         {
