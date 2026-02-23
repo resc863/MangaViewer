@@ -171,9 +171,9 @@ namespace MangaViewer.Pages
             var googleModelRow = Row("모델:", googleModelInner);
 
             // 저장된 Google 모델 초기값 로드
-            if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.Model))
+            if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.GoogleModel))
             {
-                var savedId = translationSettings.Model;
+                var savedId = translationSettings.GoogleModel;
                 googleModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
                 googleModelCombo.SelectedIndex = 0;
             }
@@ -196,38 +196,78 @@ namespace MangaViewer.Pages
                 };
             };
 
+            var systemPromptBox = new TextBox
+            {
+                Width = 360,
+                Height = 80,
+                AcceptsReturn = true,
+                TextWrapping = TextWrapping.Wrap,
+                PlaceholderText = "시스템 프롬프트"
+            };
+
+            Action updateSystemPromptBox = () =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                systemPromptBox.Text = provider switch
+                {
+                    "OpenAI" => translationSettings.OpenAISystemPrompt,
+                    "Anthropic" => translationSettings.AnthropicSystemPrompt,
+                    _ => translationSettings.GoogleSystemPrompt
+                };
+            };
+
+            systemPromptBox.LostFocus += (s, e) =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                switch (provider)
+                {
+                    case "Google": translationSettings.GoogleSystemPrompt = systemPromptBox.Text; break;
+                    case "OpenAI": translationSettings.OpenAISystemPrompt = systemPromptBox.Text; break;
+                    case "Anthropic": translationSettings.AnthropicSystemPrompt = systemPromptBox.Text; break;
+                }
+            };
+
             // 초기값 설정
             var currentProvider = translationSettings.Provider;
             var providerItem = translationProviderCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == currentProvider)
                                ?? (ComboBoxItem)translationProviderCombo.Items[0];
             translationProviderCombo.SelectedItem = providerItem;
-            translationModelBox.Text = translationSettings.Model;
+            translationModelBox.Text = currentProvider switch
+            {
+                "OpenAI" => translationSettings.OpenAIModel,
+                "Anthropic" => translationSettings.AnthropicModel,
+                _ => translationSettings.GoogleModel
+            };
             updateApiKeyBox();
             updateModelRowVisibility(currentProvider);
+            updateSystemPromptBox();
 
             translationProviderCombo.SelectionChanged += (s, e) =>
             {
                 var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
                 translationSettings.Provider = provider;
 
-                if (provider == "OpenAI" && (translationModelBox.Text == "gemini-2.0-flash" || translationModelBox.Text == "claude-3-5-sonnet-20240620"))
-                    translationModelBox.Text = "gpt-4o";
-                else if (provider == "Anthropic" && (translationModelBox.Text == "gemini-2.0-flash" || translationModelBox.Text == "gpt-4o"))
-                    translationModelBox.Text = "claude-3-5-sonnet-20240620";
-
-                if (provider != "Google")
-                    translationSettings.Model = translationModelBox.Text;
+                if (provider == "OpenAI")
+                    translationModelBox.Text = translationSettings.OpenAIModel;
+                else if (provider == "Anthropic")
+                    translationModelBox.Text = translationSettings.AnthropicModel;
 
                 updateModelRowVisibility(provider);
                 updateApiKeyBox();
+                updateSystemPromptBox();
             };
 
-            translationModelBox.LostFocus += (s, e) => translationSettings.Model = translationModelBox.Text;
+            translationModelBox.LostFocus += (s, e) =>
+            {
+                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
+                if (provider == "OpenAI") translationSettings.OpenAIModel = translationModelBox.Text;
+                else if (provider == "Anthropic") translationSettings.AnthropicModel = translationModelBox.Text;
+            };
 
             googleModelCombo.SelectionChanged += (s, e) =>
             {
                 if (googleModelCombo.SelectedItem is ComboBoxItem item)
-                    translationSettings.Model = (string)item.Tag;
+                    translationSettings.GoogleModel = (string)item.Tag;
             };
 
             fetchGoogleModelsBtn.Click += async (s, e) =>
@@ -248,7 +288,7 @@ namespace MangaViewer.Pages
                 {
                     var savedSelection = googleModelCombo.SelectedItem is ComboBoxItem sel
                         ? (string)sel.Tag
-                        : translationSettings.Model;
+                        : translationSettings.GoogleModel;
 
                     googleModelCombo.Items.Clear();
 
@@ -312,7 +352,25 @@ namespace MangaViewer.Pages
             stack.Children.Add(Row("공급자:", translationProviderCombo));
             stack.Children.Add(textModelRow);
             stack.Children.Add(googleModelRow);
+            stack.Children.Add(Row("시스템 프롬프트:", systemPromptBox));
             stack.Children.Add(Row("API 키:", translationApiKeyBox));
+
+            var thinkingLevelCombo = new ComboBox { Width = 160 };
+            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
+            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "최소", Tag = "Minimal" });
+            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "낮음", Tag = "Low" });
+            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "보통", Tag = "Medium" });
+            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "높음", Tag = "High" });
+            var savedThinking = translationSettings.ThinkingLevel;
+            var thinkingItem = thinkingLevelCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == savedThinking)
+                               ?? (ComboBoxItem)thinkingLevelCombo.Items[0];
+            thinkingLevelCombo.SelectedItem = thinkingItem;
+            thinkingLevelCombo.SelectionChanged += (s, e) =>
+            {
+                if (thinkingLevelCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
+                    translationSettings.ThinkingLevel = tag;
+            };
+            stack.Children.Add(Row("Thinking:", thinkingLevelCombo));
 
             // Tag section header (separate grouping from OCR settings)
             stack.Children.Add(new TextBlock { Text = "태그 표시", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });

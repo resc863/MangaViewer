@@ -13,11 +13,13 @@ namespace MangaViewer.Services
     {
         private readonly Client _client;
         private readonly string _model;
+        private readonly string _thinkingLevel;
 
-        public GoogleGenAIChatClient(string apiKey, string model)
+        public GoogleGenAIChatClient(string apiKey, string model, string thinkingLevel = "Off")
         {
             _client = new Client(apiKey: apiKey);
             _model = model;
+            _thinkingLevel = thinkingLevel;
         }
 
         public void Dispose() { }
@@ -29,6 +31,15 @@ namespace MangaViewer.Services
             var config = new GenerateContentConfig();
             if (options?.MaxOutputTokens.HasValue == true)
                 config.MaxOutputTokens = options.MaxOutputTokens.Value;
+
+            config.ThinkingConfig = _thinkingLevel switch
+            {
+                "Minimal" => new ThinkingConfig { ThinkingBudget = 128 },
+                "Low" => new ThinkingConfig { ThinkingBudget = 1024 },
+                "Medium" => new ThinkingConfig { ThinkingBudget = 8192 },
+                "High" => new ThinkingConfig { ThinkingBudget = 24576 },
+                _ => new ThinkingConfig { ThinkingBudget = 0 },
+            };
 
             var response = await _client.Models.GenerateContentAsync(
                 model: _model,

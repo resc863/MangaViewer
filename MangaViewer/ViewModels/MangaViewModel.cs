@@ -804,6 +804,12 @@ namespace MangaViewer.ViewModels
 
             SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, true);
 
+            // 번역 창을 즉시 표시하고 처리 중 상태를 알림
+            if (!string.IsNullOrWhiteSpace(LeftOcrText))
+                TranslatedLeftOcrText = "번역 중...";
+            if (!string.IsNullOrWhiteSpace(RightOcrText))
+                TranslatedRightOcrText = "번역 중...";
+
             try
             {
                 if (!string.IsNullOrWhiteSpace(LeftOcrText))
@@ -820,7 +826,13 @@ namespace MangaViewer.ViewModels
             }
             catch (Exception ex)
             {
-                SetOcrStatus("번역 오류: " + ex.Message, InfoBarSeverity.Error, true);
+                string errorMsg = "번역 오류: " + ex.Message;
+                // 아직 "번역 중..." 상태인 항목에 오류 메시지 표시
+                if (TranslatedLeftOcrText == "번역 중...")
+                    TranslatedLeftOcrText = errorMsg;
+                if (TranslatedRightOcrText == "번역 중...")
+                    TranslatedRightOcrText = errorMsg;
+                SetOcrStatus(errorMsg, InfoBarSeverity.Error, true);
                 Log.Error(ex, "RunTranslationAsync failed");
             }
         }
@@ -828,31 +840,42 @@ namespace MangaViewer.ViewModels
         private async Task<string> TranslateTextAsync(string text)
         {
             var settings = TranslationSettingsService.Instance;
-            Microsoft.Extensions.AI.IChatClient? client = null;
+            var thinkingLevel = settings.ThinkingLevel;
+            string model;
+            string systemPrompt;
+            Microsoft.Extensions.AI.IChatClient client;
 
             if (settings.Provider == "Google")
             {
-                client = new MangaViewer.Services.GoogleGenAIChatClient(settings.GoogleApiKey, settings.Model);
+                model = settings.GoogleModel;
+                systemPrompt = settings.GoogleSystemPrompt;
+                client = new MangaViewer.Services.GoogleGenAIChatClient(settings.GoogleApiKey, model, thinkingLevel);
             }
             else if (settings.Provider == "OpenAI")
             {
-                client = new MangaViewer.Services.OpenAIChatClient(settings.OpenAIApiKey, settings.Model);
+                model = settings.OpenAIModel;
+                systemPrompt = settings.OpenAISystemPrompt;
+                client = new MangaViewer.Services.OpenAIChatClient(settings.OpenAIApiKey, model, thinkingLevel: thinkingLevel);
             }
             else if (settings.Provider == "Anthropic")
             {
-                client = new AnthropicChatClient(settings.AnthropicApiKey, settings.Model);
+                model = settings.AnthropicModel;
+                systemPrompt = settings.AnthropicSystemPrompt;
+                client = new AnthropicChatClient(settings.AnthropicApiKey, model, thinkingLevel);
+            }
+            else
+            {
+                return "번역 공급자를 설정해주세요.";
             }
 
-            if (client == null) return "번역 공급자를 설정해주세요.";
-
-            string cacheKey = $"{settings.Provider}|{settings.Model}|{text}";
+            string cacheKey = $"{settings.Provider}|{model}|{thinkingLevel}|{text}";
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
-            var messages = new List<ChatMessage>
-            {
-                new ChatMessage(ChatRole.User, $"Translate the following text to Korean. Only output the translated text without any additional comments or explanations:\n\n{text}")
-            };
+            var messages = new List<ChatMessage>();
+            if (!string.IsNullOrWhiteSpace(systemPrompt))
+                messages.Add(new ChatMessage(ChatRole.System, systemPrompt));
+            messages.Add(new ChatMessage(ChatRole.User, text));
 
             var response = await client.GetResponseAsync(messages);
             string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
