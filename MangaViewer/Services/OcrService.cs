@@ -60,10 +60,13 @@ namespace MangaViewer.Services
         public OcrBackend Backend { get; private set; } = OcrBackend.WindowsBuiltIn;
         public string OllamaEndpoint { get; private set; } = "http://localhost:11434";
         public string OllamaModel { get; private set; } = "glm-ocr:latest";
+        public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
+        public int PrefetchAdjacentPageCount { get; private set; } = 1;
 
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _ollamaCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _cacheGate = new();
         private CancellationTokenSource? _debounceCts;
         private readonly object _debounceGate = new();
         private readonly SynchronizationContext? _syncContext;
@@ -79,6 +82,8 @@ namespace MangaViewer.Services
             Backend = (OcrBackend)SettingsProvider.Get("OcrBackend", 0);
             OllamaEndpoint = SettingsProvider.Get("OllamaEndpoint", "http://localhost:11434");
             OllamaModel = SettingsProvider.Get("OllamaModel", "glm-ocr:latest");
+            PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
+            PrefetchAdjacentPageCount = Math.Clamp(SettingsProvider.Get("OcrPrefetchAdjacentPageCount", 1), 0, 10);
         }
 
         public void SetLanguage(string languageTag)
@@ -162,12 +167,30 @@ namespace MangaViewer.Services
             }
         }
 
+        public void SetPrefetchAdjacentPagesEnabled(bool enabled)
+        {
+            if (PrefetchAdjacentPagesEnabled == enabled) return;
+            PrefetchAdjacentPagesEnabled = enabled;
+            SettingsProvider.Set("OcrPrefetchAdjacentPagesEnabled", enabled);
+        }
+
+        public void SetPrefetchAdjacentPageCount(int count)
+        {
+            int clamped = Math.Clamp(count, 0, 10);
+            if (PrefetchAdjacentPageCount == clamped) return;
+            PrefetchAdjacentPageCount = clamped;
+            SettingsProvider.Set("OcrPrefetchAdjacentPageCount", clamped);
+        }
+
         public async Task<string> GetOllamaTextAsync(string imagePath, CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(imagePath)) return string.Empty;
             string cacheKey = $"{imagePath}|model={OllamaModel}";
-            if (_ollamaCache.TryGetValue(cacheKey, out var cached))
-                return cached;
+            lock (_cacheGate)
+            {
+                if (_ollamaCache.TryGetValue(cacheKey, out var cached))
+                    return cached;
+            }
 
             try
             {
@@ -204,7 +227,10 @@ namespace MangaViewer.Services
 
                 var response = await chatClient.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(false);
                 string result = response.Text ?? string.Empty;
-                _ollamaCache[cacheKey] = result;
+                lock (_cacheGate)
+                {
+                    _ollamaCache[cacheKey] = result;
+                }
                 return result;
             }
             catch (OperationCanceledException) { throw; }
@@ -253,8 +279,11 @@ namespace MangaViewer.Services
 
         public void ClearCache()
         {
-            _ocrCache.Clear();
-            _ollamaCache.Clear();
+            lock (_cacheGate)
+            {
+                _ocrCache.Clear();
+                _ollamaCache.Clear();
+            }
         }
 
         private void OnSettingsChanged()
@@ -373,8 +402,11 @@ namespace MangaViewer.Services
             if (string.IsNullOrWhiteSpace(imagePath)) return new List<BoundingBoxViewModel>();
 
             string cacheKey = BuildCacheKey(imagePath);
-            if (_ocrCache.TryGetValue(cacheKey, out var cached))
-                return new List<BoundingBoxViewModel>(cached);
+            lock (_cacheGate)
+            {
+                if (_ocrCache.TryGetValue(cacheKey, out var cached))
+                    return new List<BoundingBoxViewModel>(cached);
+            }
 
             var engine = GetActiveEngine();
             IOcrEngineFacade facade = new WinRtOcrEngineFacade(engine);
@@ -430,7 +462,10 @@ namespace MangaViewer.Services
                         break;
                 }
 
-                _ocrCache[cacheKey] = new List<BoundingBoxViewModel>(resultBoxes);
+                lock (_cacheGate)
+                {
+                    _ocrCache[cacheKey] = new List<BoundingBoxViewModel>(resultBoxes);
+                }
                 return resultBoxes;
             }
             catch (OperationCanceledException)

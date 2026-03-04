@@ -5,6 +5,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using Microsoft.Windows.Storage.Pickers;
 using System.Threading;
 using Microsoft.UI.Xaml.Controls;
@@ -46,9 +47,10 @@ namespace MangaViewer.ViewModels
         private CancellationTokenSource? _pageLoadCts;
         private int _pageLoadVersion;
 
-        private readonly Dictionary<string, string> _translationCache = new(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, string> _translationCache = new(StringComparer.Ordinal);
         private readonly Dictionary<int, bool> _pageOcrStates = new();
         private readonly Dictionary<int, bool> _pageTranslationStates = new();
+        private CancellationTokenSource? _adjacentPrefetchCts;
 
         private string _ocrStatusMessage = string.Empty;
         private bool _isInfoBarOpen;
@@ -735,6 +737,8 @@ namespace MangaViewer.ViewModels
                     await RunOllamaOcrAsync(paths, token);
                 else
                     await RunWinRtOcrAsync(paths, token);
+
+                StartAdjacentPagePrefetch();
             }
             catch (OperationCanceledException)
             {
@@ -837,7 +841,7 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private async Task<string> TranslateTextAsync(string text)
+        private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
         {
             var settings = TranslationSettingsService.Instance;
             var thinkingLevel = settings.ThinkingLevel;
@@ -863,12 +867,20 @@ namespace MangaViewer.ViewModels
                 systemPrompt = settings.AnthropicSystemPrompt;
                 client = new AnthropicChatClient(settings.AnthropicApiKey, model, thinkingLevel);
             }
+            else if (settings.Provider == "Ollama")
+            {
+                model = settings.OllamaModel;
+                systemPrompt = settings.OllamaSystemPrompt;
+                client = new OllamaChatClient(settings.OllamaEndpoint, model, enableThinking: false);
+            }
             else
             {
                 return "번역 공급자를 설정해주세요.";
             }
 
-            string cacheKey = $"{settings.Provider}|{model}|{thinkingLevel}|{text}";
+            string cacheKey = settings.Provider == "Ollama"
+                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|enable_thinking=false|{text}"
+                : $"{settings.Provider}|{model}|{thinkingLevel}|{text}";
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
@@ -877,9 +889,92 @@ namespace MangaViewer.ViewModels
                 messages.Add(new ChatMessage(ChatRole.System, systemPrompt));
             messages.Add(new ChatMessage(ChatRole.User, text));
 
-            var response = await client.GetResponseAsync(messages);
+            var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken);
             string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
             _translationCache[cacheKey] = result;
+            return result;
+        }
+
+        private void StartAdjacentPagePrefetch()
+        {
+            int ocrRadius = _ocrService.PrefetchAdjacentPagesEnabled ? _ocrService.PrefetchAdjacentPageCount : 0;
+            var translationSettings = TranslationSettingsService.Instance;
+            int translationRadius = (IsTranslationActive && translationSettings.PrefetchAdjacentPagesEnabled) ? translationSettings.PrefetchAdjacentPageCount : 0;
+            int maxRadius = Math.Max(ocrRadius, translationRadius);
+            if (maxRadius <= 0) return;
+
+            _adjacentPrefetchCts?.Cancel();
+            _adjacentPrefetchCts?.Dispose();
+            _adjacentPrefetchCts = new CancellationTokenSource();
+            var token = _adjacentPrefetchCts.Token;
+            int currentPageIndex = _mangaManager.CurrentPageIndex;
+
+            var ocrPaths = GetAdjacentPageImagePaths(currentPageIndex, ocrRadius);
+            var translationPaths = GetAdjacentPageImagePaths(currentPageIndex, translationRadius);
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    foreach (var path in ocrPaths)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        if (_ocrService.Backend == OcrService.OcrBackend.Ollama)
+                            await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
+                        else
+                            await _ocrService.GetOcrAsync(path, token).ConfigureAwait(false);
+                    }
+
+                    if (_ocrService.Backend != OcrService.OcrBackend.Ollama || translationPaths.Count == 0)
+                        return;
+
+                    foreach (var path in translationPaths)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var text = await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
+                        if (!string.IsNullOrWhiteSpace(text))
+                            await TranslateTextAsync(text, token).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "[Prefetch] Adjacent OCR/translation prefetch failed");
+                }
+            }, token);
+        }
+
+        private List<string> GetAdjacentPageImagePaths(int centerPageIndex, int radius)
+        {
+            var result = new List<string>();
+            if (radius <= 0 || _mangaManager.TotalPages <= 0) return result;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int offset = 1; offset <= radius; offset++)
+            {
+                int back = centerPageIndex - offset;
+                if (back >= 0)
+                {
+                    var backPaths = _mangaManager.GetImagePathsForPage(back);
+                    for (int i = 0; i < backPaths.Count; i++)
+                    {
+                        string p = backPaths[i];
+                        if (!string.IsNullOrWhiteSpace(p) && seen.Add(p)) result.Add(p);
+                    }
+                }
+
+                int forward = centerPageIndex + offset;
+                if (forward < _mangaManager.TotalPages)
+                {
+                    var forwardPaths = _mangaManager.GetImagePathsForPage(forward);
+                    for (int i = 0; i < forwardPaths.Count; i++)
+                    {
+                        string p = forwardPaths[i];
+                        if (!string.IsNullOrWhiteSpace(p) && seen.Add(p)) result.Add(p);
+                    }
+                }
+            }
+
             return result;
         }
 
@@ -916,6 +1011,9 @@ namespace MangaViewer.ViewModels
                 _ocrCts.Cancel();
                 SetOcrStatus("OCR 취소 요청...", InfoBarSeverity.Informational, true);
             }
+
+            if (_adjacentPrefetchCts != null && !_adjacentPrefetchCts.IsCancellationRequested)
+                _adjacentPrefetchCts.Cancel();
         }
 
         private void ClearOcr()
@@ -983,6 +1081,8 @@ namespace MangaViewer.ViewModels
         public void Dispose()
         {
             CancelOcr();
+            _adjacentPrefetchCts?.Dispose();
+            _adjacentPrefetchCts = null;
             _ocrCts?.Dispose();
             _ocrCts = null;
             _pageLoadCts?.Cancel();

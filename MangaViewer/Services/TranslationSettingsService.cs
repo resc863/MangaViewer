@@ -19,12 +19,42 @@ namespace MangaViewer.Services
             }
         }
 
+        public string OllamaModel
+        {
+            get => SettingsProvider.Get("TranslationModel_Ollama", "qwen3:8b");
+            set
+            {
+                SettingsProvider.Set("TranslationModel_Ollama", value);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public string OllamaEndpoint
+        {
+            get => SettingsProvider.Get("TranslationOllamaEndpoint", "http://localhost:11434");
+            set
+            {
+                SettingsProvider.Set("TranslationOllamaEndpoint", value);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
         public string GoogleModel
         {
             get => SettingsProvider.Get("TranslationModel_Google", "gemini-3-flash-preview");
             set
             {
                 SettingsProvider.Set("TranslationModel_Google", value);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public string OllamaSystemPrompt
+        {
+            get => SettingsProvider.Get("TranslationSystemPrompt_Ollama", "You are a professional translator. Translate the provided text to Korean naturally. Output only the translated text.");
+            set
+            {
+                SettingsProvider.Set("TranslationSystemPrompt_Ollama", value);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
@@ -115,6 +145,27 @@ namespace MangaViewer.Services
             set
             {
                 SettingsProvider.Set("TranslationThinkingLevel", value);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public bool PrefetchAdjacentPagesEnabled
+        {
+            get => SettingsProvider.Get("TranslationPrefetchAdjacentPagesEnabled", true);
+            set
+            {
+                SettingsProvider.Set("TranslationPrefetchAdjacentPagesEnabled", value);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public int PrefetchAdjacentPageCount
+        {
+            get => Math.Clamp(SettingsProvider.Get("TranslationPrefetchAdjacentPageCount", 1), 0, 10);
+            set
+            {
+                int clamped = Math.Clamp(value, 0, 10);
+                SettingsProvider.Set("TranslationPrefetchAdjacentPageCount", clamped);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }

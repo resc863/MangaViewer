@@ -9,6 +9,9 @@ using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
 using MangaViewer.Services.Thumbnails; // moved thumbnail services
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace MangaViewer.Pages
 {
@@ -25,6 +28,10 @@ namespace MangaViewer.Pages
         private ComboBox _ocrBackendCombo = null!;
         private TextBox _ollamaEndpointBox = null!;
         private StackPanel _ollamaSettingsPanel = null!;
+        private ToggleSwitch _ocrAdjacentPrefetchToggle = null!;
+        private NumberBox _ocrAdjacentPrefetchCountBox = null!;
+        private ToggleSwitch _translationAdjacentPrefetchToggle = null!;
+        private NumberBox _translationAdjacentPrefetchCountBox = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
@@ -77,6 +84,9 @@ namespace MangaViewer.Pages
             if (_groupCombo.SelectedIndex != (int)_ocr.GroupingMode) _groupCombo.SelectedIndex = (int)_ocr.GroupingMode;
             if (_writingCombo.SelectedIndex != (int)_ocr.TextWritingMode) _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
             if (_ocrBackendCombo.SelectedIndex != (int)_ocr.Backend) _ocrBackendCombo.SelectedIndex = (int)_ocr.Backend;
+            if (_ocrAdjacentPrefetchToggle.IsOn != _ocr.PrefetchAdjacentPagesEnabled) _ocrAdjacentPrefetchToggle.IsOn = _ocr.PrefetchAdjacentPagesEnabled;
+            if (Math.Abs(_ocrAdjacentPrefetchCountBox.Value - _ocr.PrefetchAdjacentPageCount) > 0.001) _ocrAdjacentPrefetchCountBox.Value = _ocr.PrefetchAdjacentPageCount;
+            _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
             UpdateOllamaSettingsVisibility();
         }
 
@@ -141,6 +151,29 @@ namespace MangaViewer.Pages
             _writingCombo.SelectionChanged += WritingCombo_SelectionChanged;
             stack.Children.Add(Row("텍스트 방향:", _writingCombo));
 
+            _ocrAdjacentPrefetchToggle = new ToggleSwitch { OnContent = "사용", OffContent = "사용 안 함" };
+            _ocrAdjacentPrefetchToggle.Toggled += (s, e) =>
+            {
+                _ocr.SetPrefetchAdjacentPagesEnabled(_ocrAdjacentPrefetchToggle.IsOn);
+                _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
+            };
+            stack.Children.Add(Row("인접 페이지 OCR 캐시:", _ocrAdjacentPrefetchToggle));
+
+            _ocrAdjacentPrefetchCountBox = new NumberBox
+            {
+                Width = 100,
+                Minimum = 0,
+                Maximum = 10,
+                SmallChange = 1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _ocrAdjacentPrefetchCountBox.ValueChanged += (s, e) =>
+            {
+                int count = (int)Math.Clamp(Math.Round(_ocrAdjacentPrefetchCountBox.Value), 0, 10);
+                _ocr.SetPrefetchAdjacentPageCount(count);
+            };
+            stack.Children.Add(Row("OCR 인접 페이지 수:", _ocrAdjacentPrefetchCountBox));
+
             // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
 
@@ -151,9 +184,11 @@ namespace MangaViewer.Pages
             translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Google", Tag = "Google" });
             translationProviderCombo.Items.Add(new ComboBoxItem { Content = "OpenAI", Tag = "OpenAI" });
             translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Anthropic", Tag = "Anthropic" });
+            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Ollama", Tag = "Ollama" });
 
             var translationApiKeyBox = new PasswordBox { Width = 260 };
             var translationSettings = TranslationSettingsService.Instance;
+            var apiKeyRow = Row("API ?:", translationApiKeyBox);
 
             // OpenAI / Anthropic 용 모델 텍스트 입력
             var translationModelBox = new TextBox { Width = 260 };
@@ -169,6 +204,17 @@ namespace MangaViewer.Pages
 
             var textModelRow = Row("모델:", translationModelBox);
             var googleModelRow = Row("모델:", googleModelInner);
+            var ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
+            var ollamaEndpointRow = Row("Ollama URL:", ollamaEndpointBox);
+
+            var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = "모델을 선택하세요" };
+            var fetchOllamaModelsBtn = new Button { Content = "목록 가져오기", Margin = new Thickness(8, 0, 0, 0) };
+            var ollamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
+            var ollamaModelInner = new StackPanel { Orientation = Orientation.Horizontal };
+            ollamaModelInner.Children.Add(ollamaModelCombo);
+            ollamaModelInner.Children.Add(fetchOllamaModelsBtn);
+            ollamaModelInner.Children.Add(ollamaModelStatus);
+            var ollamaModelRow = Row("모델:", ollamaModelInner);
 
             // 저장된 Google 모델 초기값 로드
             if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.GoogleModel))
@@ -178,10 +224,19 @@ namespace MangaViewer.Pages
                 googleModelCombo.SelectedIndex = 0;
             }
 
+            if (translationSettings.Provider == "Ollama" && !string.IsNullOrEmpty(translationSettings.OllamaModel))
+            {
+                var savedId = translationSettings.OllamaModel;
+                ollamaModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
+                ollamaModelCombo.SelectedIndex = 0;
+            }
+
             Action<string> updateModelRowVisibility = (provider) =>
             {
-                textModelRow.Visibility = provider == "Google" ? Visibility.Collapsed : Visibility.Visible;
+                textModelRow.Visibility = provider is "Google" or "Ollama" ? Visibility.Collapsed : Visibility.Visible;
                 googleModelRow.Visibility = provider == "Google" ? Visibility.Visible : Visibility.Collapsed;
+                ollamaEndpointRow.Visibility = provider == "Ollama" ? Visibility.Visible : Visibility.Collapsed;
+                ollamaModelRow.Visibility = provider == "Ollama" ? Visibility.Visible : Visibility.Collapsed;
             };
 
             Action updateApiKeyBox = () =>
@@ -194,6 +249,7 @@ namespace MangaViewer.Pages
                     "Anthropic" => translationSettings.AnthropicApiKey,
                     _ => ""
                 };
+                apiKeyRow.Visibility = provider == "Ollama" ? Visibility.Collapsed : Visibility.Visible;
             };
 
             var systemPromptBox = new TextBox
@@ -212,6 +268,7 @@ namespace MangaViewer.Pages
                 {
                     "OpenAI" => translationSettings.OpenAISystemPrompt,
                     "Anthropic" => translationSettings.AnthropicSystemPrompt,
+                    "Ollama" => translationSettings.OllamaSystemPrompt,
                     _ => translationSettings.GoogleSystemPrompt
                 };
             };
@@ -224,6 +281,7 @@ namespace MangaViewer.Pages
                     case "Google": translationSettings.GoogleSystemPrompt = systemPromptBox.Text; break;
                     case "OpenAI": translationSettings.OpenAISystemPrompt = systemPromptBox.Text; break;
                     case "Anthropic": translationSettings.AnthropicSystemPrompt = systemPromptBox.Text; break;
+                    case "Ollama": translationSettings.OllamaSystemPrompt = systemPromptBox.Text; break;
                 }
             };
 
@@ -236,8 +294,10 @@ namespace MangaViewer.Pages
             {
                 "OpenAI" => translationSettings.OpenAIModel,
                 "Anthropic" => translationSettings.AnthropicModel,
+                "Ollama" => translationSettings.OllamaModel,
                 _ => translationSettings.GoogleModel
             };
+            ollamaEndpointBox.Text = translationSettings.OllamaEndpoint;
             updateApiKeyBox();
             updateModelRowVisibility(currentProvider);
             updateSystemPromptBox();
@@ -251,6 +311,8 @@ namespace MangaViewer.Pages
                     translationModelBox.Text = translationSettings.OpenAIModel;
                 else if (provider == "Anthropic")
                     translationModelBox.Text = translationSettings.AnthropicModel;
+                else if (provider == "Ollama")
+                    translationModelBox.Text = translationSettings.OllamaModel;
 
                 updateModelRowVisibility(provider);
                 updateApiKeyBox();
@@ -268,6 +330,19 @@ namespace MangaViewer.Pages
             {
                 if (googleModelCombo.SelectedItem is ComboBoxItem item)
                     translationSettings.GoogleModel = (string)item.Tag;
+            };
+
+            ollamaModelCombo.SelectionChanged += (s, e) =>
+            {
+                if (ollamaModelCombo.SelectedItem is ComboBoxItem item)
+                    translationSettings.OllamaModel = (string)item.Tag;
+            };
+
+            ollamaEndpointBox.LostFocus += (s, e) =>
+            {
+                var endpoint = ollamaEndpointBox.Text?.Trim();
+                if (!string.IsNullOrWhiteSpace(endpoint))
+                    translationSettings.OllamaEndpoint = endpoint.TrimEnd('/');
             };
 
             fetchGoogleModelsBtn.Click += async (s, e) =>
@@ -338,6 +413,47 @@ namespace MangaViewer.Pages
                 }
             };
 
+            fetchOllamaModelsBtn.Click += async (s, e) =>
+            {
+                fetchOllamaModelsBtn.IsEnabled = false;
+                ollamaModelStatus.Text = "???????? ??...";
+
+                try
+                {
+                    var endpoint = string.IsNullOrWhiteSpace(ollamaEndpointBox.Text)
+                        ? "http://localhost:11434"
+                        : ollamaEndpointBox.Text.Trim().TrimEnd('/');
+                    translationSettings.OllamaEndpoint = endpoint;
+
+                    var savedSelection = ollamaModelCombo.SelectedItem is ComboBoxItem sel
+                        ? (string)sel.Tag
+                        : translationSettings.OllamaModel;
+
+                    var modelIds = await GetOllamaModelIdsAsync(endpoint);
+
+                    ollamaModelCombo.Items.Clear();
+                    foreach (var id in modelIds)
+                        ollamaModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
+
+                    var toSelect = ollamaModelCombo.Items.OfType<ComboBoxItem>()
+                        .FirstOrDefault(i => (string)i.Tag == savedSelection);
+                    if (toSelect is not null)
+                        ollamaModelCombo.SelectedItem = toSelect;
+                    else if (ollamaModelCombo.Items.Count > 0)
+                        ollamaModelCombo.SelectedIndex = 0;
+
+                    ollamaModelStatus.Text = $"{modelIds.Count}??";
+                }
+                catch (Exception ex)
+                {
+                    ollamaModelStatus.Text = "????: " + ex.Message;
+                }
+                finally
+                {
+                    fetchOllamaModelsBtn.IsEnabled = true;
+                }
+            };
+
             translationApiKeyBox.LostFocus += (s, e) =>
             {
                 var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
@@ -352,8 +468,33 @@ namespace MangaViewer.Pages
             stack.Children.Add(Row("공급자:", translationProviderCombo));
             stack.Children.Add(textModelRow);
             stack.Children.Add(googleModelRow);
+            stack.Children.Add(ollamaEndpointRow);
+            stack.Children.Add(ollamaModelRow);
             stack.Children.Add(Row("시스템 프롬프트:", systemPromptBox));
-            stack.Children.Add(Row("API 키:", translationApiKeyBox));
+            stack.Children.Add(apiKeyRow);
+
+            _translationAdjacentPrefetchToggle = new ToggleSwitch { OnContent = "사용", OffContent = "사용 안 함" };
+            _translationAdjacentPrefetchToggle.Toggled += (s, e) =>
+            {
+                translationSettings.PrefetchAdjacentPagesEnabled = _translationAdjacentPrefetchToggle.IsOn;
+                _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
+            };
+            stack.Children.Add(Row("인접 페이지 번역 캐시:", _translationAdjacentPrefetchToggle));
+
+            _translationAdjacentPrefetchCountBox = new NumberBox
+            {
+                Width = 100,
+                Minimum = 0,
+                Maximum = 10,
+                SmallChange = 1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _translationAdjacentPrefetchCountBox.ValueChanged += (s, e) =>
+            {
+                int count = (int)Math.Clamp(Math.Round(_translationAdjacentPrefetchCountBox.Value), 0, 10);
+                translationSettings.PrefetchAdjacentPageCount = count;
+            };
+            stack.Children.Add(Row("번역 인접 페이지 수:", _translationAdjacentPrefetchCountBox));
 
             var thinkingLevelCombo = new ComboBox { Width = 160 };
             thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
@@ -640,6 +781,33 @@ namespace MangaViewer.Pages
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
 
+        private static async Task<List<string>> GetOllamaModelIdsAsync(string endpoint)
+        {
+            using var http = new HttpClient();
+            using var response = await http.GetAsync(endpoint.TrimEnd('/') + "/api/tags").ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+
+            var modelIds = new List<string>();
+            if (doc.RootElement.TryGetProperty("models", out var modelsElement) && modelsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var model in modelsElement.EnumerateArray())
+                {
+                    if (model.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+                    {
+                        var id = nameElement.GetString();
+                        if (!string.IsNullOrWhiteSpace(id))
+                            modelIds.Add(id);
+                    }
+                }
+            }
+
+            modelIds.Sort(StringComparer.OrdinalIgnoreCase);
+            return modelIds;
+        }
+
         private static UIElement Row(string label, UIElement inner)
         {
             var p = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
@@ -664,6 +832,14 @@ namespace MangaViewer.Pages
             _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
             _ocrBackendCombo.SelectedIndex = (int)_ocr.Backend;
             _ollamaEndpointBox.Text = _ocr.OllamaEndpoint;
+            _ocrAdjacentPrefetchToggle.IsOn = _ocr.PrefetchAdjacentPagesEnabled;
+            _ocrAdjacentPrefetchCountBox.Value = _ocr.PrefetchAdjacentPageCount;
+            _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
+
+            var translationSettings = TranslationSettingsService.Instance;
+            _translationAdjacentPrefetchToggle.IsOn = translationSettings.PrefetchAdjacentPagesEnabled;
+            _translationAdjacentPrefetchCountBox.Value = translationSettings.PrefetchAdjacentPageCount;
+            _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
             UpdateOllamaSettingsVisibility();
             RefreshCacheView();
         }
