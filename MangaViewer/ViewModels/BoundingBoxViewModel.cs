@@ -11,10 +11,17 @@ namespace MangaViewer.ViewModels
     public class BoundingBoxViewModel : BaseViewModel
     {
         private string _text = string.Empty;
+        private string _translatedText = string.Empty;
         public string Text
         {
             get => _text;
             set => SetProperty(ref _text, value);
+        }
+
+        public string TranslatedText
+        {
+            get => _translatedText;
+            set => SetProperty(ref _translatedText, value);
         }
 
         /// <summary>

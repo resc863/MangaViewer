@@ -28,10 +28,18 @@ namespace MangaViewer.Pages
         private ComboBox _ocrBackendCombo = null!;
         private TextBox _ollamaEndpointBox = null!;
         private StackPanel _ollamaSettingsPanel = null!;
+        private ComboBox _ocrOllamaModelCombo = null!;
+        private TextBlock _ocrOllamaModelStatus = null!;
+        private ComboBox _ocrThinkingLevelCombo = null!;
+        private ToggleSwitch _ocrStructuredOutputToggle = null!;
+        private NumberBox _ocrOllamaTemperatureBox = null!;
+        private readonly Dictionary<string, bool> _ocrModelThinkingSupport = new(StringComparer.OrdinalIgnoreCase);
         private ToggleSwitch _ocrAdjacentPrefetchToggle = null!;
         private NumberBox _ocrAdjacentPrefetchCountBox = null!;
         private ToggleSwitch _translationAdjacentPrefetchToggle = null!;
         private NumberBox _translationAdjacentPrefetchCountBox = null!;
+        private Slider _translationOverlayFontSlider = null!;
+        private TextBlock _translationOverlayFontValue = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
@@ -87,6 +95,31 @@ namespace MangaViewer.Pages
             if (_ocrAdjacentPrefetchToggle.IsOn != _ocr.PrefetchAdjacentPagesEnabled) _ocrAdjacentPrefetchToggle.IsOn = _ocr.PrefetchAdjacentPagesEnabled;
             if (Math.Abs(_ocrAdjacentPrefetchCountBox.Value - _ocr.PrefetchAdjacentPageCount) > 0.001) _ocrAdjacentPrefetchCountBox.Value = _ocr.PrefetchAdjacentPageCount;
             _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
+            if (_ocrStructuredOutputToggle.IsOn != _ocr.OllamaStructuredOutputEnabled)
+                _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
+            if (Math.Abs(_ocrOllamaTemperatureBox.Value - _ocr.OllamaTemperature) > 0.0001)
+                _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+
+            var thinkingItem = _ocrThinkingLevelCombo.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(i => string.Equals(i.Tag as string, _ocr.OllamaThinkingLevel, StringComparison.OrdinalIgnoreCase));
+            if (thinkingItem != null && !ReferenceEquals(_ocrThinkingLevelCombo.SelectedItem, thinkingItem))
+                _ocrThinkingLevelCombo.SelectedItem = thinkingItem;
+
+            if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
+            {
+                var selected = _ocrOllamaModelCombo.Items.OfType<ComboBoxItem>()
+                    .FirstOrDefault(i => string.Equals(i.Tag as string, _ocr.OllamaModel, StringComparison.OrdinalIgnoreCase));
+                if (selected == null)
+                {
+                    selected = new ComboBoxItem { Content = _ocr.OllamaModel, Tag = _ocr.OllamaModel };
+                    _ocrOllamaModelCombo.Items.Add(selected);
+                }
+                if (!ReferenceEquals(_ocrOllamaModelCombo.SelectedItem, selected))
+                    _ocrOllamaModelCombo.SelectedItem = selected;
+            }
+
+            UpdateOcrThinkingComboAvailability();
             UpdateOllamaSettingsVisibility();
         }
 
@@ -119,7 +152,7 @@ namespace MangaViewer.Pages
 
             _ocrBackendCombo = new ComboBox { Width = 220 };
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Windows 내장 OCR", Tag = "builtin" });
-            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Ollama (glm-ocr)", Tag = "ollama" });
+            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Ollama", Tag = "ollama" });
             _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
             stack.Children.Add(Row("OCR 엔진:", _ocrBackendCombo));
 
@@ -127,6 +160,45 @@ namespace MangaViewer.Pages
             _ollamaEndpointBox.LostFocus += OllamaEndpointBox_LostFocus;
             _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
             _ollamaSettingsPanel.Children.Add(Row("Ollama 주소:", _ollamaEndpointBox));
+
+            _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "Vision+Tool 모델 선택" };
+            _ocrOllamaModelCombo.SelectionChanged += OcrOllamaModelCombo_SelectionChanged;
+            var fetchOcrOllamaModelsBtn = new Button { Content = "모델 불러오기", Margin = new Thickness(8, 0, 0, 0) };
+            _ocrOllamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
+            var ocrModelInner = new StackPanel { Orientation = Orientation.Horizontal };
+            ocrModelInner.Children.Add(_ocrOllamaModelCombo);
+            ocrModelInner.Children.Add(fetchOcrOllamaModelsBtn);
+            ocrModelInner.Children.Add(_ocrOllamaModelStatus);
+            _ollamaSettingsPanel.Children.Add(Row("OCR 모델:", ocrModelInner));
+
+            _ocrThinkingLevelCombo = new ComboBox { Width = 180 };
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "켜짐", Tag = "On" });
+            _ocrThinkingLevelCombo.SelectionChanged += OcrThinkingLevelCombo_SelectionChanged;
+            _ollamaSettingsPanel.Children.Add(Row("Thinking:", _ocrThinkingLevelCombo));
+
+            _ocrStructuredOutputToggle = new ToggleSwitch { OnContent = "JSON(박스 포함)", OffContent = "일반 텍스트" };
+            _ocrStructuredOutputToggle.Toggled += OcrStructuredOutputToggle_Toggled;
+            _ollamaSettingsPanel.Children.Add(Row("출력 형식:", _ocrStructuredOutputToggle));
+
+            _ocrOllamaTemperatureBox = new NumberBox
+            {
+                Width = 140,
+                Minimum = 0,
+                Maximum = 2,
+                SmallChange = 0.1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _ocrOllamaTemperatureBox.ValueChanged += OcrOllamaTemperatureBox_ValueChanged;
+            _ollamaSettingsPanel.Children.Add(Row("Temperature:", _ocrOllamaTemperatureBox));
+
+            if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
+            {
+                _ocrOllamaModelCombo.Items.Add(new ComboBoxItem { Content = _ocr.OllamaModel, Tag = _ocr.OllamaModel });
+                _ocrOllamaModelCombo.SelectedIndex = 0;
+            }
+
+            fetchOcrOllamaModelsBtn.Click += async (s, e) => await RefreshOcrOllamaModelsAsync(fetchOcrOllamaModelsBtn);
             stack.Children.Add(_ollamaSettingsPanel);
 
             _langCombo = new ComboBox { Width = 160 };
@@ -189,6 +261,12 @@ namespace MangaViewer.Pages
             var translationApiKeyBox = new PasswordBox { Width = 260 };
             var translationSettings = TranslationSettingsService.Instance;
             var apiKeyRow = Row("API ?:", translationApiKeyBox);
+            var translationTargetLanguageBox = new TextBox
+            {
+                Width = 220,
+                PlaceholderText = "Korean"
+            };
+            var translationTargetLanguageRow = Row("타겟 언어:", translationTargetLanguageBox);
 
             // OpenAI / Anthropic 용 모델 텍스트 입력
             var translationModelBox = new TextBox { Width = 260 };
@@ -298,6 +376,7 @@ namespace MangaViewer.Pages
                 _ => translationSettings.GoogleModel
             };
             ollamaEndpointBox.Text = translationSettings.OllamaEndpoint;
+            translationTargetLanguageBox.Text = translationSettings.TargetLanguage;
             updateApiKeyBox();
             updateModelRowVisibility(currentProvider);
             updateSystemPromptBox();
@@ -465,11 +544,19 @@ namespace MangaViewer.Pages
                 }
             };
 
+            translationTargetLanguageBox.LostFocus += (s, e) =>
+            {
+                translationSettings.TargetLanguage = translationTargetLanguageBox.Text;
+                if (string.IsNullOrWhiteSpace(translationTargetLanguageBox.Text))
+                    translationTargetLanguageBox.Text = translationSettings.TargetLanguage;
+            };
+
             stack.Children.Add(Row("공급자:", translationProviderCombo));
             stack.Children.Add(textModelRow);
             stack.Children.Add(googleModelRow);
             stack.Children.Add(ollamaEndpointRow);
             stack.Children.Add(ollamaModelRow);
+            stack.Children.Add(translationTargetLanguageRow);
             stack.Children.Add(Row("시스템 프롬프트:", systemPromptBox));
             stack.Children.Add(apiKeyRow);
 
@@ -495,6 +582,23 @@ namespace MangaViewer.Pages
                 translationSettings.PrefetchAdjacentPageCount = count;
             };
             stack.Children.Add(Row("번역 인접 페이지 수:", _translationAdjacentPrefetchCountBox));
+
+            _translationOverlayFontSlider = new Slider
+            {
+                Minimum = 8,
+                Maximum = 28,
+                Width = 220,
+                Value = translationSettings.OverlayFontSize
+            };
+            _translationOverlayFontSlider.ValueChanged += TranslationOverlayFontSlider_ValueChanged;
+            _translationOverlayFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateTranslationOverlayFontValue();
+
+            var translationOverlayFontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            translationOverlayFontRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 글자 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayFontRow.Children.Add(_translationOverlayFontSlider);
+            translationOverlayFontRow.Children.Add(_translationOverlayFontValue);
+            stack.Children.Add(translationOverlayFontRow);
 
             var thinkingLevelCombo = new ComboBox { Width = 160 };
             thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
@@ -781,6 +885,98 @@ namespace MangaViewer.Pages
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
 
+        private sealed class OllamaModelInfo
+        {
+            public string Name { get; init; } = string.Empty;
+            public bool SupportsThinking { get; init; }
+        }
+
+        private static async Task<List<OllamaModelInfo>> GetOllamaOcrModelInfosAsync(string endpoint)
+        {
+            using var http = new HttpClient();
+            using var response = await http.GetAsync(endpoint.TrimEnd('/') + "/api/tags").ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+
+            var result = new List<OllamaModelInfo>();
+            if (!doc.RootElement.TryGetProperty("models", out var modelsElement) || modelsElement.ValueKind != JsonValueKind.Array)
+                return result;
+
+            foreach (var model in modelsElement.EnumerateArray())
+            {
+                if (!model.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
+                    continue;
+
+                var id = nameElement.GetString();
+                if (string.IsNullOrWhiteSpace(id))
+                    continue;
+
+                var capabilities = await GetOllamaModelCapabilitiesAsync(http, endpoint, id).ConfigureAwait(false);
+                if (!capabilities.Vision || !capabilities.Tools)
+                    continue;
+
+                result.Add(new OllamaModelInfo
+                {
+                    Name = id,
+                    SupportsThinking = capabilities.Thinking
+                });
+            }
+
+            result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            return result;
+        }
+
+        private static async Task<(bool Vision, bool Tools, bool Thinking)> GetOllamaModelCapabilitiesAsync(HttpClient http, string endpoint, string model)
+        {
+            var payload = new { model };
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint.TrimEnd('/') + "/api/show")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json")
+            };
+
+            using var response = await http.SendAsync(request).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+
+            bool vision = HasOllamaCapability(doc.RootElement, "vision");
+            bool tools = HasOllamaCapability(doc.RootElement, "tools")
+                         || HasOllamaCapability(doc.RootElement, "tool")
+                         || HasOllamaCapability(doc.RootElement, "tool_calling")
+                         || HasOllamaCapability(doc.RootElement, "tool-calling");
+            bool thinking = HasOllamaCapability(doc.RootElement, "thinking")
+                            || HasOllamaCapability(doc.RootElement, "think");
+            return (vision, tools, thinking);
+        }
+
+        private static bool HasOllamaCapability(JsonElement root, string capability)
+        {
+            static bool ContainsCap(JsonElement caps, string cap)
+            {
+                if (caps.ValueKind != JsonValueKind.Array) return false;
+                foreach (var item in caps.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String
+                        && string.Equals(item.GetString(), cap, StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+
+            if (root.TryGetProperty("capabilities", out var caps) && ContainsCap(caps, capability))
+                return true;
+
+            if (root.TryGetProperty("details", out var details)
+                && details.ValueKind == JsonValueKind.Object
+                && details.TryGetProperty("capabilities", out var nested)
+                && ContainsCap(nested, capability))
+                return true;
+
+            return false;
+        }
+
         private static async Task<List<string>> GetOllamaModelIdsAsync(string endpoint)
         {
             using var http = new HttpClient();
@@ -832,6 +1028,28 @@ namespace MangaViewer.Pages
             _writingCombo.SelectedIndex = (int)_ocr.TextWritingMode;
             _ocrBackendCombo.SelectedIndex = (int)_ocr.Backend;
             _ollamaEndpointBox.Text = _ocr.OllamaEndpoint;
+            _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
+            _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+
+            var thinkingItem = _ocrThinkingLevelCombo.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(i => string.Equals(i.Tag as string, _ocr.OllamaThinkingLevel, StringComparison.OrdinalIgnoreCase))
+                ?? _ocrThinkingLevelCombo.Items.OfType<ComboBoxItem>().FirstOrDefault();
+            if (thinkingItem != null)
+                _ocrThinkingLevelCombo.SelectedItem = thinkingItem;
+
+            if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
+            {
+                var selected = _ocrOllamaModelCombo.Items.OfType<ComboBoxItem>()
+                    .FirstOrDefault(i => string.Equals(i.Tag as string, _ocr.OllamaModel, StringComparison.OrdinalIgnoreCase));
+                if (selected == null)
+                {
+                    selected = new ComboBoxItem { Content = _ocr.OllamaModel, Tag = _ocr.OllamaModel };
+                    _ocrOllamaModelCombo.Items.Add(selected);
+                }
+                _ocrOllamaModelCombo.SelectedItem = selected;
+            }
+
             _ocrAdjacentPrefetchToggle.IsOn = _ocr.PrefetchAdjacentPagesEnabled;
             _ocrAdjacentPrefetchCountBox.Value = _ocr.PrefetchAdjacentPageCount;
             _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
@@ -840,6 +1058,9 @@ namespace MangaViewer.Pages
             _translationAdjacentPrefetchToggle.IsOn = translationSettings.PrefetchAdjacentPagesEnabled;
             _translationAdjacentPrefetchCountBox.Value = translationSettings.PrefetchAdjacentPageCount;
             _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
+            _translationOverlayFontSlider.Value = translationSettings.OverlayFontSize;
+            UpdateTranslationOverlayFontValue();
+            UpdateOcrThinkingComboAvailability();
             UpdateOllamaSettingsVisibility();
             RefreshCacheView();
         }
@@ -858,6 +1079,93 @@ namespace MangaViewer.Pages
             var text = _ollamaEndpointBox.Text?.Trim();
             if (!string.IsNullOrWhiteSpace(text))
                 _ocr.SetOllamaEndpoint(text);
+        }
+
+        private void OcrOllamaModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_ocrOllamaModelCombo.SelectedItem is ComboBoxItem item && item.Tag is string model)
+                _ocr.SetOllamaModel(model);
+
+            UpdateOcrThinkingComboAvailability();
+        }
+
+        private void OcrThinkingLevelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_ocrThinkingLevelCombo.SelectedItem is ComboBoxItem item && item.Tag is string level)
+                _ocr.SetOllamaThinkingLevel(level);
+        }
+
+        private void OcrStructuredOutputToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            _ocr.SetOllamaStructuredOutputEnabled(_ocrStructuredOutputToggle.IsOn);
+        }
+
+        private void OcrOllamaTemperatureBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+        {
+            if (double.IsNaN(sender.Value)) return;
+            _ocr.SetOllamaTemperature(sender.Value);
+        }
+
+        private void UpdateOcrThinkingComboAvailability()
+        {
+            if (_ocrOllamaModelCombo.SelectedItem is ComboBoxItem item
+                && item.Tag is string model
+                && _ocrModelThinkingSupport.TryGetValue(model, out bool supportsThinking))
+            {
+                _ocrThinkingLevelCombo.IsEnabled = supportsThinking;
+                _ocrOllamaModelStatus.Text = supportsThinking
+                    ? "선택 모델: Thinking 지원"
+                    : "선택 모델: Thinking 미지원";
+                return;
+            }
+
+            _ocrThinkingLevelCombo.IsEnabled = true;
+        }
+
+        private async Task RefreshOcrOllamaModelsAsync(Button triggerButton)
+        {
+            triggerButton.IsEnabled = false;
+            _ocrOllamaModelStatus.Text = "모델 조회 중...";
+
+            try
+            {
+                var endpoint = string.IsNullOrWhiteSpace(_ollamaEndpointBox.Text)
+                    ? "http://localhost:11434"
+                    : _ollamaEndpointBox.Text.Trim().TrimEnd('/');
+                _ocr.SetOllamaEndpoint(endpoint);
+
+                var current = _ocrOllamaModelCombo.SelectedItem is ComboBoxItem selected
+                    ? (selected.Tag as string)
+                    : _ocr.OllamaModel;
+
+                var models = await GetOllamaOcrModelInfosAsync(endpoint);
+
+                _ocrModelThinkingSupport.Clear();
+                _ocrOllamaModelCombo.Items.Clear();
+                foreach (var model in models)
+                {
+                    _ocrModelThinkingSupport[model.Name] = model.SupportsThinking;
+                    _ocrOllamaModelCombo.Items.Add(new ComboBoxItem { Content = model.Name, Tag = model.Name });
+                }
+
+                var toSelect = _ocrOllamaModelCombo.Items.OfType<ComboBoxItem>()
+                    .FirstOrDefault(i => string.Equals(i.Tag as string, current, StringComparison.OrdinalIgnoreCase));
+                if (toSelect != null)
+                    _ocrOllamaModelCombo.SelectedItem = toSelect;
+                else if (_ocrOllamaModelCombo.Items.Count > 0)
+                    _ocrOllamaModelCombo.SelectedIndex = 0;
+
+                _ocrOllamaModelStatus.Text = $"{models.Count}개 (Vision+Tool)";
+                UpdateOcrThinkingComboAvailability();
+            }
+            catch (Exception ex)
+            {
+                _ocrOllamaModelStatus.Text = "실패: " + ex.Message;
+            }
+            finally
+            {
+                triggerButton.IsEnabled = true;
+            }
         }
 
         private void UpdateOllamaSettingsVisibility()
@@ -890,5 +1198,14 @@ namespace MangaViewer.Pages
             _tagSettings.TagFontSize = e.NewValue;
             UpdateTagFontValue();
         }
+
+        private void TranslationOverlayFontSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            TranslationSettingsService.Instance.OverlayFontSize = e.NewValue;
+            UpdateTranslationOverlayFontValue();
+        }
+
+        private void UpdateTranslationOverlayFontValue()
+            => _translationOverlayFontValue.Text = Math.Round(_translationOverlayFontSlider.Value).ToString();
     }
 }

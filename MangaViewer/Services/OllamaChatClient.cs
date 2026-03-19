@@ -16,13 +16,18 @@ namespace MangaViewer.Services
 
         private readonly string _endpoint;
         private readonly string _model;
-        private readonly bool _enableThinking;
+        private readonly string _thinkingLevel;
 
-        public OllamaChatClient(string endpoint, string model, bool enableThinking = false)
+        public OllamaChatClient(string endpoint, string model, string thinkingLevel = "Off")
         {
             _endpoint = string.IsNullOrWhiteSpace(endpoint) ? "http://localhost:11434" : endpoint.TrimEnd('/');
             _model = model;
-            _enableThinking = enableThinking;
+            _thinkingLevel = NormalizeThinkingLevel(thinkingLevel);
+        }
+
+        public OllamaChatClient(string endpoint, string model, bool enableThinking)
+            : this(endpoint, model, enableThinking ? "On" : "Off")
+        {
         }
 
         public void Dispose() { }
@@ -42,13 +47,14 @@ namespace MangaViewer.Services
                 });
             }
 
-            var payload = new
+            var payload = new Dictionary<string, object?>
             {
-                model = _model,
-                stream = false,
-                think = _enableThinking,
-                messages,
+                ["model"] = _model,
+                ["stream"] = false,
+                ["messages"] = messages,
             };
+
+            payload["think"] = BuildThinkParameter(_thinkingLevel);
 
             using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint + "/api/chat")
             {
@@ -76,6 +82,21 @@ namespace MangaViewer.Services
             }
 
             return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
+        }
+
+        private static string NormalizeThinkingLevel(string? thinkingLevel)
+        {
+            if (string.IsNullOrWhiteSpace(thinkingLevel)) return "Off";
+            if (thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase))
+                return "Off";
+            return "On";
+        }
+
+        private static bool BuildThinkParameter(string thinkingLevel)
+        {
+            return !NormalizeThinkingLevel(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
         }
 
         public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)

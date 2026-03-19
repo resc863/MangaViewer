@@ -149,6 +149,17 @@ namespace MangaViewer.Services
             }
         }
 
+        public string TargetLanguage
+        {
+            get => SettingsProvider.Get("TranslationTargetLanguage", "Korean");
+            set
+            {
+                string normalized = string.IsNullOrWhiteSpace(value) ? "Korean" : value.Trim();
+                SettingsProvider.Set("TranslationTargetLanguage", normalized);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
         public bool PrefetchAdjacentPagesEnabled
         {
             get => SettingsProvider.Get("TranslationPrefetchAdjacentPagesEnabled", true);
@@ -166,6 +177,17 @@ namespace MangaViewer.Services
             {
                 int clamped = Math.Clamp(value, 0, 10);
                 SettingsProvider.Set("TranslationPrefetchAdjacentPageCount", clamped);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public double OverlayFontSize
+        {
+            get => Math.Clamp(SettingsProvider.Get("TranslationOverlayFontSize", 13.0), 8.0, 28.0);
+            set
+            {
+                double clamped = Math.Clamp(value, 8.0, 28.0);
+                SettingsProvider.Set("TranslationOverlayFontSize", clamped);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }

@@ -15,6 +15,7 @@ using MangaViewer.Services.Thumbnails;
 using System.Collections.Generic;
 using Microsoft.UI.Xaml.Media.Imaging;
 using MangaViewer.Services;
+using Windows.Foundation;
 
 namespace MangaViewer.Pages
 {
@@ -47,6 +48,10 @@ namespace MangaViewer.Pages
         private SolidColorBrush? _ocrLeftFillBrush;
         private SolidColorBrush? _ocrRightStrokeBrush;
         private SolidColorBrush? _ocrRightFillBrush;
+        private SolidColorBrush? _ocrTranslatedFillBrush;
+        private SolidColorBrush? _ocrTranslatedTextBrush;
+
+        private readonly record struct OverlayPlacement(Rect Rect, double FontSize);
 
         public MangaReaderPage()
         {
@@ -682,10 +687,14 @@ namespace MangaViewer.Pages
             _ocrLeftFillBrush = new SolidColorBrush(leftFill);
             _ocrRightStrokeBrush = new SolidColorBrush(rightStroke);
             _ocrRightFillBrush = new SolidColorBrush(rightFill);
+            _ocrTranslatedFillBrush = new SolidColorBrush(ColorHelper.FromArgb(0xE6, 0x00, 0x00, 0x00));
+            _ocrTranslatedTextBrush = new SolidColorBrush(Colors.White);
         }
 
         private void DrawBoxes(Grid wrapper, Canvas overlay, IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
+            var boxList = boxes as IList<BoundingBoxViewModel> ?? boxes.ToList();
+
             foreach (var child in overlay.Children)
             {
                 if (child is Rectangle r) _rectPool.Enqueue(r);
@@ -699,32 +708,402 @@ namespace MangaViewer.Pages
             EnsureOcrBrushes();
             var strokeBrush = isLeft ? _ocrLeftStrokeBrush! : _ocrRightStrokeBrush!;
             var fillBrush = isLeft ? _ocrLeftFillBrush! : _ocrRightFillBrush!;
+            bool useTranslationOverlay = ViewModel?.IsTranslationActive == true
+                && boxList.Any(x => !string.IsNullOrWhiteSpace(x.TranslatedText));
 
             double scale = Math.Min(wrapperW / imgPixelW, wrapperH / imgPixelH);
             double displayW = imgPixelW * scale;
             double displayH = imgPixelH * scale;
             double offsetX = (wrapperW - displayW) / 2.0;
             double offsetY = (wrapperH - displayH) / 2.0;
+            var imageBounds = new Rect(offsetX, offsetY, displayW, displayH);
 
-            foreach (var b in boxes)
+            var sourceRects = new List<Rect>(boxList.Count);
+            foreach (var b in boxList)
             {
                 double w = b.OriginalW * scale;
                 double h = b.OriginalH * scale;
-                if (w <= 0 || h <= 0) continue;
-
-                var rect = _rectPool.Count > 0 ? _rectPool.Dequeue() : CreatePooledRectangle();
-                rect.Width = w;
-                rect.Height = h;
-                rect.Tag = b;
-                rect.Stroke = strokeBrush;
-                rect.Fill = fillBrush;
+                if (w <= 0 || h <= 0)
+                {
+                    sourceRects.Add(new Rect());
+                    continue;
+                }
 
                 double x = offsetX + b.OriginalX * scale;
                 double y = offsetY + b.OriginalY * scale;
-                Canvas.SetLeft(rect, x);
-                Canvas.SetTop(rect, y);
+                sourceRects.Add(new Rect(x, y, w, h));
+            }
+
+            var overlayGroups = BuildOverlayGroups(boxList, sourceRects);
+
+            var placedTranslatedRects = new List<Rect>(boxList.Count);
+
+            if (useTranslationOverlay)
+            {
+                double preferredOverlayFontSize = TranslationSettingsService.Instance.OverlayFontSize;
+                var groupRects = overlayGroups.Select(g => g.Rect).ToList();
+                for (int i = 0; i < overlayGroups.Count; i++)
+                {
+                    var group = overlayGroups[i];
+                    string overlayText = group.OverlayText;
+                    var placement = ComputeOverlayPlacement(i, overlayText, group.Rect, groupRects, placedTranslatedRects, imageBounds, preferredOverlayFontSize);
+                    var constrainedRect = ConstrainPlacementNearSource(placement.Rect, group.Rect, imageBounds);
+
+                    var border = new Border
+                    {
+                        Width = constrainedRect.Width,
+                        Height = constrainedRect.Height,
+                        Tag = group.TagBox,
+                        Background = _ocrTranslatedFillBrush,
+                        BorderBrush = strokeBrush,
+                        BorderThickness = new Thickness(1),
+                        Child = new ScrollViewer
+                        {
+                            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                            Content = new TextBlock
+                            {
+                                Text = overlayText,
+                                TextWrapping = TextWrapping.Wrap,
+                                Foreground = _ocrTranslatedTextBrush,
+                                Margin = new Thickness(4, 2, 4, 2),
+                                FontSize = placement.FontSize
+                            }
+                        }
+                    };
+                    border.Tapped += OnOcrOverlayTapped;
+                    border.PointerEntered += (_, __) => border.Opacity = 0.85;
+                    border.PointerExited += (_, __) => border.Opacity = 1.0;
+                    Canvas.SetLeft(border, constrainedRect.X);
+                    Canvas.SetTop(border, constrainedRect.Y);
+                    overlay.Children.Add(border);
+                    placedTranslatedRects.Add(constrainedRect);
+                }
+
+                return;
+            }
+
+            for (int i = 0; i < boxList.Count; i++)
+            {
+                var b = boxList[i];
+                var sourceRect = sourceRects[i];
+                if (sourceRect.Width <= 0 || sourceRect.Height <= 0) continue;
+
+                var rect = _rectPool.Count > 0 ? _rectPool.Dequeue() : CreatePooledRectangle();
+                rect.Width = sourceRect.Width;
+                rect.Height = sourceRect.Height;
+                rect.Tag = b;
+                rect.Stroke = strokeBrush;
+                rect.Fill = fillBrush;
+                Canvas.SetLeft(rect, sourceRect.X);
+                Canvas.SetTop(rect, sourceRect.Y);
                 overlay.Children.Add(rect);
             }
+        }
+
+        private static List<(Rect Rect, string OverlayText, BoundingBoxViewModel TagBox)> BuildOverlayGroups(
+            IList<BoundingBoxViewModel> boxes,
+            IReadOnlyList<Rect> sourceRects)
+        {
+            var visited = new bool[boxes.Count];
+            var groups = new List<(Rect Rect, string OverlayText, BoundingBoxViewModel TagBox)>();
+
+            for (int i = 0; i < boxes.Count; i++)
+            {
+                if (visited[i]) continue;
+                if (sourceRects[i].Width <= 0 || sourceRects[i].Height <= 0)
+                {
+                    visited[i] = true;
+                    continue;
+                }
+
+                var stack = new Stack<int>();
+                var memberIndexes = new List<int>();
+                stack.Push(i);
+                visited[i] = true;
+
+                while (stack.Count > 0)
+                {
+                    int current = stack.Pop();
+                    memberIndexes.Add(current);
+
+                    for (int j = 0; j < boxes.Count; j++)
+                    {
+                        if (visited[j]) continue;
+                        if (sourceRects[j].Width <= 0 || sourceRects[j].Height <= 0) continue;
+                        if (!ShouldMergeOverlayRects(sourceRects[current], sourceRects[j])) continue;
+                        visited[j] = true;
+                        stack.Push(j);
+                    }
+                }
+
+                memberIndexes.Sort();
+                Rect mergedRect = sourceRects[memberIndexes[0]];
+                foreach (int memberIndex in memberIndexes.Skip(1))
+                    mergedRect = UnionRect(mergedRect, sourceRects[memberIndex]);
+
+                string translated = memberIndexes
+                    .Select(idx => boxes[idx].TranslatedText)
+                    .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text)) ?? string.Empty;
+                string fallback = string.Join(Environment.NewLine, memberIndexes.Select(idx => boxes[idx].Text).Where(text => !string.IsNullOrWhiteSpace(text)));
+                string overlayText = string.IsNullOrWhiteSpace(translated) ? fallback : translated;
+
+                groups.Add((mergedRect, overlayText, boxes[memberIndexes[0]]));
+            }
+
+            return groups;
+        }
+
+        private static Rect UnionRect(Rect a, Rect b)
+        {
+            double x1 = Math.Min(a.X, b.X);
+            double y1 = Math.Min(a.Y, b.Y);
+            double x2 = Math.Max(a.X + a.Width, b.X + b.Width);
+            double y2 = Math.Max(a.Y + a.Height, b.Y + b.Height);
+            return new Rect(x1, y1, Math.Max(0, x2 - x1), Math.Max(0, y2 - y1));
+        }
+
+        private static Rect ConstrainPlacementNearSource(Rect candidate, Rect sourceRect, Rect imageBounds)
+        {
+            var zone = GetPlacementZoneBounds(sourceRect, imageBounds);
+
+            double zoneX1 = zone.X;
+            double zoneY1 = zone.Y;
+            double zoneW = zone.Width;
+            double zoneH = zone.Height;
+
+            double width = Math.Min(candidate.Width, zoneW);
+            double height = Math.Min(candidate.Height, zoneH);
+
+            double x = Math.Clamp(candidate.X, zoneX1, zoneX1 + zoneW - width);
+            double y = Math.Clamp(candidate.Y, zoneY1, zoneY1 + zoneH - height);
+
+            return new Rect(x, y, width, height);
+        }
+
+        private static OverlayPlacement ComputeOverlayPlacement(
+            int index,
+            string text,
+            Rect sourceRect,
+            IReadOnlyList<Rect> allSourceRects,
+            IReadOnlyList<Rect> placedRects,
+            Rect imageBounds,
+            double preferredFontSize)
+        {
+            string normalizedText = string.IsNullOrWhiteSpace(text) ? " " : text.Trim();
+            int textLength = Math.Max(1, normalizedText.Replace("\r", string.Empty).Replace("\n", string.Empty).Length);
+            double density = EstimateLocalDensity(index, sourceRect, allSourceRects);
+            var placementZone = GetPlacementZoneBounds(sourceRect, imageBounds);
+
+            double minW = Math.Max(56, Math.Min(placementZone.Width, sourceRect.Width * (density > 0.8 ? 0.72 : 0.86)));
+            double maxW = Math.Max(minW + 8, Math.Min(placementZone.Width, Math.Min(imageBounds.Width * (density > 0.8 ? 0.42 : 0.56), sourceRect.Width * 2.2 + 140)));
+            double minH = Math.Max(26, Math.Min(placementZone.Height, sourceRect.Height * 0.7));
+            double maxH = Math.Max(minH + 8, Math.Min(placementZone.Height, Math.Max(sourceRect.Height * 2.2, 260)));
+
+            double fontSize = Math.Clamp(preferredFontSize, 8, 28);
+            double desiredW = minW;
+            double desiredH = minH;
+
+            int explicitLineCount = Math.Max(1, normalizedText.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries).Length);
+            const double horizontalPadding = 12;
+            const double verticalPadding = 10;
+            const double charWidthFactor = 0.58;
+            const double lineHeightFactor = 1.34;
+
+            for (int attempt = 0; attempt < 7; attempt++)
+            {
+                double widthByText = (fontSize * charWidthFactor * Math.Clamp(textLength, 8, 28)) + horizontalPadding;
+                desiredW = Math.Clamp(widthByText, minW, maxW);
+
+                int charsPerLine = Math.Max(1, (int)Math.Floor((desiredW - horizontalPadding) / Math.Max(1, fontSize * charWidthFactor)));
+                int wrappedLineCount = Math.Max(explicitLineCount, (int)Math.Ceiling(textLength / (double)charsPerLine));
+                double heightByText = (wrappedLineCount * fontSize * lineHeightFactor) + verticalPadding;
+                desiredH = Math.Clamp(heightByText, minH, maxH);
+
+                bool fitsHeight = heightByText <= maxH + 0.5;
+                if (fitsHeight || fontSize <= 8.2)
+                    break;
+
+                fontSize = Math.Max(8, fontSize - 0.7);
+            }
+
+            if (desiredH >= maxH - 0.5)
+                fontSize = Math.Max(8, fontSize - 0.6);
+
+            double gap = Math.Clamp(Math.Min(sourceRect.Width, sourceRect.Height) * 0.12 + 4, 4, 18);
+
+            var candidates = new List<Rect>
+            {
+                new(sourceRect.X, sourceRect.Y, desiredW, desiredH),
+                new(sourceRect.X, sourceRect.Y - desiredH - gap, desiredW, desiredH),
+                new(sourceRect.X, sourceRect.Y + sourceRect.Height + gap, desiredW, desiredH),
+                new(sourceRect.X + sourceRect.Width + gap, sourceRect.Y, desiredW, desiredH),
+                new(sourceRect.X - desiredW - gap, sourceRect.Y, desiredW, desiredH),
+                new(sourceRect.X + sourceRect.Width - desiredW, sourceRect.Y - desiredH - gap, desiredW, desiredH),
+                new(sourceRect.X + sourceRect.Width - desiredW, sourceRect.Y + sourceRect.Height + gap, desiredW, desiredH)
+            };
+
+            Rect best = FitInside(candidates[0], imageBounds);
+            double bestScore = ScorePlacement(best, sourceRect, index, allSourceRects, placedRects, imageBounds);
+
+            for (int i = 1; i < candidates.Count; i++)
+            {
+                var candidate = FitInside(candidates[i], imageBounds);
+                double score = ScorePlacement(candidate, sourceRect, index, allSourceRects, placedRects, imageBounds);
+                if (score < bestScore)
+                {
+                    best = candidate;
+                    bestScore = score;
+                }
+            }
+
+            return new OverlayPlacement(best, fontSize);
+        }
+
+        private static Rect GetPlacementZoneBounds(Rect sourceRect, Rect imageBounds)
+        {
+            double marginX = Math.Clamp(sourceRect.Width * 0.35, 12, 80);
+            double marginY = Math.Clamp(sourceRect.Height * 0.40, 12, 96);
+
+            double zoneX1 = Math.Max(imageBounds.X, sourceRect.X - marginX);
+            double zoneY1 = Math.Max(imageBounds.Y, sourceRect.Y - marginY);
+            double zoneX2 = Math.Min(imageBounds.X + imageBounds.Width, sourceRect.X + sourceRect.Width + marginX);
+            double zoneY2 = Math.Min(imageBounds.Y + imageBounds.Height, sourceRect.Y + sourceRect.Height + marginY);
+
+            return new Rect(zoneX1, zoneY1, Math.Max(24, zoneX2 - zoneX1), Math.Max(20, zoneY2 - zoneY1));
+        }
+
+        private static double EstimateLocalDensity(int index, Rect sourceRect, IReadOnlyList<Rect> allSourceRects)
+        {
+            if (sourceRect.Width <= 0 || sourceRect.Height <= 0) return 0;
+
+            double radius = Math.Max(sourceRect.Width, sourceRect.Height) * 1.8;
+            double cx = sourceRect.X + sourceRect.Width / 2.0;
+            double cy = sourceRect.Y + sourceRect.Height / 2.0;
+            double density = 0;
+
+            for (int i = 0; i < allSourceRects.Count; i++)
+            {
+                if (i == index) continue;
+                var other = allSourceRects[i];
+                if (other.Width <= 0 || other.Height <= 0) continue;
+
+                double ocx = other.X + other.Width / 2.0;
+                double ocy = other.Y + other.Height / 2.0;
+                double dist = Math.Sqrt((ocx - cx) * (ocx - cx) + (ocy - cy) * (ocy - cy));
+                if (dist > radius) continue;
+
+                density += 1.0 - (dist / Math.Max(1, radius));
+            }
+
+            return Math.Clamp(density / 4.0, 0, 1.6);
+        }
+
+        private static Rect FitInside(Rect rect, Rect bounds)
+        {
+            double width = Math.Clamp(rect.Width, 32, bounds.Width);
+            double height = Math.Clamp(rect.Height, 24, bounds.Height);
+
+            double x = Math.Clamp(rect.X, bounds.X, bounds.X + bounds.Width - width);
+            double y = Math.Clamp(rect.Y, bounds.Y, bounds.Y + bounds.Height - height);
+            return new Rect(x, y, width, height);
+        }
+
+        private static double ScorePlacement(
+            Rect candidate,
+            Rect sourceRect,
+            int sourceIndex,
+            IReadOnlyList<Rect> allSourceRects,
+            IReadOnlyList<Rect> placedRects,
+            Rect bounds)
+        {
+            double score = 0;
+
+            for (int i = 0; i < allSourceRects.Count; i++)
+            {
+                if (i == sourceIndex) continue;
+                var other = allSourceRects[i];
+                if (other.Width <= 0 || other.Height <= 0) continue;
+                double overlap = IntersectionArea(candidate, other);
+                if (overlap > 0)
+                    score += overlap * 4.8;
+            }
+
+            foreach (var placed in placedRects)
+            {
+                double overlap = IntersectionArea(candidate, placed);
+                if (overlap > 0)
+                    score += overlap * 7.2;
+            }
+
+            double gapX = CenterDistanceX(candidate, sourceRect);
+            double gapY = CenterDistanceY(candidate, sourceRect);
+            score += (gapX + gapY) * 0.35;
+
+            double marginLeft = candidate.X - bounds.X;
+            double marginTop = candidate.Y - bounds.Y;
+            double marginRight = (bounds.X + bounds.Width) - (candidate.X + candidate.Width);
+            double marginBottom = (bounds.Y + bounds.Height) - (candidate.Y + candidate.Height);
+            double edgePenalty = 0;
+
+            if (marginLeft < 6) edgePenalty += 18 - (marginLeft * 2);
+            if (marginTop < 6) edgePenalty += 18 - (marginTop * 2);
+            if (marginRight < 6) edgePenalty += 18 - (marginRight * 2);
+            if (marginBottom < 6) edgePenalty += 18 - (marginBottom * 2);
+
+            score += Math.Max(0, edgePenalty);
+
+            return score;
+        }
+
+        private static double CenterDistanceX(Rect a, Rect b)
+            => Math.Abs((a.X + a.Width / 2.0) - (b.X + b.Width / 2.0));
+
+        private static double CenterDistanceY(Rect a, Rect b)
+            => Math.Abs((a.Y + a.Height / 2.0) - (b.Y + b.Height / 2.0));
+
+        private static bool ShouldMergeOverlayRects(Rect a, Rect b)
+        {
+            if (a.Width <= 0 || a.Height <= 0 || b.Width <= 0 || b.Height <= 0)
+                return false;
+
+            if (IntersectionArea(a, b) > 0)
+                return true;
+
+            double horizontalGap = AxisGap(a.X, a.X + a.Width, b.X, b.X + b.Width);
+            double verticalGap = AxisGap(a.Y, a.Y + a.Height, b.Y, b.Y + b.Height);
+            double verticalOverlap = AxisOverlap(a.Y, a.Y + a.Height, b.Y, b.Y + b.Height);
+            double horizontalOverlap = AxisOverlap(a.X, a.X + a.Width, b.X, b.X + b.Width);
+
+            double minHeight = Math.Max(1, Math.Min(a.Height, b.Height));
+            double minWidth = Math.Max(1, Math.Min(a.Width, b.Width));
+            double verticalOverlapRatio = verticalOverlap / minHeight;
+            double horizontalOverlapRatio = horizontalOverlap / minWidth;
+
+            double horizontalGapThreshold = Math.Clamp(minWidth * 0.25, 2, 18);
+            double verticalGapThreshold = Math.Clamp(minHeight * 0.25, 2, 18);
+
+            bool sideBySideAdjacent = horizontalGap <= horizontalGapThreshold && verticalOverlapRatio >= 0.55;
+            bool stackedAdjacent = verticalGap <= verticalGapThreshold && horizontalOverlapRatio >= 0.55;
+            return sideBySideAdjacent || stackedAdjacent;
+        }
+
+        private static double AxisOverlap(double a1, double a2, double b1, double b2)
+            => Math.Max(0, Math.Min(a2, b2) - Math.Max(a1, b1));
+
+        private static double AxisGap(double a1, double a2, double b1, double b2)
+            => Math.Max(0, Math.Max(a1, b1) - Math.Min(a2, b2));
+
+        private static double IntersectionArea(Rect a, Rect b)
+        {
+            double x1 = Math.Max(a.X, b.X);
+            double y1 = Math.Max(a.Y, b.Y);
+            double x2 = Math.Min(a.X + a.Width, b.X + b.Width);
+            double y2 = Math.Min(a.Y + a.Height, b.Y + b.Height);
+            double w = x2 - x1;
+            double h = y2 - y1;
+            if (w <= 0 || h <= 0) return 0;
+            return w * h;
         }
 
         private Rectangle CreatePooledRectangle()
@@ -752,6 +1131,26 @@ namespace MangaViewer.Pages
                 }
                 catch { }
             }
+        }
+
+        private void OnOcrOverlayTapped(object sender, TappedRoutedEventArgs e)
+        {
+            if (sender is not Border border || border.Tag is not BoundingBoxViewModel vm) return;
+
+            string textToCopy = !string.IsNullOrWhiteSpace(vm.TranslatedText) ? vm.TranslatedText : vm.Text;
+            if (string.IsNullOrWhiteSpace(textToCopy)) return;
+
+            try
+            {
+                _clipboard.SetText(textToCopy);
+                border.BorderThickness = new Thickness(2);
+                _ = DispatcherQueue.TryEnqueue(async () =>
+                {
+                    await System.Threading.Tasks.Task.Delay(300);
+                    border.BorderThickness = new Thickness(1);
+                });
+            }
+            catch { }
         }
 
         private void OnPageSlideRequested(object? sender, int delta)

@@ -8,10 +8,12 @@ using System.Collections.Generic;
 using System.Collections.Concurrent;
 using Microsoft.Windows.Storage.Pickers;
 using System.Threading;
+using System.Linq;
 using Microsoft.UI.Xaml.Controls;
 using MangaViewer.Services.Thumbnails;
 using MangaViewer.Services.Logging;
 using System.IO;
+using System.Text.Json;
 using Microsoft.Extensions.AI;
 
 namespace MangaViewer.ViewModels
@@ -50,7 +52,9 @@ namespace MangaViewer.ViewModels
         private readonly ConcurrentDictionary<string, string> _translationCache = new(StringComparer.Ordinal);
         private readonly Dictionary<int, bool> _pageOcrStates = new();
         private readonly Dictionary<int, bool> _pageTranslationStates = new();
+        private static readonly TimeSpan TranslationPerSideTimeout = TimeSpan.FromSeconds(120);
         private CancellationTokenSource? _adjacentPrefetchCts;
+        private bool _forceRefreshOllamaOcrOnNextRun;
 
         private string _ocrStatusMessage = string.Empty;
         private bool _isInfoBarOpen;
@@ -93,6 +97,7 @@ namespace MangaViewer.ViewModels
                     }
                     else
                     {
+                        _forceRefreshOllamaOcrOnNextRun = _ocrService.Backend == OcrService.OcrBackend.Ollama && IsOllamaOcrTextVisible;
                         CancelOcr();
                         ClearOcr();
                     }
@@ -121,6 +126,8 @@ namespace MangaViewer.ViewModels
                     {
                         TranslatedLeftOcrText = string.Empty;
                         TranslatedRightOcrText = string.Empty;
+                        ClearBoxTranslations();
+                        PageViewChanged?.Invoke(this, EventArgs.Empty);
                     }
                 }
             }
@@ -203,12 +210,28 @@ namespace MangaViewer.ViewModels
         public ReadOnlyObservableCollection<BoundingBoxViewModel> LeftOcrBoxes { get; }
         public ReadOnlyObservableCollection<BoundingBoxViewModel> RightOcrBoxes { get; }
 
+        private sealed class IndexedBox
+        {
+            public required BoundingBoxViewModel Box { get; init; }
+            public required int Index { get; init; }
+        }
+
+        private sealed class MergedIndexedBox
+        {
+            public required int Index { get; init; }
+            public required IReadOnlyList<IndexedBox> Members { get; init; }
+            public required string Text { get; init; }
+        }
+
         private string _leftOcrText = string.Empty;
         private string _rightOcrText = string.Empty;
         public string LeftOcrText { get => _leftOcrText; private set => SetProperty(ref _leftOcrText, value); }
         public string RightOcrText { get => _rightOcrText; private set => SetProperty(ref _rightOcrText, value); }
         public bool IsOllamaMode => _ocrService.Backend == OcrService.OcrBackend.Ollama;
-        public bool IsOllamaOcrTextVisible => IsOllamaMode && (!string.IsNullOrEmpty(_leftOcrText) || !string.IsNullOrEmpty(_rightOcrText));
+        public bool IsOllamaOcrTextVisible => IsOllamaMode
+            && _leftOcrBoxes.Count == 0
+            && _rightOcrBoxes.Count == 0
+            && (!string.IsNullOrEmpty(_leftOcrText) || !string.IsNullOrEmpty(_rightOcrText));
 
         private BoundingBoxViewModel? _selectedOcrBox;
         public BoundingBoxViewModel? SelectedOcrBox { get => _selectedOcrBox; set => SetProperty(ref _selectedOcrBox, value); }
@@ -250,16 +273,19 @@ namespace MangaViewer.ViewModels
         private async void OnOcrSettingsChanged(object? sender, EventArgs e)
         {
             OnPropertyChanged(nameof(IsOllamaMode));
-            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
+            RaiseOllamaOcrTextVisibilityChanged();
             if (IsOcrRunning) return;
             if (LeftImageFilePath == null && RightImageFilePath == null) return;
             if (!IsOcrActive) return;
             await RunOcrAsync();
         }
 
+        private void RaiseOllamaOcrTextVisibilityChanged() => OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
+
         private void OnTranslationSettingsChanged(object? sender, EventArgs e)
         {
             _translationCache.Clear();
+            PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
 
         /// <summary>
@@ -734,11 +760,17 @@ namespace MangaViewer.ViewModels
             {
                 ClearOcr();
                 if (_ocrService.Backend == OcrService.OcrBackend.Ollama)
-                    await RunOllamaOcrAsync(paths, token);
+                {
+                    bool forceRefresh = _forceRefreshOllamaOcrOnNextRun;
+                    _forceRefreshOllamaOcrOnNextRun = false;
+                    await RunOllamaOcrAsync(paths, token, localVersion, forceRefresh);
+                }
                 else
-                    await RunWinRtOcrAsync(paths, token);
+                    await RunWinRtOcrAsync(paths, token, localVersion);
 
                 StartAdjacentPagePrefetch();
+                if (IsTranslationActive)
+                    _ = RunTranslationAsync();
             }
             catch (OperationCanceledException)
             {
@@ -760,7 +792,7 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private async Task RunWinRtOcrAsync(List<string> paths, CancellationToken token)
+        private async Task RunWinRtOcrAsync(List<string> paths, CancellationToken token, int localVersion)
         {
             SetOcrStatus($"OCR 실행 중... ({paths.Count} images)", InfoBarSeverity.Informational, true);
             int totalBoxes = 0;
@@ -768,62 +800,128 @@ namespace MangaViewer.ViewModels
             {
                 string p = paths[i];
                 if (string.IsNullOrWhiteSpace(p)) continue;
-                token.ThrowIfCancellationRequested();
+                ThrowIfOcrRunStale(localVersion, token);
                 var boxes = await _ocrService.GetOcrAsync(p, token);
+                ThrowIfOcrRunStale(localVersion, token);
                 foreach (var b in boxes)
                     if (i == 0) _leftOcrBoxes.Add(b); else _rightOcrBoxes.Add(b);
                 totalBoxes += boxes.Count;
             }
+            ThrowIfOcrRunStale(localVersion, token);
             SetOcrStatus($"OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
         }
 
-        private async Task RunOllamaOcrAsync(List<string> paths, CancellationToken token)
+        private async Task RunOllamaOcrAsync(List<string> paths, CancellationToken token, int localVersion, bool forceRefresh)
         {
             SetOcrStatus("Ollama OCR 실행 중...", InfoBarSeverity.Informational, true);
+            int totalBoxes = 0;
 
+            var pending = new List<(int PageIndex, Task<OcrService.OllamaOcrResponse> Task)>();
             if (paths.Count > 0 && !string.IsNullOrWhiteSpace(paths[0]))
-            {
-                token.ThrowIfCancellationRequested();
-                LeftOcrText = await _ocrService.GetOllamaTextAsync(paths[0], token).ConfigureAwait(true);
-            }
-
+                pending.Add((0, _ocrService.GetOllamaOcrAsync(paths[0], token, forceRefresh)));
             if (paths.Count > 1 && !string.IsNullOrWhiteSpace(paths[1]))
+                pending.Add((1, _ocrService.GetOllamaOcrAsync(paths[1], token, forceRefresh)));
+
+            int totalPages = pending.Count;
+            int completedPages = 0;
+
+            while (pending.Count > 0)
             {
-                token.ThrowIfCancellationRequested();
-                RightOcrText = await _ocrService.GetOllamaTextAsync(paths[1], token).ConfigureAwait(true);
+                ThrowIfOcrRunStale(localVersion, token);
+
+                var completedTask = await Task.WhenAny(pending.Select(x => x.Task)).ConfigureAwait(true);
+                int pendingIndex = pending.FindIndex(x => ReferenceEquals(x.Task, completedTask));
+                if (pendingIndex < 0)
+                    continue;
+
+                var (pageIndex, task) = pending[pendingIndex];
+                pending.RemoveAt(pendingIndex);
+
+                var result = await task.ConfigureAwait(true);
+                ThrowIfOcrRunStale(localVersion, token);
+                if (pageIndex == 0)
+                {
+                    LeftOcrText = result.Text;
+                    foreach (var box in result.Boxes)
+                        _leftOcrBoxes.Add(box);
+                }
+                else
+                {
+                    RightOcrText = result.Text;
+                    foreach (var box in result.Boxes)
+                        _rightOcrBoxes.Add(box);
+                }
+
+                totalBoxes += result.Boxes.Count;
+                completedPages++;
+
+                RaiseOllamaOcrTextVisibilityChanged();
+                PageViewChanged?.Invoke(this, EventArgs.Empty);
+
+                if (completedPages < totalPages)
+                    SetOcrStatus($"Ollama OCR 실행 중... ({completedPages}/{totalPages})", InfoBarSeverity.Informational, true);
             }
 
-            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
-            SetOcrStatus("Ollama OCR 완료", InfoBarSeverity.Success, true);
+            ThrowIfOcrRunStale(localVersion, token);
+            bool hasPlainTextOnlyFallback = (_leftOcrBoxes.Count == 0 && !string.IsNullOrWhiteSpace(LeftOcrText))
+                || (_rightOcrBoxes.Count == 0 && !string.IsNullOrWhiteSpace(RightOcrText));
+            _forceRefreshOllamaOcrOnNextRun = hasPlainTextOnlyFallback;
+            RaiseOllamaOcrTextVisibilityChanged();
+            SetOcrStatus($"Ollama OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
+        }
 
-            if (IsTranslationActive)
-            {
-                _ = RunTranslationAsync();
-            }
+        private void ThrowIfOcrRunStale(int localVersion, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (localVersion != _ocrVersion)
+                throw new OperationCanceledException();
         }
 
         private async Task RunTranslationAsync()
         {
-            if (string.IsNullOrWhiteSpace(LeftOcrText) && string.IsNullOrWhiteSpace(RightOcrText)) return;
+            bool hasBoxOcr = _leftOcrBoxes.Count > 0 || _rightOcrBoxes.Count > 0;
+            bool hasPlainTextOcr = !string.IsNullOrWhiteSpace(LeftOcrText) || !string.IsNullOrWhiteSpace(RightOcrText);
+            if (!hasBoxOcr && !hasPlainTextOcr) return;
 
             SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, true);
 
-            // 번역 창을 즉시 표시하고 처리 중 상태를 알림
-            if (!string.IsNullOrWhiteSpace(LeftOcrText))
-                TranslatedLeftOcrText = "번역 중...";
-            if (!string.IsNullOrWhiteSpace(RightOcrText))
-                TranslatedRightOcrText = "번역 중...";
+            if (hasBoxOcr)
+            {
+                foreach (var box in _leftOcrBoxes)
+                    box.TranslatedText = string.IsNullOrWhiteSpace(box.Text) ? string.Empty : "번역 중...";
+                foreach (var box in _rightOcrBoxes)
+                    box.TranslatedText = string.IsNullOrWhiteSpace(box.Text) ? string.Empty : "번역 중...";
+                TranslatedLeftOcrText = _leftOcrBoxes.Any(b => !string.IsNullOrWhiteSpace(b.Text)) ? "번역 중..." : string.Empty;
+                TranslatedRightOcrText = _rightOcrBoxes.Any(b => !string.IsNullOrWhiteSpace(b.Text)) ? "번역 중..." : string.Empty;
+                PageViewChanged?.Invoke(this, EventArgs.Empty);
+            }
+            else
+            {
+                if (!string.IsNullOrWhiteSpace(LeftOcrText))
+                    TranslatedLeftOcrText = "번역 중...";
+                if (!string.IsNullOrWhiteSpace(RightOcrText))
+                    TranslatedRightOcrText = "번역 중...";
+            }
 
             try
             {
-                if (!string.IsNullOrWhiteSpace(LeftOcrText))
+                if (hasBoxOcr)
                 {
-                    TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText);
+                    await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                    await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                    PageViewChanged?.Invoke(this, EventArgs.Empty);
                 }
-
-                if (!string.IsNullOrWhiteSpace(RightOcrText))
+                else
                 {
-                    TranslatedRightOcrText = await TranslateTextAsync(RightOcrText);
+                    if (!string.IsNullOrWhiteSpace(LeftOcrText))
+                    {
+                        TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText).ConfigureAwait(true);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(RightOcrText))
+                    {
+                        TranslatedRightOcrText = await TranslateTextAsync(RightOcrText).ConfigureAwait(true);
+                    }
                 }
 
                 SetOcrStatus("번역 완료", InfoBarSeverity.Success, true);
@@ -831,23 +929,313 @@ namespace MangaViewer.ViewModels
             catch (Exception ex)
             {
                 string errorMsg = "번역 오류: " + ex.Message;
-                // 아직 "번역 중..." 상태인 항목에 오류 메시지 표시
-                if (TranslatedLeftOcrText == "번역 중...")
-                    TranslatedLeftOcrText = errorMsg;
-                if (TranslatedRightOcrText == "번역 중...")
-                    TranslatedRightOcrText = errorMsg;
+                if (hasBoxOcr)
+                {
+                    foreach (var box in _leftOcrBoxes)
+                        if (box.TranslatedText == "번역 중...") box.TranslatedText = errorMsg;
+                    foreach (var box in _rightOcrBoxes)
+                        if (box.TranslatedText == "번역 중...") box.TranslatedText = errorMsg;
+                    TranslatedLeftOcrText = BuildTranslatedTextFromBoxes(_leftOcrBoxes);
+                    TranslatedRightOcrText = BuildTranslatedTextFromBoxes(_rightOcrBoxes);
+                    PageViewChanged?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    if (TranslatedLeftOcrText == "번역 중...")
+                        TranslatedLeftOcrText = errorMsg;
+                    if (TranslatedRightOcrText == "번역 중...")
+                        TranslatedRightOcrText = errorMsg;
+                }
+
                 SetOcrStatus(errorMsg, InfoBarSeverity.Error, true);
                 Log.Error(ex, "RunTranslationAsync failed");
             }
         }
 
-        private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
+        private async Task TranslateBoxSideAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, bool isLeft)
         {
-            var settings = TranslationSettingsService.Instance;
+            if (boxes.Count == 0)
+            {
+                if (isLeft) TranslatedLeftOcrText = string.Empty;
+                else TranslatedRightOcrText = string.Empty;
+                return;
+            }
+
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(TranslationPerSideTimeout);
+                await TranslateBoundingBoxesWithContextAsync(boxes, pageOcrText, timeoutCts.Token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                const string timeoutMessage = "번역 시간 초과";
+                foreach (var box in boxes)
+                    if (box.TranslatedText == "번역 중...") box.TranslatedText = timeoutMessage;
+            }
+
+            string translated = BuildTranslatedTextFromBoxes(boxes);
+            if (isLeft) TranslatedLeftOcrText = translated;
+            else TranslatedRightOcrText = translated;
+            PageViewChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private static string BuildTranslatedTextFromBoxes(IReadOnlyList<BoundingBoxViewModel> boxes)
+        {
+            var lines = boxes
+                .Select(box => string.IsNullOrWhiteSpace(box.TranslatedText) ? box.Text : box.TranslatedText)
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .ToList();
+
+            return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
+        }
+
+        private async Task TranslateBoundingBoxesWithContextAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, CancellationToken cancellationToken = default)
+        {
+            if (boxes.Count == 0) return;
+
+            var indexed = boxes
+                .Select((box, index) => new IndexedBox { Box = box, Index = index })
+                .Where(x => !string.IsNullOrWhiteSpace(x.Box.Text))
+                .ToList();
+            if (indexed.Count == 0) return;
+
+            var merged = BuildMergedOverlappingBoxes(indexed);
+            if (merged.Count == 0) return;
+
+            string fullText = string.Join(Environment.NewLine, merged.Select(x => x.Text));
+            string pageText = string.IsNullOrWhiteSpace(pageOcrText) ? fullText : pageOcrText.Trim();
+            if (!TryBuildTranslationClient(out var settings, out string model, out string systemPrompt, out IChatClient? client))
+                return;
+
+            string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
+
+            string boxInputKey = string.Join("\u241E", merged.Select(x => x.Text));
+            string cacheKey = settings.Provider == "Ollama"
+                ? $"box|{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={settings.ThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}"
+                : $"box|{settings.Provider}|{model}|{settings.ThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}";
+
+            if (_translationCache.TryGetValue(cacheKey, out string? cached))
+            {
+                ApplyMergedBoxTranslationsFromJson(merged, cached);
+                return;
+            }
+
+            var boxPayload = new
+            {
+                page_text = pageText,
+                boxes = merged.Select(x => new { index = x.Index, text = x.Text }).ToArray()
+            };
+
+            string jsonPayload = JsonSerializer.Serialize(boxPayload);
+            string boxSystemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                ? "You are a professional manga translator."
+                : systemPrompt;
+            boxSystemPrompt += $" Translate into {targetLanguage}. Return only strict JSON.";
+
+            var messages = new List<ChatMessage>
+            {
+                new ChatMessage(ChatRole.System, boxSystemPrompt),
+                new ChatMessage(ChatRole.User,
+                    $"Translate each OCR box into {targetLanguage} using page-level OCR context and box-level OCR text. " +
+                    "Preserve speaking style and tone. Return JSON only in this schema: " +
+                    "{\"translations\":[{\"index\":0,\"text\":\"...\"}]}. " +
+                    "Use the exact same index values from input. " +
+                    "Do not add markdown, comments, or extra keys.\nInput JSON:\n" + jsonPayload)
+            };
+
+            using (client)
+            {
+                var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(true);
+                string content = response.Messages.Count > 0 ? (response.Messages[0].Text ?? string.Empty) : string.Empty;
+                string normalizedJson = NormalizeJsonText(content);
+                _translationCache[cacheKey] = normalizedJson;
+                ApplyMergedBoxTranslationsFromJson(merged, normalizedJson);
+            }
+        }
+
+        private static List<MergedIndexedBox> BuildMergedOverlappingBoxes(IReadOnlyList<IndexedBox> indexed)
+        {
+            var visited = new bool[indexed.Count];
+            var merged = new List<MergedIndexedBox>();
+
+            for (int i = 0; i < indexed.Count; i++)
+            {
+                if (visited[i]) continue;
+
+                var stack = new Stack<int>();
+                var members = new List<IndexedBox>();
+                stack.Push(i);
+                visited[i] = true;
+
+                while (stack.Count > 0)
+                {
+                    int current = stack.Pop();
+                    members.Add(indexed[current]);
+
+                    for (int j = 0; j < indexed.Count; j++)
+                    {
+                        if (visited[j]) continue;
+                        if (!AreBoxesOverlapping(indexed[current].Box, indexed[j].Box)) continue;
+                        visited[j] = true;
+                        stack.Push(j);
+                    }
+                }
+
+                var orderedMembers = members.OrderBy(x => x.Index).ToList();
+                string mergedText = string.Join(Environment.NewLine, orderedMembers.Select(x => x.Box.Text));
+                if (string.IsNullOrWhiteSpace(mergedText))
+                    continue;
+
+                merged.Add(new MergedIndexedBox
+                {
+                    Index = merged.Count,
+                    Members = orderedMembers,
+                    Text = mergedText
+                });
+            }
+
+            return merged;
+        }
+
+        private static bool AreBoxesOverlapping(BoundingBoxViewModel a, BoundingBoxViewModel b)
+        {
+            double ax1 = a.OriginalX;
+            double ay1 = a.OriginalY;
+            double ax2 = a.OriginalX + a.OriginalW;
+            double ay2 = a.OriginalY + a.OriginalH;
+
+            double bx1 = b.OriginalX;
+            double by1 = b.OriginalY;
+            double bx2 = b.OriginalX + b.OriginalW;
+            double by2 = b.OriginalY + b.OriginalH;
+
+            double overlapW = Math.Min(ax2, bx2) - Math.Max(ax1, bx1);
+            double overlapH = Math.Min(ay2, by2) - Math.Max(ay1, by1);
+            return overlapW > 0 && overlapH > 0;
+        }
+
+        private static string NormalizeJsonText(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return "{}";
+            string trimmed = content.Trim();
+            if (!trimmed.StartsWith("```", StringComparison.Ordinal))
+                return ExtractJsonPayload(trimmed);
+
+            int firstLineBreak = trimmed.IndexOf('\n');
+            if (firstLineBreak < 0)
+                return trimmed.Trim('`').Trim();
+
+            string body = trimmed[(firstLineBreak + 1)..];
+            int fenceEnd = body.LastIndexOf("```", StringComparison.Ordinal);
+            if (fenceEnd >= 0)
+                body = body[..fenceEnd];
+            return ExtractJsonPayload(body.Trim());
+        }
+
+        private static string ExtractJsonPayload(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return "{}";
+
+            int objStart = text.IndexOf('{');
+            int arrStart = text.IndexOf('[');
+            int start = objStart < 0 ? arrStart : arrStart < 0 ? objStart : Math.Min(objStart, arrStart);
+            if (start < 0) return text.Trim();
+
+            int objEnd = text.LastIndexOf('}');
+            int arrEnd = text.LastIndexOf(']');
+            int end = Math.Max(objEnd, arrEnd);
+            if (end < start) return text[start..].Trim();
+
+            return text.Substring(start, end - start + 1).Trim();
+        }
+
+        private static void ApplyMergedBoxTranslationsFromJson(IReadOnlyList<MergedIndexedBox> mergedBoxes, string json)
+        {
+            if (mergedBoxes.Count == 0) return;
+
+            var translationMap = new Dictionary<int, string>();
+            try
+            {
+                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+                var root = doc.RootElement;
+
+                JsonElement translationsElement;
+                bool found = false;
+                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("translations", out translationsElement) && translationsElement.ValueKind == JsonValueKind.Array)
+                {
+                    found = true;
+                }
+                else if (root.ValueKind == JsonValueKind.Array)
+                {
+                    translationsElement = root;
+                    found = true;
+                }
+                else
+                {
+                    translationsElement = default;
+                }
+
+                if (found)
+                {
+                    foreach (var item in translationsElement.EnumerateArray())
+                    {
+                        if (item.ValueKind != JsonValueKind.Object) continue;
+                        if (!item.TryGetProperty("index", out var indexElement)) continue;
+
+                        int index;
+                        if (indexElement.ValueKind == JsonValueKind.Number)
+                        {
+                            if (!indexElement.TryGetInt32(out index)) continue;
+                        }
+                        else if (indexElement.ValueKind == JsonValueKind.String && int.TryParse(indexElement.GetString(), out int parsed))
+                        {
+                            index = parsed;
+                        }
+                        else
+                        {
+                            continue;
+                        }
+
+                        string text = string.Empty;
+                        if (item.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
+                            text = textElement.GetString() ?? string.Empty;
+                        else if (item.TryGetProperty("translated", out var translatedElement) && translatedElement.ValueKind == JsonValueKind.String)
+                            text = translatedElement.GetString() ?? string.Empty;
+                        else if (item.TryGetProperty("translation", out var translationElement) && translationElement.ValueKind == JsonValueKind.String)
+                            text = translationElement.GetString() ?? string.Empty;
+
+                        translationMap[index] = text;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            foreach (var group in mergedBoxes)
+            {
+                if (translationMap.TryGetValue(group.Index, out var translated) && !string.IsNullOrWhiteSpace(translated))
+                {
+                    foreach (var member in group.Members)
+                        member.Box.TranslatedText = translated;
+                    continue;
+                }
+
+                foreach (var member in group.Members)
+                {
+                    if (member.Box.TranslatedText == "번역 중...")
+                        member.Box.TranslatedText = member.Box.Text;
+                }
+            }
+        }
+
+        private bool TryBuildTranslationClient(out TranslationSettingsService settings, out string model, out string systemPrompt, out IChatClient? client)
+        {
+            settings = TranslationSettingsService.Instance;
             var thinkingLevel = settings.ThinkingLevel;
-            string model;
-            string systemPrompt;
-            Microsoft.Extensions.AI.IChatClient client;
+            model = string.Empty;
+            systemPrompt = string.Empty;
+            client = null;
 
             if (settings.Provider == "Google")
             {
@@ -871,28 +1259,45 @@ namespace MangaViewer.ViewModels
             {
                 model = settings.OllamaModel;
                 systemPrompt = settings.OllamaSystemPrompt;
-                client = new OllamaChatClient(settings.OllamaEndpoint, model, enableThinking: false);
+                client = new OllamaChatClient(settings.OllamaEndpoint, model, thinkingLevel);
             }
             else
+            {
+                return false;
+            }
+
+            return true;
+        }
+
+        private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
+        {
+            if (!TryBuildTranslationClient(out var settings, out string model, out string systemPrompt, out IChatClient? client))
             {
                 return "번역 공급자를 설정해주세요.";
             }
 
+            string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
+
             string cacheKey = settings.Provider == "Ollama"
-                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|enable_thinking=false|{text}"
-                : $"{settings.Provider}|{model}|{thinkingLevel}|{text}";
+                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={settings.ThinkingLevel}|lang={targetLanguage}|{text}"
+                : $"{settings.Provider}|{model}|{settings.ThinkingLevel}|lang={targetLanguage}|{text}";
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
             var messages = new List<ChatMessage>();
-            if (!string.IsNullOrWhiteSpace(systemPrompt))
-                messages.Add(new ChatMessage(ChatRole.System, systemPrompt));
+            string effectiveSystemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+                ? $"You are a professional translator. Translate the user text into {targetLanguage}. Return only the translated text."
+                : systemPrompt + $" Translate the output into {targetLanguage} and return only the translated text.";
+            messages.Add(new ChatMessage(ChatRole.System, effectiveSystemPrompt));
             messages.Add(new ChatMessage(ChatRole.User, text));
 
-            var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken);
-            string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
-            _translationCache[cacheKey] = result;
-            return result;
+            using (client)
+            {
+                var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken);
+                string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
+                _translationCache[cacheKey] = result;
+                return result;
+            }
         }
 
         private void StartAdjacentPagePrefetch()
@@ -1001,7 +1406,16 @@ namespace MangaViewer.ViewModels
             {
                 TranslatedLeftOcrText = string.Empty;
                 TranslatedRightOcrText = string.Empty;
+                ClearBoxTranslations();
             }
+        }
+
+        private void ClearBoxTranslations()
+        {
+            foreach (var box in _leftOcrBoxes)
+                box.TranslatedText = string.Empty;
+            foreach (var box in _rightOcrBoxes)
+                box.TranslatedText = string.Empty;
         }
 
         private void CancelOcr()
@@ -1022,7 +1436,7 @@ namespace MangaViewer.ViewModels
             _rightOcrBoxes.Clear();
             LeftOcrText = string.Empty;
             RightOcrText = string.Empty;
-            OnPropertyChanged(nameof(IsOllamaOcrTextVisible));
+            RaiseOllamaOcrTextVisibilityChanged();
             OcrCompleted?.Invoke(this, EventArgs.Empty);
         }
 
