@@ -10,6 +10,9 @@
 *.userosscache
 *.sln.docstates
 
+# ONNX model file
+*.onnx
+
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs
 

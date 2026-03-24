@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Animation;
 using Microsoft.UI.Xaml.Shapes;
 using System;
+using System.Diagnostics;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
@@ -58,6 +59,7 @@ namespace MangaViewer.Pages
             InitializeComponent();
             Loaded += MangaReaderPage_Loaded;
             Unloaded += MangaReaderPage_Unloaded;
+            TranslationSettingsService.Instance.SettingsChanged += OnTranslationSettingsChanged;
 
             _resizeDebounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
             _resizeDebounceTimer.Tick += (_, __) =>
@@ -180,6 +182,8 @@ namespace MangaViewer.Pages
             _viewportRedecodeTimer?.Stop();
             _viewportRedecodeTimer = null;
 
+            TranslationSettingsService.Instance.SettingsChanged -= OnTranslationSettingsChanged;
+
             UnhookVm(ViewModel);
         }
 
@@ -254,6 +258,12 @@ namespace MangaViewer.Pages
 
         private void OnVmRedrawRequested(object? sender, EventArgs e) => RedrawAllOcr();
 
+        private void OnTranslationSettingsChanged(object? sender, EventArgs e)
+        {
+            if (_isUnloaded) return;
+            _ = DispatcherQueue.TryEnqueue(RedrawAllOcr);
+        }
+
         private void OnMangaFolderLoaded(object? sender, EventArgs e) => SetFocusAfterDelay();
 
         private void OnBookmarksChanged(object? sender, NotifyCollectionChangedEventArgs e)
@@ -296,7 +306,18 @@ namespace MangaViewer.Pages
             }
 
             if (e.PropertyName == nameof(MangaViewModel.SelectedThumbnailIndex))
+            {
                 RebuildViewportThumbnailQueue(radius: 48);
+                return;
+            }
+
+            if (e.PropertyName == nameof(MangaViewModel.LeftImageSource)
+                || e.PropertyName == nameof(MangaViewModel.RightImageSource)
+                || e.PropertyName == nameof(MangaViewModel.IsSinglePageMode)
+                || e.PropertyName == nameof(MangaViewModel.IsTwoPageMode))
+            {
+                RedrawAllOcr();
+            }
         }
 
         private void HookThumbScrollViewer()
@@ -615,6 +636,8 @@ namespace MangaViewer.Pages
         private void OnRightImageSizeChanged(object sender, SizeChangedEventArgs e) => RedrawRight();
         private void OnSingleImageSizeChanged(object sender, SizeChangedEventArgs e) => RedrawSingle();
 
+        // OCR 렌더링 진입점.
+        // 단일/좌/우 캔버스를 모두 최신 OCR 상태로 다시 그린다.
         private void RedrawAllOcr()
         {
             RedrawSingle();
@@ -622,6 +645,8 @@ namespace MangaViewer.Pages
             RedrawRight();
         }
 
+        // OCR 박스 좌표(원본 픽셀 기준)를 현재 wrapper 크기에 맞게 매핑한 뒤,
+        // 일반 박스 또는 번역 오버레이를 그리도록 파이프라인을 시작한다.
         private void RedrawOcr(Grid? wrapper, Canvas? overlay, IEnumerable<BoundingBoxViewModel> boxes, BitmapImage? imageSource, bool isLeft)
         {
             if (overlay == null) return;
@@ -641,6 +666,8 @@ namespace MangaViewer.Pages
             DrawBoxes(wrapper, overlay, boxes, baseW, baseH, isLeft);
         }
 
+        // OCR 결과의 좌표계(가로/세로)가 표시된 이미지와 다를 수 있으므로,
+        // wrapper 종횡비와 비교해 가장 맞는 기준 크기(정방향/회전)를 선택한다.
         private static (int W, int H) GetBestMatchingBaseSize(Grid wrapper, IEnumerable<BoundingBoxViewModel> boxes, BitmapImage imageSource)
         {
             int imgW = imageSource.PixelWidth;
@@ -687,12 +714,16 @@ namespace MangaViewer.Pages
             _ocrLeftFillBrush = new SolidColorBrush(leftFill);
             _ocrRightStrokeBrush = new SolidColorBrush(rightStroke);
             _ocrRightFillBrush = new SolidColorBrush(rightFill);
-            _ocrTranslatedFillBrush = new SolidColorBrush(ColorHelper.FromArgb(0xE6, 0x00, 0x00, 0x00));
-            _ocrTranslatedTextBrush = new SolidColorBrush(Colors.White);
+            _ocrTranslatedFillBrush = new SolidColorBrush(ColorHelper.FromArgb(0xF0, 0xFF, 0xFF, 0xFF));
+            _ocrTranslatedTextBrush = new SolidColorBrush(Colors.Black);
         }
 
         private void DrawBoxes(Grid wrapper, Canvas overlay, IEnumerable<BoundingBoxViewModel> boxes, int imgPixelW, int imgPixelH, bool isLeft)
         {
+            // [OCR 렌더링 구조]
+            // 1) 원본 OCR 박스를 현재 화면 좌표로 변환
+            // 2) 번역 표시 모드면 그룹화/배치/글자 크기 계산 후 Border 오버레이 생성
+            // 3) 일반 모드면 Rectangle 풀을 재사용해 원본 박스 렌더링
             var boxList = boxes as IList<BoundingBoxViewModel> ?? boxes.ToList();
 
             foreach (var child in overlay.Children)
@@ -710,6 +741,8 @@ namespace MangaViewer.Pages
             var fillBrush = isLeft ? _ocrLeftFillBrush! : _ocrRightFillBrush!;
             bool useTranslationOverlay = ViewModel?.IsTranslationActive == true
                 && boxList.Any(x => !string.IsNullOrWhiteSpace(x.TranslatedText));
+            bool isHybridTranslationOverlay = useTranslationOverlay
+                && OcrService.Instance.Backend == OcrService.OcrBackend.Hybrid;
 
             double scale = Math.Min(wrapperW / imgPixelW, wrapperH / imgPixelH);
             double displayW = imgPixelW * scale;
@@ -734,20 +767,25 @@ namespace MangaViewer.Pages
                 sourceRects.Add(new Rect(x, y, w, h));
             }
 
-            var overlayGroups = BuildOverlayGroups(boxList, sourceRects);
-
-            var placedTranslatedRects = new List<Rect>(boxList.Count);
+            // Hybrid 백엔드는 박스 단위 번역의 가독성이 좋아 병합을 하지 않고,
+            // 그 외 모드는 인접 박스를 병합해 번역 오버레이 수를 줄인다.
+            var overlayGroups = BuildOverlayGroups(boxList, sourceRects, mergeAdjacent: !isHybridTranslationOverlay);
 
             if (useTranslationOverlay)
             {
                 double preferredOverlayFontSize = TranslationSettingsService.Instance.OverlayFontSize;
+                double preferredOverlayBoxScale = TranslationSettingsService.Instance.OverlayBoxScale;
                 var groupRects = overlayGroups.Select(g => g.Rect).ToList();
                 for (int i = 0; i < overlayGroups.Count; i++)
                 {
                     var group = overlayGroups[i];
                     string overlayText = group.OverlayText;
-                    var placement = ComputeOverlayPlacement(i, overlayText, group.Rect, groupRects, placedTranslatedRects, imageBounds, preferredOverlayFontSize);
-                    var constrainedRect = ConstrainPlacementNearSource(placement.Rect, group.Rect, imageBounds);
+                    // Hybrid: 라인 수가 아닌 박스 크기 + 텍스트 길이 기반으로 폰트 계산.
+                    // Non-hybrid: 주변 밀도/영역을 고려해 오버레이 크기와 폰트를 계산.
+                    var placement = isHybridTranslationOverlay
+                        ? BuildHybridOverlayPlacement(group, overlayText, preferredOverlayFontSize, preferredOverlayBoxScale, imageBounds)
+                        : ComputeOverlayPlacement(i, overlayText, group.Rect, groupRects, imageBounds, preferredOverlayFontSize, preferredOverlayBoxScale);
+                    var constrainedRect = placement.Rect;
 
                     var border = new Border
                     {
@@ -777,7 +815,6 @@ namespace MangaViewer.Pages
                     Canvas.SetLeft(border, constrainedRect.X);
                     Canvas.SetTop(border, constrainedRect.Y);
                     overlay.Children.Add(border);
-                    placedTranslatedRects.Add(constrainedRect);
                 }
 
                 return;
@@ -801,10 +838,79 @@ namespace MangaViewer.Pages
             }
         }
 
+        // Hybrid 전용 배치: 원본 박스를 사용자 스케일로 확장/축소하고
+        // 텍스트 길이와 박스 면적을 기준으로 폰트를 산출한다.
+        private static OverlayPlacement BuildHybridOverlayPlacement(
+            (Rect Rect, string OverlayText, BoundingBoxViewModel TagBox) group,
+            string overlayText,
+            double preferredOverlayFontSize,
+            double preferredOverlayBoxScale,
+            Rect imageBounds)
+        {
+            var rect = ScaleRectAroundCenter(group.Rect, preferredOverlayBoxScale, imageBounds);
+            double fontSize = ComputeHybridOverlayFontSize(
+                overlayText,
+                preferredOverlayFontSize,
+                rect.Width,
+                rect.Height);
+
+            return new OverlayPlacement(rect, fontSize);
+        }
+
+        // Project rule: Hybrid 폰트 계산은 줄 수(line count)보다
+        // 번역 텍스트 길이 + 오버레이 박스 크기에 우선순위를 둔다.
+        private static double ComputeHybridOverlayFontSize(
+            string overlayText,
+            double preferredOverlayFontSize,
+            double overlayWidth,
+            double overlayHeight)
+        {
+            double basePreferred = Math.Clamp(preferredOverlayFontSize, 8, 28);
+            string normalized = string.IsNullOrWhiteSpace(overlayText)
+                ? " "
+                : overlayText.Replace("\r", string.Empty).Replace("\n", string.Empty).Trim();
+            int textLength = Math.Max(1, normalized.Length);
+
+            double width = Math.Max(32, overlayWidth);
+            double height = Math.Max(24, overlayHeight);
+            double area = width * height;
+
+            double fontFromArea = Math.Sqrt(area / textLength) * 1.05;
+            double targetCharsPerLine = Math.Clamp(Math.Sqrt(textLength) * 1.8, 6, 26);
+            double fontFromWidth = (width - 10) / Math.Max(1, targetCharsPerLine * 0.58);
+            double fitByHeight = Math.Max(8, overlayHeight * 0.72);
+
+            double raw = Math.Min(fontFromArea, fontFromWidth);
+            double preferredScale = basePreferred / 14.0;
+            double scaled = raw * preferredScale;
+            return Math.Clamp(scaled, 8, Math.Min(40, fitByHeight));
+        }
+
+        // 번역 오버레이 그룹 생성.
+        // - mergeAdjacent=false: 박스 1개 = 오버레이 1개
+        // - mergeAdjacent=true: 인접/겹침 박스를 연결요소로 병합해 오버레이 수를 줄임
         private static List<(Rect Rect, string OverlayText, BoundingBoxViewModel TagBox)> BuildOverlayGroups(
             IList<BoundingBoxViewModel> boxes,
-            IReadOnlyList<Rect> sourceRects)
+            IReadOnlyList<Rect> sourceRects,
+            bool mergeAdjacent)
         {
+            if (!mergeAdjacent)
+            {
+                var singleGroups = new List<(Rect Rect, string OverlayText, BoundingBoxViewModel TagBox)>(boxes.Count);
+                for (int i = 0; i < boxes.Count; i++)
+                {
+                    if (sourceRects[i].Width <= 0 || sourceRects[i].Height <= 0)
+                        continue;
+
+                    string overlayText = !string.IsNullOrWhiteSpace(boxes[i].TranslatedText)
+                        ? boxes[i].TranslatedText
+                        : boxes[i].Text;
+                    singleGroups.Add((sourceRects[i], overlayText, boxes[i]));
+                }
+
+                return singleGroups;
+            }
+
             var visited = new bool[boxes.Count];
             var groups = new List<(Rect Rect, string OverlayText, BoundingBoxViewModel TagBox)>();
 
@@ -881,14 +987,17 @@ namespace MangaViewer.Pages
             return new Rect(x, y, width, height);
         }
 
+        // 일반(Non-hybrid) 번역 오버레이 배치 계산.
+        // 주변 박스 밀도와 배치 영역을 이용해 폭/높이를 구하고,
+        // 텍스트 래핑을 고려해 폰트를 단계적으로 줄여가며 맞춘다.
         private static OverlayPlacement ComputeOverlayPlacement(
             int index,
             string text,
             Rect sourceRect,
             IReadOnlyList<Rect> allSourceRects,
-            IReadOnlyList<Rect> placedRects,
             Rect imageBounds,
-            double preferredFontSize)
+            double preferredFontSize,
+            double preferredScale)
         {
             string normalizedText = string.IsNullOrWhiteSpace(text) ? " " : text.Trim();
             int textLength = Math.Max(1, normalizedText.Replace("\r", string.Empty).Replace("\n", string.Empty).Length);
@@ -930,34 +1039,27 @@ namespace MangaViewer.Pages
             if (desiredH >= maxH - 0.5)
                 fontSize = Math.Max(8, fontSize - 0.6);
 
-            double gap = Math.Clamp(Math.Min(sourceRect.Width, sourceRect.Height) * 0.12 + 4, 4, 18);
+            double scale = Math.Clamp(preferredScale, 0.6, 2.2);
+            desiredW = Math.Min(imageBounds.Width, Math.Max(32, desiredW * scale));
+            desiredH = Math.Min(imageBounds.Height, Math.Max(24, desiredH * scale));
 
-            var candidates = new List<Rect>
-            {
-                new(sourceRect.X, sourceRect.Y, desiredW, desiredH),
-                new(sourceRect.X, sourceRect.Y - desiredH - gap, desiredW, desiredH),
-                new(sourceRect.X, sourceRect.Y + sourceRect.Height + gap, desiredW, desiredH),
-                new(sourceRect.X + sourceRect.Width + gap, sourceRect.Y, desiredW, desiredH),
-                new(sourceRect.X - desiredW - gap, sourceRect.Y, desiredW, desiredH),
-                new(sourceRect.X + sourceRect.Width - desiredW, sourceRect.Y - desiredH - gap, desiredW, desiredH),
-                new(sourceRect.X + sourceRect.Width - desiredW, sourceRect.Y + sourceRect.Height + gap, desiredW, desiredH)
-            };
+            var centeredRect = CreateCenteredRect(sourceRect, desiredW, desiredH);
+            return new OverlayPlacement(FitInside(centeredRect, imageBounds), fontSize);
+        }
 
-            Rect best = FitInside(candidates[0], imageBounds);
-            double bestScore = ScorePlacement(best, sourceRect, index, allSourceRects, placedRects, imageBounds);
+        private static Rect CreateCenteredRect(Rect sourceRect, double width, double height)
+        {
+            double centerX = sourceRect.X + sourceRect.Width / 2.0;
+            double centerY = sourceRect.Y + sourceRect.Height / 2.0;
+            return new Rect(centerX - width / 2.0, centerY - height / 2.0, width, height);
+        }
 
-            for (int i = 1; i < candidates.Count; i++)
-            {
-                var candidate = FitInside(candidates[i], imageBounds);
-                double score = ScorePlacement(candidate, sourceRect, index, allSourceRects, placedRects, imageBounds);
-                if (score < bestScore)
-                {
-                    best = candidate;
-                    bestScore = score;
-                }
-            }
-
-            return new OverlayPlacement(best, fontSize);
+        private static Rect ScaleRectAroundCenter(Rect sourceRect, double scale, Rect imageBounds)
+        {
+            double clampedScale = Math.Clamp(scale, 0.6, 2.2);
+            double width = Math.Min(imageBounds.Width, Math.Max(32, sourceRect.Width * clampedScale));
+            double height = Math.Min(imageBounds.Height, Math.Max(24, sourceRect.Height * clampedScale));
+            return FitInside(CreateCenteredRect(sourceRect, width, height), imageBounds);
         }
 
         private static Rect GetPlacementZoneBounds(Rect sourceRect, Rect imageBounds)
@@ -1122,6 +1224,7 @@ namespace MangaViewer.Pages
                 try
                 {
                     _clipboard.SetText(vm.Text);
+                    Debug.WriteLine($"[OCR][Copy] Original text: {vm.Text}");
                     r.StrokeThickness = 2;
                     _ = DispatcherQueue.TryEnqueue(async () =>
                     {
@@ -1143,6 +1246,7 @@ namespace MangaViewer.Pages
             try
             {
                 _clipboard.SetText(textToCopy);
+                Debug.WriteLine($"[OCR][Copy] Original text: {vm.Text}");
                 border.BorderThickness = new Thickness(2);
                 _ = DispatcherQueue.TryEnqueue(async () =>
                 {

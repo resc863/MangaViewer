@@ -251,5 +251,15 @@
                 </Grid>
             </SplitView.Content>
         </SplitView>
+
+        <InfoBar
+            IsOpen="{Binding IsInfoBarOpen, Mode=TwoWay}"
+            Message="{Binding OcrStatusMessage}"
+            Severity="{Binding OcrSeverity}"
+            IsClosable="True"
+            HorizontalAlignment="Right"
+            VerticalAlignment="Bottom"
+            Margin="0,0,16,16"
+            MaxWidth="460" />
     </Grid>
 </Page>

@@ -23,6 +23,22 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
     - Message payload: `TextContent("Text Recognition")` + `DataContent(imageBytes, mimeType)`
     - Configurable endpoint and model
     - Translation toggle: run translation immediately after Ollama OCR completes
+  - Hybrid OCR (ONNX + Ollama crop OCR)
+    - Layout detection: ONNX `PP-DocLayoutV3` detects reading regions (`DocLayoutBox`)
+    - Recognition: each detected region is losslessly cropped and recognized with Ollama (`HybridOllamaModel`)
+    - Parallelism: crop OCR runs with throttled concurrency (`HybridTextExtractionParallelism`)
+    - Result: read-order-preserving `BoundingBoxViewModel` list + joined OCR text
+    - Cache mode is separated by key suffix (`mode=hybrid` vs `mode=vlm`)
+  - Overlay rendering structure (`MangaReaderPage`)
+    - `RedrawAllOcr` → `RedrawOcr` → `DrawBoxes` pipeline
+    - Normal mode: draw original OCR boxes (`Rectangle`) with object-pool reuse
+    - Translation mode: build overlay groups and render text `Border` overlays
+    - Grouping strategy:
+      - Non-hybrid backend: merge adjacent/overlapping boxes for readability
+      - Hybrid backend: keep box-by-box overlays (no merge)
+    - Hybrid font sizing rule:
+      - Prioritizes translated text length + overlay box size
+      - Does not depend on line count as a primary factor
 
 - Translation (OCR result translation)
   - Translates Ollama OCR output to Korean via LLM API
@@ -293,6 +309,11 @@ string path = result?.Path;
 
 See `LICENSE.txt`.
 
+### Third-party model license
+
+- `PP-DocLayoutV3` model is distributed under the **Apache License 2.0**.
+- License: `https://www.apache.org/licenses/LICENSE-2.0`
+
 ---
 
 # Developer Guide
@@ -322,6 +343,40 @@ Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeho
 
 ### 4) OCR
 `RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` (Windows) or `OcrService.GetOllamaTextAsync` (Ollama) → update `BoundingBoxViewModel` collections or text properties.
+
+### 4-1) OCR overlay render pipeline (new)
+`RedrawAllOcr` triggers all active OCR canvases (single/left/right). For each canvas:
+1. `RedrawOcr`: determines the best matching base size for current image orientation.
+2. `DrawBoxes`: converts OCR source coordinates to viewport coordinates.
+3. Rendering branch:
+   - Normal OCR: pooled `Rectangle` overlays (tap-to-copy original text).
+   - Translation OCR: grouped `Border` overlays with translated text and auto-fit font sizing.
+
+Placement/sizing helpers:
+- `BuildOverlayGroups`: adjacency-based connected-component grouping for non-hybrid backends.
+- `ComputeOverlayPlacement`: density-aware non-hybrid placement and wrap-aware font fitting.
+- `BuildHybridOverlayPlacement` / `ComputeHybridOverlayFontSize`: hybrid placement and size based mainly on box size and translated text length.
+
+### 4-2) Hybrid OCR internals (ONNX + crop OCR)
+- Entry: `OcrService.GetHybridOcrAsync(...)`
+- Model file:
+  - Download URL: `https://huggingface.co/alex-dinh/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx`
+  - Target path: `AppContext.BaseDirectory/onnx/PP-DocLayoutV3.onnx` (resolved by `OcrService.GetDocLayoutModelPath()`)
+  - Installed check: `OcrService.IsDocLayoutModelInstalled()`
+  - Download action: Settings page button (`Download PP-DocLayoutV3 model`) calls `OcrService.DownloadDocLayoutModelAsync(...)`
+- Pipeline:
+  1. Load original bytes (`TryGetHybridSourceImageAsync`)
+  2. Detect layout regions (`RunDocLayoutDetectionAsync`)
+  3. Build ordered UI boxes (`BuildLayoutBoundingBoxes`)
+  4. Crop and OCR each region in parallel (`RecognizeLayoutBoxesWithGlmOcrAsync`)
+  5. Compose final response (`BuildOllamaOcrResponse`)
+- Coordinate handling:
+  - Structured VLM JSON is parsed by `ParseStructuredOllamaResponse`
+  - `bbox_2d` is normalized to original image coordinates via `ScaleFromOllamaSpace`
+  - Smart-resize heuristic (`TryComputeSmartResizeDimensions`) is used when coordinate space inference selects `AssumedSmartResize`
+- UX behavior:
+  - If the model is missing, a warning popup/status message is shown with download guidance.
+  - If the model is already installed, Hybrid OCR progress/completion does not open the popup.
 
 ### 5) Translation
 `IsTranslationActive = true` (or Ollama OCR completes with translation toggle enabled) → `MangaViewModel.RunTranslationAsync` → `TranslateTextAsync(text)` → instantiates `IChatClient` per `TranslationSettingsService.Provider` (`GoogleGenAIChatClient` / `OpenAIChatClient` / `AnthropicChatClient`) → `GetResponseAsync(messages)` with Korean translation prompt → result cached by `"{provider}|{model}|{text}"` key → `TranslatedLeftOcrText` / `TranslatedRightOcrText` updated.

@@ -49,7 +49,7 @@ namespace MangaViewer.ViewModels
         private CancellationTokenSource? _pageLoadCts;
         private int _pageLoadVersion;
 
-        private readonly ConcurrentDictionary<string, string> _translationCache = new(StringComparer.Ordinal);
+        private static readonly ConcurrentDictionary<string, string> _translationCache = new(StringComparer.Ordinal);
         private readonly Dictionary<int, bool> _pageOcrStates = new();
         private readonly Dictionary<int, bool> _pageTranslationStates = new();
         private static readonly TimeSpan TranslationPerSideTimeout = TimeSpan.FromSeconds(120);
@@ -97,7 +97,7 @@ namespace MangaViewer.ViewModels
                     }
                     else
                     {
-                        _forceRefreshOllamaOcrOnNextRun = _ocrService.Backend == OcrService.OcrBackend.Ollama && IsOllamaOcrTextVisible;
+                        _forceRefreshOllamaOcrOnNextRun = _ocrService.Backend == OcrService.OcrBackend.Vlm && IsOllamaOcrTextVisible;
                         CancelOcr();
                         ClearOcr();
                     }
@@ -227,7 +227,7 @@ namespace MangaViewer.ViewModels
         private string _rightOcrText = string.Empty;
         public string LeftOcrText { get => _leftOcrText; private set => SetProperty(ref _leftOcrText, value); }
         public string RightOcrText { get => _rightOcrText; private set => SetProperty(ref _rightOcrText, value); }
-        public bool IsOllamaMode => _ocrService.Backend == OcrService.OcrBackend.Ollama;
+        public bool IsOllamaMode => _ocrService.Backend == OcrService.OcrBackend.Vlm;
         public bool IsOllamaOcrTextVisible => IsOllamaMode
             && _leftOcrBoxes.Count == 0
             && _rightOcrBoxes.Count == 0
@@ -759,14 +759,18 @@ namespace MangaViewer.ViewModels
             try
             {
                 ClearOcr();
-                if (_ocrService.Backend == OcrService.OcrBackend.Ollama)
+                bool forceRefresh = _forceRefreshOllamaOcrOnNextRun;
+                _forceRefreshOllamaOcrOnNextRun = false;
+                if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
                 {
-                    bool forceRefresh = _forceRefreshOllamaOcrOnNextRun;
-                    _forceRefreshOllamaOcrOnNextRun = false;
-                    await RunOllamaOcrAsync(paths, token, localVersion, forceRefresh);
+                    await RunHybridOcrAsync(paths, token, localVersion, forceRefresh);
                 }
                 else
-                    await RunWinRtOcrAsync(paths, token, localVersion);
+                {
+                    await RunOllamaOcrAsync(paths, token, localVersion, forceRefresh);
+                }
+
+                await EnsureVisiblePageOcrCachedAsync(paths, token, localVersion, forceRefresh).ConfigureAwait(true);
 
                 StartAdjacentPagePrefetch();
                 if (IsTranslationActive)
@@ -870,11 +874,152 @@ namespace MangaViewer.ViewModels
             SetOcrStatus($"Ollama OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, true);
         }
 
+        private async Task RunHybridOcrAsync(List<string> paths, CancellationToken token, int localVersion, bool forceRefresh)
+        {
+            if (!_ocrService.IsDocLayoutModelInstalled())
+            {
+                SetOcrStatus("Hybrid OCR 모델이 설치되지 않았습니다. 설정 > OCR에서 'Download PP-DocLayoutV3 model' 버튼으로 설치하세요.", InfoBarSeverity.Warning, true);
+                return;
+            }
+
+            SetOcrStatus("Hybrid OCR 실행 중...", InfoBarSeverity.Informational, false);
+            int totalBoxes = 0;
+
+            var syncContext = SynchronizationContext.Current;
+            var previewPublished = new bool[2];
+
+            void PublishPreview(int pageIndex, IReadOnlyList<BoundingBoxViewModel> boxes)
+            {
+                if (boxes.Count == 0) return;
+
+                void Apply()
+                {
+                    if (token.IsCancellationRequested || localVersion != _ocrVersion)
+                        return;
+
+                    var target = pageIndex == 0 ? _leftOcrBoxes : _rightOcrBoxes;
+                    if (target.Count > 0)
+                        return;
+
+                    foreach (var box in boxes)
+                        target.Add(box);
+
+                    previewPublished[pageIndex] = true;
+                    RaiseOllamaOcrTextVisibilityChanged();
+                    PageViewChanged?.Invoke(this, EventArgs.Empty);
+                }
+
+                if (syncContext != null)
+                    syncContext.Post(_ => Apply(), null);
+                else
+                    Apply();
+            }
+
+            var pending = new List<(int PageIndex, Task<OcrService.OllamaOcrResponse> Task)>();
+            if (paths.Count > 0 && !string.IsNullOrWhiteSpace(paths[0]))
+                pending.Add((0, _ocrService.GetHybridOcrAsync(paths[0], token, forceRefresh, boxes => PublishPreview(0, boxes))));
+            if (paths.Count > 1 && !string.IsNullOrWhiteSpace(paths[1]))
+                pending.Add((1, _ocrService.GetHybridOcrAsync(paths[1], token, forceRefresh, boxes => PublishPreview(1, boxes))));
+
+            int totalPages = pending.Count;
+            int completedPages = 0;
+
+            while (pending.Count > 0)
+            {
+                ThrowIfOcrRunStale(localVersion, token);
+
+                var completedTask = await Task.WhenAny(pending.Select(x => x.Task)).ConfigureAwait(true);
+                int pendingIndex = pending.FindIndex(x => ReferenceEquals(x.Task, completedTask));
+                if (pendingIndex < 0)
+                    continue;
+
+                var (pageIndex, task) = pending[pendingIndex];
+                pending.RemoveAt(pendingIndex);
+
+                var result = await task.ConfigureAwait(true);
+                ThrowIfOcrRunStale(localVersion, token);
+
+                if (pageIndex == 0)
+                {
+                    LeftOcrText = result.Text;
+                    if (!previewPublished[0])
+                    {
+                        foreach (var box in result.Boxes)
+                            _leftOcrBoxes.Add(box);
+                    }
+                }
+                else
+                {
+                    RightOcrText = result.Text;
+                    if (!previewPublished[1])
+                    {
+                        foreach (var box in result.Boxes)
+                            _rightOcrBoxes.Add(box);
+                    }
+                }
+
+                totalBoxes += result.Boxes.Count;
+                completedPages++;
+                RaiseOllamaOcrTextVisibilityChanged();
+                PageViewChanged?.Invoke(this, EventArgs.Empty);
+
+                if (completedPages < totalPages)
+                    SetOcrStatus($"Hybrid OCR 실행 중... ({completedPages}/{totalPages})", InfoBarSeverity.Informational, false);
+            }
+
+            ThrowIfOcrRunStale(localVersion, token);
+            _forceRefreshOllamaOcrOnNextRun = false;
+            RaiseOllamaOcrTextVisibilityChanged();
+            SetOcrStatus($"Hybrid OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, false);
+        }
+
         private void ThrowIfOcrRunStale(int localVersion, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
             if (localVersion != _ocrVersion)
                 throw new OperationCanceledException();
+        }
+
+        private async Task EnsureVisiblePageOcrCachedAsync(IReadOnlyList<string> visiblePaths, CancellationToken token, int localVersion, bool forceRefresh)
+        {
+            for (int i = 0; i < visiblePaths.Count; i++)
+            {
+                string path = visiblePaths[i];
+                if (string.IsNullOrWhiteSpace(path))
+                    continue;
+
+                if (_ocrService.HasCachedCurrentBackendOcr(path))
+                    continue;
+
+                ThrowIfOcrRunStale(localVersion, token);
+                var ensured = _ocrService.Backend == OcrService.OcrBackend.Hybrid
+                    ? await _ocrService.GetHybridOcrAsync(path, token, forceRefresh).ConfigureAwait(true)
+                    : await _ocrService.GetOllamaOcrAsync(path, token, forceRefresh).ConfigureAwait(true);
+                ThrowIfOcrRunStale(localVersion, token);
+
+                bool isLeft = i == 0;
+                bool hasCurrentSideData = isLeft
+                    ? (_leftOcrBoxes.Count > 0 || !string.IsNullOrWhiteSpace(LeftOcrText))
+                    : (_rightOcrBoxes.Count > 0 || !string.IsNullOrWhiteSpace(RightOcrText));
+                if (hasCurrentSideData)
+                    continue;
+
+                if (isLeft)
+                {
+                    LeftOcrText = ensured.Text;
+                    foreach (var box in ensured.Boxes)
+                        _leftOcrBoxes.Add(box);
+                }
+                else
+                {
+                    RightOcrText = ensured.Text;
+                    foreach (var box in ensured.Boxes)
+                        _rightOcrBoxes.Add(box);
+                }
+            }
+
+            RaiseOllamaOcrTextVisibilityChanged();
+            PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private async Task RunTranslationAsync()
@@ -1036,8 +1181,9 @@ namespace MangaViewer.ViewModels
             {
                 new ChatMessage(ChatRole.System, boxSystemPrompt),
                 new ChatMessage(ChatRole.User,
-                    $"Translate each OCR box into {targetLanguage} using page-level OCR context and box-level OCR text. " +
-                    "Preserve speaking style and tone. Return JSON only in this schema: " +
+                    $"Use page_text as full-page context, but translate each box independently into {targetLanguage}. " +
+                    "For every output item, text must be the translation of the matching input box text with the same index. " +
+                    "Do not merge boxes, skip boxes, or output full-page summaries. Preserve speaking style and tone. Return JSON only in this schema: " +
                     "{\"translations\":[{\"index\":0,\"text\":\"...\"}]}. " +
                     "Use the exact same index values from input. " +
                     "Do not add markdown, comments, or extra keys.\nInput JSON:\n" + jsonPayload)
@@ -1324,13 +1470,13 @@ namespace MangaViewer.ViewModels
                     foreach (var path in ocrPaths)
                     {
                         token.ThrowIfCancellationRequested();
-                        if (_ocrService.Backend == OcrService.OcrBackend.Ollama)
-                            await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
+                        if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
+                            await _ocrService.GetHybridOcrAsync(path, token).ConfigureAwait(false);
                         else
-                            await _ocrService.GetOcrAsync(path, token).ConfigureAwait(false);
+                            await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
                     }
 
-                    if (_ocrService.Backend != OcrService.OcrBackend.Ollama || translationPaths.Count == 0)
+                    if (translationPaths.Count == 0)
                         return;
 
                     foreach (var path in translationPaths)

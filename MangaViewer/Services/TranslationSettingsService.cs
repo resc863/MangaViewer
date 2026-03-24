@@ -191,5 +191,16 @@ namespace MangaViewer.Services
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
+
+        public double OverlayBoxScale
+        {
+            get => Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScale", 1.0), 0.6, 2.2);
+            set
+            {
+                double clamped = Math.Clamp(value, 0.6, 2.2);
+                SettingsProvider.Set("TranslationOverlayBoxScale", clamped);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
     }
 }

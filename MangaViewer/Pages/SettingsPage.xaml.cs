@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Media; // VisualTreeHelper
 using MangaViewer.Services.Thumbnails; // moved thumbnail services
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace MangaViewer.Pages
@@ -33,6 +34,14 @@ namespace MangaViewer.Pages
         private ComboBox _ocrThinkingLevelCombo = null!;
         private ToggleSwitch _ocrStructuredOutputToggle = null!;
         private NumberBox _ocrOllamaTemperatureBox = null!;
+        private NumberBox _hybridTextParallelBox = null!;
+        private Button _docLayoutModelDownloadButton = null!;
+        private TextBlock _docLayoutModelStatusText = null!;
+        private ComboBox _onnxEpModeCombo = null!;
+        private TextBox _onnxEpManualListBox = null!;
+        private Button _onnxEpRegisterNowButton = null!;
+        private TextBlock _onnxEpStatusText = null!;
+        private TextBlock _onnxEpCompatibleListText = null!;
         private readonly Dictionary<string, bool> _ocrModelThinkingSupport = new(StringComparer.OrdinalIgnoreCase);
         private ToggleSwitch _ocrAdjacentPrefetchToggle = null!;
         private NumberBox _ocrAdjacentPrefetchCountBox = null!;
@@ -40,6 +49,8 @@ namespace MangaViewer.Pages
         private NumberBox _translationAdjacentPrefetchCountBox = null!;
         private Slider _translationOverlayFontSlider = null!;
         private TextBlock _translationOverlayFontValue = null!;
+        private Slider _translationOverlayBoxScaleSlider = null!;
+        private TextBlock _translationOverlayBoxScaleValue = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
@@ -99,6 +110,14 @@ namespace MangaViewer.Pages
                 _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
             if (Math.Abs(_ocrOllamaTemperatureBox.Value - _ocr.OllamaTemperature) > 0.0001)
                 _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+            if (Math.Abs(_hybridTextParallelBox.Value - _ocr.HybridTextExtractionParallelism) > 0.001)
+                _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            if (_onnxEpModeCombo.SelectedIndex != (int)_ocr.OnnxExecutionProviderMode)
+                _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
+            if (!string.Equals(_onnxEpManualListBox.Text, _ocr.OnnxExecutionProviderManualList, StringComparison.Ordinal))
+                _onnxEpManualListBox.Text = _ocr.OnnxExecutionProviderManualList;
+            _onnxEpManualListBox.IsEnabled = _ocr.OnnxExecutionProviderMode == OcrService.OnnxEpRegistrationMode.Manual;
+            _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
 
             var thinkingItem = _ocrThinkingLevelCombo.Items
                 .OfType<ComboBoxItem>()
@@ -121,6 +140,7 @@ namespace MangaViewer.Pages
 
             UpdateOcrThinkingComboAvailability();
             UpdateOllamaSettingsVisibility();
+            UpdateOcrGroupingAvailability();
         }
 
         private void BuildUi()
@@ -151,8 +171,8 @@ namespace MangaViewer.Pages
             stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _ocrBackendCombo = new ComboBox { Width = 220 };
-            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Windows 내장 OCR", Tag = "builtin" });
-            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Ollama", Tag = "ollama" });
+            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Hybrid (DocLayout + glm-ocr)", Tag = "hybrid" });
+            _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "VLM (Full image)", Tag = "vlm" });
             _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
             stack.Children.Add(Row("OCR 엔진:", _ocrBackendCombo));
 
@@ -161,7 +181,7 @@ namespace MangaViewer.Pages
             _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
             _ollamaSettingsPanel.Children.Add(Row("Ollama 주소:", _ollamaEndpointBox));
 
-            _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "Vision+Tool 모델 선택" };
+            _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "VLM model" };
             _ocrOllamaModelCombo.SelectionChanged += OcrOllamaModelCombo_SelectionChanged;
             var fetchOcrOllamaModelsBtn = new Button { Content = "모델 불러오기", Margin = new Thickness(8, 0, 0, 0) };
             _ocrOllamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
@@ -191,6 +211,62 @@ namespace MangaViewer.Pages
             };
             _ocrOllamaTemperatureBox.ValueChanged += OcrOllamaTemperatureBox_ValueChanged;
             _ollamaSettingsPanel.Children.Add(Row("Temperature:", _ocrOllamaTemperatureBox));
+
+            _hybridTextParallelBox = new NumberBox
+            {
+                Width = 140,
+                Minimum = 1,
+                Maximum = 8,
+                SmallChange = 1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _hybridTextParallelBox.ValueChanged += HybridTextParallelBox_ValueChanged;
+            _ollamaSettingsPanel.Children.Add(Row("Hybrid text parallel:", _hybridTextParallelBox));
+
+            _docLayoutModelDownloadButton = new Button { Content = "Download PP-DocLayoutV3 model" };
+            _docLayoutModelDownloadButton.Click += DocLayoutModelDownloadButton_Click;
+            _docLayoutModelStatusText = new TextBlock
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0),
+                Opacity = 0.7,
+                FontSize = 12
+            };
+            var docLayoutRow = new StackPanel { Orientation = Orientation.Horizontal };
+            docLayoutRow.Children.Add(_docLayoutModelDownloadButton);
+            docLayoutRow.Children.Add(_docLayoutModelStatusText);
+            _ollamaSettingsPanel.Children.Add(Row("DocLayout model:", docLayoutRow));
+
+            _onnxEpModeCombo = new ComboBox { Width = 180 };
+            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = "Auto", Tag = "auto" });
+            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = "Manual", Tag = "manual" });
+            _onnxEpModeCombo.SelectionChanged += OnnxEpModeCombo_SelectionChanged;
+            _ollamaSettingsPanel.Children.Add(Row("ONNX EP mode:", _onnxEpModeCombo));
+
+            _onnxEpManualListBox = new TextBox { Width = 300, PlaceholderText = "QNN, DML ... (optional)" };
+            _onnxEpManualListBox.LostFocus += OnnxEpManualListBox_LostFocus;
+            _ollamaSettingsPanel.Children.Add(Row("Manual EP list:", _onnxEpManualListBox));
+
+            _onnxEpRegisterNowButton = new Button { Content = "EP register now" };
+            var onnxEpRefreshCompatibleButton = new Button { Content = "Get compatible EPs", Margin = new Thickness(8, 0, 0, 0) };
+            onnxEpRefreshCompatibleButton.Click += OnnxEpRefreshCompatibleButton_Click;
+            _onnxEpRegisterNowButton.Click += OnnxEpRegisterNowButton_Click;
+            _onnxEpStatusText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.7, FontSize = 12 };
+            var epRow = new StackPanel { Orientation = Orientation.Horizontal };
+            epRow.Children.Add(_onnxEpRegisterNowButton);
+            epRow.Children.Add(onnxEpRefreshCompatibleButton);
+            epRow.Children.Add(_onnxEpStatusText);
+            _ollamaSettingsPanel.Children.Add(Row("Execution Provider:", epRow));
+
+            _onnxEpCompatibleListText = new TextBlock
+            {
+                Text = string.Empty,
+                TextWrapping = TextWrapping.Wrap,
+                MaxWidth = 560,
+                Opacity = 0.8,
+                FontSize = 12
+            };
+            _ollamaSettingsPanel.Children.Add(Row("Compatible EPs:", _onnxEpCompatibleListText));
 
             if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
             {
@@ -599,6 +675,24 @@ namespace MangaViewer.Pages
             translationOverlayFontRow.Children.Add(_translationOverlayFontSlider);
             translationOverlayFontRow.Children.Add(_translationOverlayFontValue);
             stack.Children.Add(translationOverlayFontRow);
+
+            _translationOverlayBoxScaleSlider = new Slider
+            {
+                Minimum = 0.6,
+                Maximum = 2.2,
+                Width = 220,
+                StepFrequency = 0.05,
+                Value = translationSettings.OverlayBoxScale
+            };
+            _translationOverlayBoxScaleSlider.ValueChanged += TranslationOverlayBoxScaleSlider_ValueChanged;
+            _translationOverlayBoxScaleValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateTranslationOverlayBoxScaleValue();
+
+            var translationOverlayBoxScaleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            translationOverlayBoxScaleRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayBoxScaleRow.Children.Add(_translationOverlayBoxScaleSlider);
+            translationOverlayBoxScaleRow.Children.Add(_translationOverlayBoxScaleValue);
+            stack.Children.Add(translationOverlayBoxScaleRow);
 
             var thinkingLevelCombo = new ComboBox { Width = 160 };
             thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
@@ -1030,6 +1124,13 @@ namespace MangaViewer.Pages
             _ollamaEndpointBox.Text = _ocr.OllamaEndpoint;
             _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
             _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+            _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
+            _onnxEpManualListBox.Text = _ocr.OnnxExecutionProviderManualList;
+            _onnxEpManualListBox.IsEnabled = _ocr.OnnxExecutionProviderMode == OcrService.OnnxEpRegistrationMode.Manual;
+            _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
+            _onnxEpCompatibleListText.Text = string.Empty;
+            UpdateDocLayoutModelStatus();
 
             var thinkingItem = _ocrThinkingLevelCombo.Items
                 .OfType<ComboBoxItem>()
@@ -1060,8 +1161,11 @@ namespace MangaViewer.Pages
             _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
             _translationOverlayFontSlider.Value = translationSettings.OverlayFontSize;
             UpdateTranslationOverlayFontValue();
+            _translationOverlayBoxScaleSlider.Value = translationSettings.OverlayBoxScale;
+            UpdateTranslationOverlayBoxScaleValue();
             UpdateOcrThinkingComboAvailability();
             UpdateOllamaSettingsVisibility();
+            UpdateOcrGroupingAvailability();
             RefreshCacheView();
         }
 
@@ -1069,8 +1173,34 @@ namespace MangaViewer.Pages
         {
             if (_ocrBackendCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
             {
-                _ocr.SetBackend(tag == "ollama" ? OcrService.OcrBackend.Ollama : OcrService.OcrBackend.WindowsBuiltIn);
+                _ocr.SetBackend(tag == "vlm" ? OcrService.OcrBackend.Vlm : OcrService.OcrBackend.Hybrid);
                 UpdateOllamaSettingsVisibility();
+                UpdateOcrGroupingAvailability();
+            }
+        }
+
+        private void OnnxEpRefreshCompatibleButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button button)
+                return;
+
+            button.IsEnabled = false;
+            _onnxEpStatusText.Text = "Enumerating...";
+            try
+            {
+                var providers = _ocr.GetCompatibleOnnxExecutionProviders();
+                _onnxEpCompatibleListText.Text = providers.Count == 0
+                    ? "(none)"
+                    : string.Join(", ", providers.Select(p => $"{p.Name} ({p.ReadyState})"));
+                _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
+            }
+            catch (Exception ex)
+            {
+                _onnxEpStatusText.Text = "Failed: " + ex.Message;
+            }
+            finally
+            {
+                button.IsEnabled = true;
             }
         }
 
@@ -1098,6 +1228,7 @@ namespace MangaViewer.Pages
         private void OcrStructuredOutputToggle_Toggled(object sender, RoutedEventArgs e)
         {
             _ocr.SetOllamaStructuredOutputEnabled(_ocrStructuredOutputToggle.IsOn);
+            UpdateOcrGroupingAvailability();
         }
 
         private void OcrOllamaTemperatureBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -1106,8 +1237,87 @@ namespace MangaViewer.Pages
             _ocr.SetOllamaTemperature(sender.Value);
         }
 
+        private void HybridTextParallelBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+        {
+            if (double.IsNaN(sender.Value)) return;
+            int value = (int)Math.Clamp(Math.Round(sender.Value), 1, 8);
+            if (Math.Abs(sender.Value - value) > 0.001)
+                sender.Value = value;
+            _ocr.SetHybridTextExtractionParallelism(value);
+        }
+
+        private async void DocLayoutModelDownloadButton_Click(object sender, RoutedEventArgs e)
+        {
+            _docLayoutModelDownloadButton.IsEnabled = false;
+            _docLayoutModelStatusText.Text = "Downloading...";
+
+            try
+            {
+                await _ocr.DownloadDocLayoutModelAsync(CancellationToken.None);
+                UpdateDocLayoutModelStatus();
+            }
+            catch (Exception ex)
+            {
+                _docLayoutModelStatusText.Text = "Download failed: " + ex.Message;
+            }
+            finally
+            {
+                _docLayoutModelDownloadButton.IsEnabled = true;
+            }
+        }
+
+        private void UpdateDocLayoutModelStatus()
+        {
+            bool installed = _ocr.IsDocLayoutModelInstalled();
+            _docLayoutModelStatusText.Text = installed
+                ? "Installed"
+                : "Not installed (required for Hybrid OCR).";
+        }
+
+        private void OnnxEpModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_onnxEpModeCombo.SelectedIndex < 0) return;
+            var mode = _onnxEpModeCombo.SelectedIndex == (int)OcrService.OnnxEpRegistrationMode.Manual
+                ? OcrService.OnnxEpRegistrationMode.Manual
+                : OcrService.OnnxEpRegistrationMode.Auto;
+            _ocr.SetOnnxExecutionProviderMode(mode);
+            _onnxEpManualListBox.IsEnabled = mode == OcrService.OnnxEpRegistrationMode.Manual;
+            _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
+        }
+
+        private void OnnxEpManualListBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            _ocr.SetOnnxExecutionProviderManualList(_onnxEpManualListBox.Text);
+        }
+
+        private async void OnnxEpRegisterNowButton_Click(object sender, RoutedEventArgs e)
+        {
+            _onnxEpRegisterNowButton.IsEnabled = false;
+            _onnxEpStatusText.Text = "Registering...";
+            try
+            {
+                await _ocr.EnsureOnnxExecutionProvidersReadyAsync(CancellationToken.None, force: true);
+                _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
+            }
+            catch (Exception ex)
+            {
+                _onnxEpStatusText.Text = "Failed: " + ex.Message;
+            }
+            finally
+            {
+                _onnxEpRegisterNowButton.IsEnabled = true;
+            }
+        }
+
         private void UpdateOcrThinkingComboAvailability()
         {
+            if (_ocr.Backend == OcrService.OcrBackend.Hybrid)
+            {
+                _ocrThinkingLevelCombo.IsEnabled = false;
+                _ocrOllamaModelStatus.Text = "Hybrid mode uses fixed model: glm-ocr:latest";
+                return;
+            }
+
             if (_ocrOllamaModelCombo.SelectedItem is ComboBoxItem item
                 && item.Tag is string model
                 && _ocrModelThinkingSupport.TryGetValue(model, out bool supportsThinking))
@@ -1170,9 +1380,21 @@ namespace MangaViewer.Pages
 
         private void UpdateOllamaSettingsVisibility()
         {
-            _ollamaSettingsPanel.Visibility = _ocr.Backend == OcrService.OcrBackend.Ollama
-                ? Visibility.Visible
-                : Visibility.Collapsed;
+            _ollamaSettingsPanel.Visibility = Visibility.Visible;
+
+            bool isVlm = _ocr.Backend == OcrService.OcrBackend.Vlm;
+            bool isHybrid = _ocr.Backend == OcrService.OcrBackend.Hybrid;
+            _ocrOllamaModelCombo.IsEnabled = isVlm;
+            _ocrStructuredOutputToggle.IsEnabled = isVlm;
+            _ocrOllamaTemperatureBox.IsEnabled = isVlm;
+            _hybridTextParallelBox.IsEnabled = isHybrid;
+        }
+
+        private void UpdateOcrGroupingAvailability()
+        {
+            _groupCombo.IsEnabled = false;
+            _writingCombo.IsEnabled = false;
+            _langCombo.IsEnabled = false;
         }
 
         private void LangCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1205,7 +1427,16 @@ namespace MangaViewer.Pages
             UpdateTranslationOverlayFontValue();
         }
 
+        private void TranslationOverlayBoxScaleSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            TranslationSettingsService.Instance.OverlayBoxScale = e.NewValue;
+            UpdateTranslationOverlayBoxScaleValue();
+        }
+
         private void UpdateTranslationOverlayFontValue()
             => _translationOverlayFontValue.Text = Math.Round(_translationOverlayFontSlider.Value).ToString();
+
+        private void UpdateTranslationOverlayBoxScaleValue()
+            => _translationOverlayBoxScaleValue.Text = $"x{_translationOverlayBoxScaleSlider.Value:F2}";
     }
 }

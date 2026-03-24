@@ -1,5 +1,7 @@
 using MangaViewer.Helpers;
 using Windows.Foundation;
+using System;
+using System.Linq;
 using System.Diagnostics;
 
 namespace MangaViewer.ViewModels
@@ -12,10 +14,18 @@ namespace MangaViewer.ViewModels
     {
         private string _text = string.Empty;
         private string _translatedText = string.Empty;
+        private double _estimatedOcrFontSize;
         public string Text
         {
             get => _text;
-            set => SetProperty(ref _text, value);
+            set
+            {
+                if (SetProperty(ref _text, value))
+                {
+                    RecalculateEstimatedOcrFontSize();
+                    OnPropertyChanged(nameof(EstimatedOcrFontSize));
+                }
+            }
         }
 
         public string TranslatedText
@@ -67,6 +77,8 @@ namespace MangaViewer.ViewModels
         public double OriginalW => OriginalBoundingBox.Width;
         public double OriginalH => OriginalBoundingBox.Height;
 
+        public double EstimatedOcrFontSize => _estimatedOcrFontSize;
+
         public BoundingBoxViewModel(string text, Rect boundingBox, int imagePixelWidth, int imagePixelHeight)
         {
             _text = text;
@@ -85,6 +97,30 @@ namespace MangaViewer.ViewModels
             {
                 NormalizedRect = new Rect();
             }
+
+            RecalculateEstimatedOcrFontSize();
+        }
+
+        private void RecalculateEstimatedOcrFontSize()
+        {
+            double heightBased = Math.Max(1, OriginalBoundingBox.Height) * 0.62;
+
+            string normalized = (_text ?? string.Empty).Replace("\r", string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(normalized))
+            {
+                _estimatedOcrFontSize = Math.Clamp(heightBased, 6, 96);
+                return;
+            }
+
+            string[] lines = normalized.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            int lineCount = Math.Max(1, lines.Length);
+            int maxLineLength = Math.Max(1, lines.Select(l => l.Trim().Length).DefaultIfEmpty(1).Max());
+
+            double lineHeightBased = Math.Max(1, OriginalBoundingBox.Height / lineCount) * 0.86;
+            double widthPerChar = Math.Max(1, OriginalBoundingBox.Width / maxLineLength);
+            double widthBased = widthPerChar / 0.58;
+
+            _estimatedOcrFontSize = Math.Clamp(Math.Min(lineHeightBased, widthBased), 6, 96);
         }
 
         /// <summary>

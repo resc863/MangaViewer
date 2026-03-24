@@ -11,6 +11,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using MangaViewer.ViewModels;
 using Microsoft.Extensions.AI;
+using Microsoft.ML.OnnxRuntime;
+using Microsoft.Windows.AI.MachineLearning;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
 using Windows.Media.Ocr;
@@ -46,11 +48,16 @@ namespace MangaViewer.Services
     /// <summary>
     /// OcrService - Provides OCR processing for images with configurable language, grouping, and paragraph detection.
     /// </summary>
-    public class OcrService
+    public partial class OcrService
     {
         private const double OllamaAssumedProcessingSquareSize = 1000.0;
         private const int OllamaOcrContextLength = 8192;
+        private const int DocLayoutInputSize = 800;
+        private const float DocLayoutScoreThreshold = 0.5f;
+        private const string DocLayoutModelRelativePath = "onnx/PP-DocLayoutV3.onnx";
+        private const string HybridOllamaModel = "glm-ocr:latest";
         private static readonly TimeSpan OllamaRequestTimeout = TimeSpan.FromSeconds(180);
+        private static readonly TimeSpan OllamaThinkingRequestTimeout = TimeSpan.FromMinutes(10);
 
         public sealed class OllamaOcrResponse
         {
@@ -65,21 +72,68 @@ namespace MangaViewer.Services
             public bool Thinking { get; init; }
         }
 
+        public sealed class OnnxExecutionProviderInfo
+        {
+            public string Name { get; init; } = string.Empty;
+            public string ReadyState { get; init; } = string.Empty;
+        }
+
         private enum OllamaCoordinateSpace
         {
             SourcePixel,
-            AssumedSquare1000
+            AssumedSmartResize
         }
+
+        public IReadOnlyList<OnnxExecutionProviderInfo> GetCompatibleOnnxExecutionProviders()
+        {
+            try
+            {
+                var catalog = ExecutionProviderCatalog.GetDefault();
+                var providers = catalog.FindAllProviders();
+                var result = providers
+                    .Select(provider => new OnnxExecutionProviderInfo
+                    {
+                        Name = provider.Name,
+                        ReadyState = provider.ReadyState.ToString()
+                    })
+                    .OrderBy(provider => provider.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                OnnxExecutionProviderStatus = result.Count == 0
+                    ? "Compatible EP list is empty"
+                    : $"Compatible EPs found: {result.Count}";
+
+                return result;
+            }
+            catch (Exception ex)
+            {
+                OnnxExecutionProviderStatus = "Failed to enumerate compatible EPs: " + ex.Message;
+                Log.Error(ex, "[OcrService] Compatible EP enumeration failed");
+                return Array.Empty<OnnxExecutionProviderInfo>();
+            }
+        }
+
+        private readonly record struct DocLayoutBox(float Score, Rect Rect, int ReadOrder);
 
         private readonly record struct RawOllamaBox(string Text, double X1, double Y1, double X2, double Y2);
 
         private static readonly Lazy<OcrService> _instance = new(() => new OcrService());
         public static OcrService Instance => _instance.Value;
-        private static readonly HttpClient s_httpClient = new();
+        private static readonly HttpClient s_httpClient = CreateHttpClient();
+
+        private static HttpClient CreateHttpClient()
+        {
+            var client = new HttpClient
+            {
+                Timeout = Timeout.InfiniteTimeSpan
+            };
+            return client;
+        }
 
         public enum OcrGrouping { Word = 0, Line = 1, Paragraph = 2 }
         public enum WritingMode { Auto = 0, Horizontal = 1, Vertical = 2 }
-        public enum OcrBackend { WindowsBuiltIn = 0, Ollama = 1 }
+        public enum OcrBackend { Hybrid = 0, Vlm = 1 }
+        public enum OnnxEpRegistrationMode { Auto = 0, Manual = 1 }
 
         public event EventHandler? SettingsChanged;
         public string CurrentLanguage { get; private set; } = "auto";
@@ -87,20 +141,29 @@ namespace MangaViewer.Services
         public WritingMode TextWritingMode { get; private set; } = WritingMode.Auto;
         public double ParagraphGapFactorVertical { get; private set; } = 1.50;
         public double ParagraphGapFactorHorizontal { get; private set; } = 1.25;
-        public OcrBackend Backend { get; private set; } = OcrBackend.WindowsBuiltIn;
+        public OcrBackend Backend { get; private set; } = OcrBackend.Hybrid;
         public string OllamaEndpoint { get; private set; } = "http://localhost:11434";
         public string OllamaModel { get; private set; } = "glm-ocr:latest";
         public string OllamaThinkingLevel { get; private set; } = "Off";
         public bool OllamaStructuredOutputEnabled { get; private set; } = true;
         public double OllamaTemperature { get; private set; } = 1.0;
+        public int HybridTextExtractionParallelism { get; private set; } = 2;
         public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
         public int PrefetchAdjacentPageCount { get; private set; } = 1;
+        public OnnxEpRegistrationMode OnnxExecutionProviderMode { get; private set; } = OnnxEpRegistrationMode.Auto;
+        public string OnnxExecutionProviderManualList { get; private set; } = string.Empty;
+        public string OnnxExecutionProviderStatus { get; private set; } = "Not initialized";
 
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, OllamaOcrResponse> _ollamaCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, OllamaModelCapabilities> _ollamaCapabilities = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _docLayoutSessionGate = new();
+        private InferenceSession? _docLayoutSession;
+        private string? _docLayoutModelPath;
         private readonly object _cacheGate = new();
+        private readonly SemaphoreSlim _onnxEpRegisterGate = new(1, 1);
+        private volatile bool _onnxEpInitialized;
         private CancellationTokenSource? _debounceCts;
         private readonly object _debounceGate = new();
         private readonly SynchronizationContext? _syncContext;
@@ -119,8 +182,11 @@ namespace MangaViewer.Services
             OllamaThinkingLevel = NormalizeOllamaThinkingLevel(SettingsProvider.Get("OcrOllamaThinkingLevel", "Off"));
             OllamaStructuredOutputEnabled = SettingsProvider.Get("OcrOllamaStructuredOutputEnabled", true);
             OllamaTemperature = Math.Clamp(SettingsProvider.Get("OcrOllamaTemperature", 1.0), 0.0, 2.0);
+            HybridTextExtractionParallelism = Math.Clamp(SettingsProvider.Get("OcrHybridTextExtractionParallelism", 2), 1, 8);
             PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
             PrefetchAdjacentPageCount = Math.Clamp(SettingsProvider.Get("OcrPrefetchAdjacentPageCount", 1), 0, 10);
+            OnnxExecutionProviderMode = (OnnxEpRegistrationMode)SettingsProvider.Get("OcrOnnxEpMode", (int)OnnxEpRegistrationMode.Auto);
+            OnnxExecutionProviderManualList = SettingsProvider.Get("OcrOnnxEpManualList", string.Empty);
         }
 
         public void SetLanguage(string languageTag)
@@ -244,6 +310,14 @@ namespace MangaViewer.Services
             OnSettingsChanged();
         }
 
+        public void SetHybridTextExtractionParallelism(int value)
+        {
+            int clamped = Math.Clamp(value, 1, 8);
+            if (HybridTextExtractionParallelism == clamped) return;
+            HybridTextExtractionParallelism = clamped;
+            SettingsProvider.Set("OcrHybridTextExtractionParallelism", clamped);
+        }
+
         public void SetPrefetchAdjacentPagesEnabled(bool enabled)
         {
             if (PrefetchAdjacentPagesEnabled == enabled) return;
@@ -259,688 +333,76 @@ namespace MangaViewer.Services
             SettingsProvider.Set("OcrPrefetchAdjacentPageCount", clamped);
         }
 
-        public async Task<string> GetOllamaTextAsync(string imagePath, CancellationToken cancellationToken)
+        public void SetOnnxExecutionProviderMode(OnnxEpRegistrationMode mode)
         {
-            var result = await GetOllamaOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
-            return result.Text;
+            if (OnnxExecutionProviderMode == mode) return;
+            OnnxExecutionProviderMode = mode;
+            SettingsProvider.Set("OcrOnnxEpMode", (int)mode);
+            OnnxExecutionProviderStatus = mode == OnnxEpRegistrationMode.Auto
+                ? "Auto mode enabled"
+                : "Manual mode enabled";
+            _onnxEpInitialized = false;
+            InvalidateDocLayoutSession();
         }
 
-        public async Task<OllamaOcrResponse> GetOllamaOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh = false)
+        public void SetOnnxExecutionProviderManualList(string? providers)
         {
-            if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
-            string cacheKey = BuildOllamaCacheKey(imagePath);
-            if (!forceRefresh)
+            string normalized = providers?.Trim() ?? string.Empty;
+            if (string.Equals(OnnxExecutionProviderManualList, normalized, StringComparison.Ordinal)) return;
+            OnnxExecutionProviderManualList = normalized;
+            SettingsProvider.Set("OcrOnnxEpManualList", normalized);
+        }
+
+        public async Task<bool> EnsureOnnxExecutionProvidersReadyAsync(CancellationToken cancellationToken, bool force)
+        {
+            if (!force)
             {
-                lock (_cacheGate)
-                {
-                    if (_ollamaCache.TryGetValue(cacheKey, out var cached))
-                        return cached;
-                }
+                if (OnnxExecutionProviderMode != OnnxEpRegistrationMode.Auto)
+                    return false;
+                if (_onnxEpInitialized)
+                    return true;
             }
 
+            await _onnxEpRegisterGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                int sourceImageWidth = 0;
-                int sourceImageHeight = 0;
-                int originalImageWidth = 0;
-                int originalImageHeight = 0;
-
-                byte[]? imageBytes = await TryGetOriginalImageBytesAndSizeAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                if (imageBytes != null && imageBytes.Length > 0)
+                if (!force)
                 {
-                    var originalSize = await TryGetImageSizeAsync(imageBytes, cancellationToken).ConfigureAwait(false);
-                    sourceImageWidth = originalSize.Width;
-                    sourceImageHeight = originalSize.Height;
-                    originalImageWidth = originalSize.Width;
-                    originalImageHeight = originalSize.Height;
-                }
-
-                if (imageBytes == null || imageBytes.Length == 0 || sourceImageWidth <= 0 || sourceImageHeight <= 0)
-                {
-                    var bitmap = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                    if (bitmap == null) return new OllamaOcrResponse();
-
-                    sourceImageWidth = bitmap.PixelWidth;
-                    sourceImageHeight = bitmap.PixelHeight;
-
-                    var originalSize = await TryGetOriginalImageSizeFromPathAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                    if (originalSize.Width > 0 && originalSize.Height > 0)
-                    {
-                        originalImageWidth = originalSize.Width;
-                        originalImageHeight = originalSize.Height;
-                    }
-                    else
-                    {
-                        originalImageWidth = sourceImageWidth;
-                        originalImageHeight = sourceImageHeight;
-                    }
-
-                    imageBytes = await EncodeSoftwareBitmapToJpegAsync(bitmap).ConfigureAwait(false);
-                    if (imageBytes == null || imageBytes.Length == 0)
-                        return new OllamaOcrResponse();
-                }
-
-                if (originalImageWidth <= 0 || originalImageHeight <= 0)
-                {
-                    originalImageWidth = sourceImageWidth;
-                    originalImageHeight = sourceImageHeight;
-                }
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                string responseText = await SendOllamaVisionOcrRequestAsync(imageBytes, sourceImageWidth, sourceImageHeight, cancellationToken).ConfigureAwait(false);
-
-                OllamaOcrResponse result = ParseStructuredOllamaResponse(
-                    responseText,
-                    sourceImageWidth,
-                    sourceImageHeight,
-                    originalImageWidth,
-                    originalImageHeight);
-
-                lock (_cacheGate)
-                {
-                    _ollamaCache[cacheKey] = result;
-                }
-
-                return result;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "[OcrService] Ollama OCR failed");
-                return new OllamaOcrResponse();
-            }
-        }
-
-        private static async Task<(int Width, int Height)> TryGetOriginalImageSizeFromPathAsync(string imagePath, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(imagePath)) return (0, 0);
-
-            try
-            {
-                if (imagePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (ImageCacheService.Instance.TryGetMemoryImageBytes(imagePath, out var memBytes)
-                        && memBytes is { Length: > 0 })
-                    {
-                        return await TryGetImageSizeAsync(memBytes, cancellationToken).ConfigureAwait(false);
-                    }
-
-                    return (0, 0);
-                }
-
-                using var stream = await FileRandomAccessStream.OpenAsync(imagePath, FileAccessMode.Read).AsTask(cancellationToken).ConfigureAwait(false);
-                var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
-                return ((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-            }
-            catch
-            {
-                return (0, 0);
-            }
-        }
-
-        private static async Task<byte[]?> TryGetOriginalImageBytesAndSizeAsync(string imagePath, CancellationToken cancellationToken)
-        {
-            if (string.IsNullOrWhiteSpace(imagePath)) return null;
-
-            if (imagePath.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
-            {
-                if (ImageCacheService.Instance.TryGetMemoryImageBytes(imagePath, out var memBytes)
-                    && memBytes is { Length: > 0 })
-                {
-                    return memBytes;
-                }
-
-                return null;
-            }
-
-            try
-            {
-                return await File.ReadAllBytesAsync(imagePath, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        private static async Task<(int Width, int Height)> TryGetImageSizeAsync(byte[] imageBytes, CancellationToken cancellationToken)
-        {
-            if (imageBytes == null || imageBytes.Length == 0) return (0, 0);
-
-            try
-            {
-                using var stream = new InMemoryRandomAccessStream();
-                await stream.WriteAsync(imageBytes.AsBuffer()).AsTask(cancellationToken).ConfigureAwait(false);
-                stream.Seek(0);
-
-                var decoder = await BitmapDecoder.CreateAsync(stream).AsTask(cancellationToken).ConfigureAwait(false);
-                return ((int)decoder.PixelWidth, (int)decoder.PixelHeight);
-            }
-            catch
-            {
-                return (0, 0);
-            }
-        }
-
-        private static async Task<byte[]?> EncodeSoftwareBitmapToJpegAsync(SoftwareBitmap bitmap)
-        {
-            try
-            {
-                var encodable = bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8
-                    ? SoftwareBitmap.Convert(bitmap, BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied)
-                    : bitmap;
-
-                using var ms = new InMemoryRandomAccessStream();
-                var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.JpegEncoderId, ms);
-                encoder.SetSoftwareBitmap(encodable);
-                await encoder.FlushAsync();
-
-                var reader = new DataReader(ms.GetInputStreamAt(0));
-                uint size = (uint)ms.Size;
-                await reader.LoadAsync(size);
-                var bytes = new byte[size];
-                reader.ReadBytes(bytes);
-                reader.DetachStream();
-                return bytes;
-            }
-            catch { return null; }
-        }
-
-        private string BuildOllamaCacheKey(string path)
-            => $"{path}|endpoint={OllamaEndpoint}|model={OllamaModel}|thinking={OllamaThinkingLevel}|structured={OllamaStructuredOutputEnabled}|temp={OllamaTemperature:F3}";
-
-        private static string TrimMarkdownCodeFence(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return string.Empty;
-            string trimmed = text.Trim();
-            if (!trimmed.StartsWith("```", StringComparison.Ordinal)) return trimmed;
-
-            int firstLineBreak = trimmed.IndexOf('\n');
-            if (firstLineBreak < 0) return trimmed.Trim('`').Trim();
-
-            string body = trimmed[(firstLineBreak + 1)..];
-            int fenceEnd = body.LastIndexOf("```", StringComparison.Ordinal);
-            if (fenceEnd >= 0)
-                body = body[..fenceEnd];
-            return body.Trim();
-        }
-
-        private static string StripThinkingContent(string? content)
-        {
-            if (string.IsNullOrWhiteSpace(content)) return string.Empty;
-
-            string text = content;
-            const string thinkOpenTag = "<think>";
-            const string thinkCloseTag = "</think>";
-
-            while (true)
-            {
-                int openIndex = text.IndexOf(thinkOpenTag, StringComparison.OrdinalIgnoreCase);
-                if (openIndex < 0) break;
-
-                int closeIndex = text.IndexOf(thinkCloseTag, openIndex + thinkOpenTag.Length, StringComparison.OrdinalIgnoreCase);
-                if (closeIndex < 0)
-                {
-                    text = text[..openIndex];
-                    break;
-                }
-
-                text = text.Remove(openIndex, (closeIndex + thinkCloseTag.Length) - openIndex);
-            }
-
-            return text.Trim();
-        }
-
-        private static string TruncateForDebug(string text, int maxLength = 8000)
-        {
-            if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
-                return text;
-
-            return text[..maxLength] + " ... (truncated)";
-        }
-
-        private async Task<string> SendOllamaVisionOcrRequestAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
-        {
-            string groupingInstruction = BuildOllamaGroupingInstruction();
-
-            object? think = null;
-            bool thinkEnabled = false;
-            OllamaModelCapabilities capabilities;
-            try
-            {
-                capabilities = await GetOllamaModelCapabilitiesAsync(OllamaModel, cancellationToken).ConfigureAwait(false);
-            }
-            catch
-            {
-                capabilities = new OllamaModelCapabilities { Vision = true, Tools = true, Thinking = false };
-            }
-            if (capabilities.Thinking)
-            {
-                thinkEnabled = BuildThinkParameter(OllamaThinkingLevel);
-                think = thinkEnabled;
-            }
-
-            string thinkInstruction = thinkEnabled
-                ? "Think briefly and answer quickly. Keep internal reasoning minimal and do not include it in the output."
-                : string.Empty;
-            string structuredInstruction = OllamaStructuredOutputEnabled
-                ? @"Use this schema exactly:
-{
-  ""boxes"": [
-    {
-      ""bbox_2d"": [23, 82, 122, 143],
-      ""text_content"": ""text snippet""
-    }
-  ]
-}
-Coordinates should be numbers and represent the detected box in reading order."
-                : "Return valid JSON only. Include OCR result text and bounding boxes when available.";
-
-            string prompt = $@"You are an OCR engine. Read all visible text from the image and return ONLY JSON.
-{structuredInstruction}
-{groupingInstruction}
-{thinkInstruction}";
-
-            var message = new Dictionary<string, object?>
-            {
-                ["role"] = "user",
-                ["content"] = prompt,
-                ["images"] = new[] { Convert.ToBase64String(imageBytes) }
-            };
-
-            var payload = new Dictionary<string, object?>
-            {
-                ["model"] = OllamaModel,
-                ["stream"] = false,
-                ["messages"] = new[] { message }
-            };
-
-            payload["format"] = "json";
-            payload["options"] = new Dictionary<string, object?>
-            {
-                ["temperature"] = OllamaTemperature,
-                ["num_ctx"] = OllamaOcrContextLength
-            };
-
-            if (think != null)
-                payload["think"] = think;
-
-            string payloadJson = JsonSerializer.Serialize(payload);
-            Debug.WriteLine($"[OcrService][Ollama] Request JSON: {TruncateForDebug(payloadJson)}");
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/chat")
-            {
-                Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
-            };
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(OllamaRequestTimeout);
-
-            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-
-            Debug.WriteLine("[OcrService][Ollama] Response JSON received.");
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("message", out var messageElement)
-                && messageElement.ValueKind == JsonValueKind.Object
-                && messageElement.TryGetProperty("content", out var contentElement)
-                && contentElement.ValueKind == JsonValueKind.String)
-            {
-                string finalContent = StripThinkingContent(contentElement.GetString());
-                Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalContent)}");
-                return finalContent;
-            }
-
-            if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("response", out var responseElement)
-                && responseElement.ValueKind == JsonValueKind.String)
-            {
-                string finalContent = StripThinkingContent(responseElement.GetString());
-                Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalContent)}");
-                return finalContent;
-            }
-
-            return string.Empty;
-        }
-
-        private async Task<OllamaModelCapabilities> GetOllamaModelCapabilitiesAsync(string model, CancellationToken cancellationToken)
-        {
-            lock (_cacheGate)
-            {
-                if (_ollamaCapabilities.TryGetValue(model, out var cached))
-                    return cached;
-            }
-
-            var payload = new { model };
-            using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/show")
-            {
-                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-            };
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(OllamaRequestTimeout);
-
-            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            bool vision = HasCapability(root, "vision");
-            bool tools = HasCapability(root, "tools") || HasCapability(root, "tool") || HasCapability(root, "tool_calling") || HasCapability(root, "tool-calling");
-            bool thinking = HasCapability(root, "thinking") || HasCapability(root, "think");
-
-            var capabilities = new OllamaModelCapabilities
-            {
-                Vision = vision,
-                Tools = tools,
-                Thinking = thinking
-            };
-
-            lock (_cacheGate)
-            {
-                _ollamaCapabilities[model] = capabilities;
-            }
-
-            return capabilities;
-        }
-
-        private static bool HasCapability(JsonElement root, string capability)
-        {
-            if (root.ValueKind != JsonValueKind.Object)
-                return false;
-
-            bool CheckArray(JsonElement element)
-            {
-                if (element.ValueKind != JsonValueKind.Array) return false;
-                foreach (var item in element.EnumerateArray())
-                {
-                    if (item.ValueKind == JsonValueKind.String
-                        && string.Equals(item.GetString(), capability, StringComparison.OrdinalIgnoreCase))
+                    if (OnnxExecutionProviderMode != OnnxEpRegistrationMode.Auto)
+                        return false;
+                    if (_onnxEpInitialized)
                         return true;
                 }
+
+                var catalog = ExecutionProviderCatalog.GetDefault();
+                await catalog.EnsureAndRegisterCertifiedAsync().AsTask(cancellationToken).ConfigureAwait(false);
+                _onnxEpInitialized = true;
+
+                string modePrefix = OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual
+                    ? "Manual trigger"
+                    : "Auto";
+                string manualInfo = string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList)
+                    ? string.Empty
+                    : $", manual list={OnnxExecutionProviderManualList}";
+                OnnxExecutionProviderStatus = $"{modePrefix}: EP registration succeeded{manualInfo}";
+                Debug.WriteLine($"[OcrService][ONNX] {OnnxExecutionProviderStatus}");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                OnnxExecutionProviderStatus = "EP registration canceled";
+                throw;
+            }
+            catch (Exception ex)
+            {
+                OnnxExecutionProviderStatus = "EP registration failed: " + ex.Message;
+                Log.Error(ex, "[OcrService] EP registration failed");
                 return false;
             }
-
-            if (root.TryGetProperty("capabilities", out var capabilitiesElement) && CheckArray(capabilitiesElement))
-                return true;
-
-            if (root.TryGetProperty("details", out var detailsElement)
-                && detailsElement.ValueKind == JsonValueKind.Object
-                && detailsElement.TryGetProperty("capabilities", out var nestedCapabilities)
-                && CheckArray(nestedCapabilities))
-                return true;
-
-            return false;
-        }
-
-        private static bool BuildThinkParameter(string thinkingLevel)
-        {
-            return !NormalizeOllamaThinkingLevel(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static object BuildOcrJsonSchema()
-        {
-            return new Dictionary<string, object?>
+            finally
             {
-                ["type"] = "object",
-                ["additionalProperties"] = false,
-                ["properties"] = new Dictionary<string, object?>
-                {
-                    ["boxes"] = new Dictionary<string, object?>
-                    {
-                        ["type"] = "array",
-                        ["minItems"] = 0,
-                        ["items"] = new Dictionary<string, object?>
-                        {
-                            ["type"] = "object",
-                            ["additionalProperties"] = false,
-                            ["properties"] = new Dictionary<string, object?>
-                            {
-                                ["bbox_2d"] = new Dictionary<string, object?>
-                                {
-                                    ["type"] = "array",
-                                    ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
-                                    ["minItems"] = 4,
-                                    ["maxItems"] = 4
-                                },
-                                ["text_content"] = new Dictionary<string, object?> { ["type"] = "string" },
-                            },
-                            ["required"] = new[] { "bbox_2d", "text_content" }
-                        }
-                    }
-                },
-                ["required"] = new[] { "boxes" }
-            };
-        }
-
-        private string BuildOllamaGroupingInstruction()
-        {
-            return GroupingMode switch
-            {
-                OcrGrouping.Word => @"Grouping mode is WORD.
-Each output box MUST contain exactly one visible word.
-If spacing is tight, still separate adjacent words into separate boxes.",
-                OcrGrouping.Line => @"Grouping mode is LINE.
-Each output box MUST contain exactly one full text line.
-Do NOT merge different lines into one box.",
-                OcrGrouping.Paragraph => @"Grouping mode is Paragraph.
-Each output box MUST contain exactly one coherent text block (for manga, one speech bubble or narration block).
-Merge all lines belonging to the same block into one box.",
-                _ => "Group boxes naturally in reading order without changing granularity."
-            };
-        }
-
-        private static OllamaOcrResponse ParseStructuredOllamaResponse(
-            string responseText,
-            int sourceImageWidth,
-            int sourceImageHeight,
-            int originalImageWidth,
-            int originalImageHeight)
-        {
-            string jsonText = TrimMarkdownCodeFence(responseText);
-            if (string.IsNullOrWhiteSpace(jsonText))
-                return new OllamaOcrResponse();
-
-            try
-            {
-                using var doc = JsonDocument.Parse(jsonText);
-                var root = doc.RootElement;
-
-                JsonElement boxesElement;
-                if (root.ValueKind == JsonValueKind.Array)
-                {
-                    boxesElement = root;
-                }
-                else if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("boxes", out var rootBoxes)
-                    && rootBoxes.ValueKind == JsonValueKind.Array)
-                {
-                    boxesElement = rootBoxes;
-                }
-                else
-                {
-                    return new OllamaOcrResponse { Text = responseText.Trim() };
-                }
-
-                var rawBoxes = new List<RawOllamaBox>();
-                foreach (var item in boxesElement.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.Object) continue;
-
-                    string boxText = item.TryGetProperty("text_content", out var bt) && bt.ValueKind == JsonValueKind.String
-                        ? (bt.GetString() ?? string.Empty)
-                        : (item.TryGetProperty("text", out var legacyBt) && legacyBt.ValueKind == JsonValueKind.String
-                            ? (legacyBt.GetString() ?? string.Empty)
-                            : string.Empty);
-
-                    if (!TryReadBbox2D(item, out var x1, out var y1, out var x2, out var y2))
-                    {
-                        double legacyX = ReadDouble(item, "x");
-                        double legacyY = ReadDouble(item, "y");
-                        double legacyWidth = Math.Max(0, ReadDouble(item, "width"));
-                        double legacyHeight = Math.Max(0, ReadDouble(item, "height"));
-                        x1 = legacyX;
-                        y1 = legacyY;
-                        x2 = legacyX + legacyWidth;
-                        y2 = legacyY + legacyHeight;
-                    }
-
-                    rawBoxes.Add(new RawOllamaBox(boxText, x1, y1, x2, y2));
-                }
-
-                OllamaCoordinateSpace coordinateSpace = SelectOllamaCoordinateSpace(
-                    rawBoxes,
-                    sourceImageWidth,
-                    sourceImageHeight,
-                    originalImageWidth,
-                    originalImageHeight);
-
-                var boxes = new List<BoundingBoxViewModel>(rawBoxes.Count);
-                foreach (var raw in rawBoxes)
-                {
-                    var scaledRect = ScaleFromOllamaSpace(
-                        raw.X1,
-                        raw.Y1,
-                        raw.X2,
-                        raw.Y2,
-                        sourceImageWidth,
-                        sourceImageHeight,
-                        originalImageWidth,
-                        originalImageHeight,
-                        coordinateSpace);
-                    if (scaledRect.Width <= 0 || scaledRect.Height <= 0) continue;
-
-                    boxes.Add(new BoundingBoxViewModel(raw.Text, scaledRect, originalImageWidth, originalImageHeight));
-                }
-
-                string text = boxes.Count > 0
-                    ? string.Join(Environment.NewLine, boxes.Select(b => b.Text).Where(t => !string.IsNullOrWhiteSpace(t)))
-                    : string.Empty;
-
-                return new OllamaOcrResponse
-                {
-                    Text = text,
-                    Boxes = boxes
-                };
+                _onnxEpRegisterGate.Release();
             }
-            catch
-            {
-                return new OllamaOcrResponse { Text = responseText.Trim() };
-            }
-        }
-
-        private static double ReadDouble(JsonElement element, string propertyName)
-        {
-            if (element.ValueKind != JsonValueKind.Object) return 0;
-            if (!element.TryGetProperty(propertyName, out var value)) return 0;
-
-            return value.ValueKind switch
-            {
-                JsonValueKind.Number => value.TryGetDouble(out var n) ? n : 0,
-                JsonValueKind.String => double.TryParse(value.GetString(), out var s) ? s : 0,
-                _ => 0,
-            };
-        }
-
-        private static bool TryReadBbox2D(JsonElement item, out double x1, out double y1, out double x2, out double y2)
-        {
-            x1 = y1 = x2 = y2 = 0;
-            if (item.ValueKind != JsonValueKind.Object) return false;
-            if (!item.TryGetProperty("bbox_2d", out var bboxElement) || bboxElement.ValueKind != JsonValueKind.Array)
-                return false;
-
-            var vals = new List<double>(4);
-            foreach (var v in bboxElement.EnumerateArray())
-            {
-                vals.Add(v.ValueKind switch
-                {
-                    JsonValueKind.Number => v.TryGetDouble(out var n) ? n : 0,
-                    JsonValueKind.String => double.TryParse(v.GetString(), out var s) ? s : 0,
-                    _ => 0,
-                });
-            }
-
-            if (vals.Count != 4) return false;
-            x1 = vals[0];
-            y1 = vals[1];
-            x2 = vals[2];
-            y2 = vals[3];
-            return true;
-        }
-
-        private static OllamaCoordinateSpace SelectOllamaCoordinateSpace(
-            IReadOnlyList<RawOllamaBox> boxes,
-            int sourceImageWidth,
-            int sourceImageHeight,
-            int originalImageWidth,
-            int originalImageHeight)
-        {
-            if (boxes.Count == 0 || sourceImageWidth <= 0 || sourceImageHeight <= 0 || originalImageWidth <= 0 || originalImageHeight <= 0)
-                return OllamaCoordinateSpace.SourcePixel;
-
-            bool exceedsSquareRange = originalImageWidth > OllamaAssumedProcessingSquareSize
-                || originalImageHeight > OllamaAssumedProcessingSquareSize;
-
-            var selected = exceedsSquareRange
-                ? OllamaCoordinateSpace.AssumedSquare1000
-                : OllamaCoordinateSpace.SourcePixel;
-
-            Debug.WriteLine($"[OcrService][Ollama] Coordinate space selected: {selected}, exceeds1000={exceedsSquareRange}, boxCount={boxes.Count}");
-            return selected;
-        }
-
-        private static Rect ScaleFromOllamaSpace(
-            double x1,
-            double y1,
-            double x2,
-            double y2,
-            int sourceImageWidth,
-            int sourceImageHeight,
-            int originalImageWidth,
-            int originalImageHeight,
-            OllamaCoordinateSpace coordinateSpace)
-        {
-            if (sourceImageWidth <= 0 || sourceImageHeight <= 0 || originalImageWidth <= 0 || originalImageHeight <= 0) return new Rect();
-
-            double minX = Math.Min(x1, x2);
-            double minY = Math.Min(y1, y2);
-            double maxX = Math.Max(x1, x2);
-            double maxY = Math.Max(y1, y2);
-
-            double sourceW;
-            double sourceH;
-
-            if (coordinateSpace == OllamaCoordinateSpace.AssumedSquare1000)
-            {
-                sourceW = OllamaAssumedProcessingSquareSize;
-                sourceH = OllamaAssumedProcessingSquareSize;
-            }
-            else
-            {
-                sourceW = sourceImageWidth;
-                sourceH = sourceImageHeight;
-            }
-
-            double clampedX = Math.Clamp(minX, 0, sourceW);
-            double clampedY = Math.Clamp(minY, 0, sourceH);
-            double clampedMaxX = Math.Clamp(maxX, 0, sourceW);
-            double clampedMaxY = Math.Clamp(maxY, 0, sourceH);
-            double clampedW = clampedMaxX - clampedX;
-            double clampedH = clampedMaxY - clampedY;
-            if (clampedW <= 0 || clampedH <= 0) return new Rect();
-
-            double sx = clampedX / sourceW * originalImageWidth;
-            double sy = clampedY / sourceH * originalImageHeight;
-            double sw = clampedW / sourceW * originalImageWidth;
-            double sh = clampedH / sourceH * originalImageHeight;
-            return new Rect(sx, sy, sw, sh);
         }
 
         public void ClearCache()
