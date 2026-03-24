@@ -1028,7 +1028,7 @@ namespace MangaViewer.ViewModels
             bool hasPlainTextOcr = !string.IsNullOrWhiteSpace(LeftOcrText) || !string.IsNullOrWhiteSpace(RightOcrText);
             if (!hasBoxOcr && !hasPlainTextOcr) return;
 
-            SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, true);
+            SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, false);
 
             if (hasBoxOcr)
             {
@@ -1069,7 +1069,7 @@ namespace MangaViewer.ViewModels
                     }
                 }
 
-                SetOcrStatus("번역 완료", InfoBarSeverity.Success, true);
+                SetOcrStatus("번역 완료", InfoBarSeverity.Success, false);
             }
             catch (Exception ex)
             {
