@@ -884,6 +884,7 @@ namespace MangaViewer.ViewModels
 
             SetOcrStatus("Hybrid OCR 실행 중...", InfoBarSeverity.Informational, false);
             int totalBoxes = 0;
+            string fallbackStatusMessage = string.Empty;
 
             var syncContext = SynchronizationContext.Current;
             var previewPublished = new bool[2];
@@ -960,6 +961,10 @@ namespace MangaViewer.ViewModels
 
                 totalBoxes += result.Boxes.Count;
                 completedPages++;
+
+                if (!string.IsNullOrWhiteSpace(result.StatusMessage))
+                    fallbackStatusMessage = result.StatusMessage;
+
                 RaiseOllamaOcrTextVisibilityChanged();
                 PageViewChanged?.Invoke(this, EventArgs.Empty);
 
@@ -970,7 +975,10 @@ namespace MangaViewer.ViewModels
             ThrowIfOcrRunStale(localVersion, token);
             _forceRefreshOllamaOcrOnNextRun = false;
             RaiseOllamaOcrTextVisibilityChanged();
-            SetOcrStatus($"Hybrid OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, false);
+            if (!string.IsNullOrWhiteSpace(fallbackStatusMessage))
+                SetOcrStatus(fallbackStatusMessage, InfoBarSeverity.Warning, true);
+            else
+                SetOcrStatus($"Hybrid OCR 완료: {totalBoxes} boxes", InfoBarSeverity.Success, false);
         }
 
         private void ThrowIfOcrRunStale(int localVersion, CancellationToken token)

@@ -47,6 +47,7 @@ namespace MangaViewer
             // Initialize UI dispatcher for services needing UI thread access
             var dispatcher = DispatcherQueue.GetForCurrentThread();
             ImageCacheService.Instance.InitializeUI(dispatcher);
+            OcrService.Instance.InitializeManualOnnxExecutionProvidersOnStartup();
             
             // Handle window closing to cleanup resources
             _window.Closed += OnWindowClosed;

@@ -35,6 +35,7 @@ namespace MangaViewer.Pages
         private ToggleSwitch _ocrStructuredOutputToggle = null!;
         private NumberBox _ocrOllamaTemperatureBox = null!;
         private NumberBox _hybridTextParallelBox = null!;
+        private ToggleSwitch _hybridOnnxFallbackToggle = null!;
         private Button _docLayoutModelDownloadButton = null!;
         private TextBlock _docLayoutModelStatusText = null!;
         private ComboBox _onnxEpModeCombo = null!;
@@ -42,6 +43,11 @@ namespace MangaViewer.Pages
         private Button _onnxEpRegisterNowButton = null!;
         private TextBlock _onnxEpStatusText = null!;
         private TextBlock _onnxEpCompatibleListText = null!;
+        private ToggleSwitch _onnxTrtCudaGraphToggle = null!;
+        private TextBox _onnxTrtRuntimeCachePathBox = null!;
+        private ToggleSwitch _onnxUseEpContextToggle = null!;
+        private ToggleSwitch _onnxAutoCompileEpContextToggle = null!;
+        private Button _onnxCompileEpContextNowButton = null!;
         private readonly Dictionary<string, bool> _ocrModelThinkingSupport = new(StringComparer.OrdinalIgnoreCase);
         private ToggleSwitch _ocrAdjacentPrefetchToggle = null!;
         private NumberBox _ocrAdjacentPrefetchCountBox = null!;
@@ -112,12 +118,22 @@ namespace MangaViewer.Pages
                 _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
             if (Math.Abs(_hybridTextParallelBox.Value - _ocr.HybridTextExtractionParallelism) > 0.001)
                 _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            if (_hybridOnnxFallbackToggle.IsOn != _ocr.HybridOnnxFallbackEnabled)
+                _hybridOnnxFallbackToggle.IsOn = _ocr.HybridOnnxFallbackEnabled;
             if (_onnxEpModeCombo.SelectedIndex != (int)_ocr.OnnxExecutionProviderMode)
                 _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
             if (!string.Equals(_onnxEpManualListBox.Text, _ocr.OnnxExecutionProviderManualList, StringComparison.Ordinal))
                 _onnxEpManualListBox.Text = _ocr.OnnxExecutionProviderManualList;
             _onnxEpManualListBox.IsEnabled = _ocr.OnnxExecutionProviderMode == OcrService.OnnxEpRegistrationMode.Manual;
             _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
+            if (_onnxTrtCudaGraphToggle.IsOn != _ocr.OnnxTrtRtxEnableCudaGraph)
+                _onnxTrtCudaGraphToggle.IsOn = _ocr.OnnxTrtRtxEnableCudaGraph;
+            if (!string.Equals(_onnxTrtRuntimeCachePathBox.Text, _ocr.OnnxTrtRtxRuntimeCachePath, StringComparison.Ordinal))
+                _onnxTrtRuntimeCachePathBox.Text = _ocr.OnnxTrtRtxRuntimeCachePath;
+            if (_onnxUseEpContextToggle.IsOn != _ocr.OnnxUseEpContextModel)
+                _onnxUseEpContextToggle.IsOn = _ocr.OnnxUseEpContextModel;
+            if (_onnxAutoCompileEpContextToggle.IsOn != _ocr.OnnxAutoCompileEpContextModel)
+                _onnxAutoCompileEpContextToggle.IsOn = _ocr.OnnxAutoCompileEpContextModel;
 
             var thinkingItem = _ocrThinkingLevelCombo.Items
                 .OfType<ComboBoxItem>()
@@ -223,6 +239,14 @@ namespace MangaViewer.Pages
             _hybridTextParallelBox.ValueChanged += HybridTextParallelBox_ValueChanged;
             _ollamaSettingsPanel.Children.Add(Row("Hybrid text parallel:", _hybridTextParallelBox));
 
+            _hybridOnnxFallbackToggle = new ToggleSwitch
+            {
+                OnContent = "Enabled",
+                OffContent = "Disabled"
+            };
+            _hybridOnnxFallbackToggle.Toggled += HybridOnnxFallbackToggle_Toggled;
+            _ollamaSettingsPanel.Children.Add(Row("Hybrid fallback to VLM:", _hybridOnnxFallbackToggle));
+
             _docLayoutModelDownloadButton = new Button { Content = "Download PP-DocLayoutV3 model" };
             _docLayoutModelDownloadButton.Click += DocLayoutModelDownloadButton_Click;
             _docLayoutModelStatusText = new TextBlock
@@ -267,6 +291,62 @@ namespace MangaViewer.Pages
                 FontSize = 12
             };
             _ollamaSettingsPanel.Children.Add(Row("Compatible EPs:", _onnxEpCompatibleListText));
+
+            _onnxTrtCudaGraphToggle = new ToggleSwitch { OnContent = "Enabled", OffContent = "Disabled" };
+            _onnxTrtCudaGraphToggle.Toggled += (s, e) =>
+            {
+                _ocr.SetOnnxTrtRtxEnableCudaGraph(_onnxTrtCudaGraphToggle.IsOn);
+                _onnxEpStatusText.Text = "TensorRT RTX CUDA graph option updated";
+            };
+            _ollamaSettingsPanel.Children.Add(Row("TensorRT RTX CUDA graph:", _onnxTrtCudaGraphToggle));
+
+            _onnxTrtRuntimeCachePathBox = new TextBox { Width = 420, PlaceholderText = "Runtime cache directory" };
+            _onnxTrtRuntimeCachePathBox.LostFocus += (s, e) =>
+            {
+                _ocr.SetOnnxTrtRtxRuntimeCachePath(_onnxTrtRuntimeCachePathBox.Text);
+            };
+            _ollamaSettingsPanel.Children.Add(Row("TensorRT RTX runtime cache:", _onnxTrtRuntimeCachePathBox));
+
+            _onnxUseEpContextToggle = new ToggleSwitch { OnContent = "Use compiled model", OffContent = "Use source ONNX" };
+            _onnxUseEpContextToggle.Toggled += (s, e) =>
+            {
+                _ocr.SetOnnxUseEpContextModel(_onnxUseEpContextToggle.IsOn);
+                _onnxEpStatusText.Text = _ocr.OnnxUseEpContextModel
+                    ? "EP context loading enabled"
+                    : "EP context loading disabled";
+            };
+            _ollamaSettingsPanel.Children.Add(Row("EP context load:", _onnxUseEpContextToggle));
+
+            _onnxAutoCompileEpContextToggle = new ToggleSwitch { OnContent = "Auto compile", OffContent = "Manual compile" };
+            _onnxAutoCompileEpContextToggle.Toggled += (s, e) =>
+            {
+                _ocr.SetOnnxAutoCompileEpContextModel(_onnxAutoCompileEpContextToggle.IsOn);
+                _onnxEpStatusText.Text = _ocr.OnnxAutoCompileEpContextModel
+                    ? "EP context auto compile enabled"
+                    : "EP context auto compile disabled";
+            };
+            _ollamaSettingsPanel.Children.Add(Row("EP context compile mode:", _onnxAutoCompileEpContextToggle));
+
+            _onnxCompileEpContextNowButton = new Button { Content = "Compile EP context now" };
+            _onnxCompileEpContextNowButton.Click += async (s, e) =>
+            {
+                _onnxCompileEpContextNowButton.IsEnabled = false;
+                _onnxEpStatusText.Text = "Compiling EP context...";
+                try
+                {
+                    bool ok = await _ocr.CompileDocLayoutEpContextModelAsync(CancellationToken.None);
+                    _onnxEpStatusText.Text = ok ? _ocr.OnnxExecutionProviderStatus : _ocr.OnnxExecutionProviderStatus;
+                }
+                catch (Exception ex)
+                {
+                    _onnxEpStatusText.Text = "Compile failed: " + ex.Message;
+                }
+                finally
+                {
+                    _onnxCompileEpContextNowButton.IsEnabled = true;
+                }
+            };
+            _ollamaSettingsPanel.Children.Add(Row("EP context compile:", _onnxCompileEpContextNowButton));
 
             if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
             {
@@ -1125,11 +1205,16 @@ namespace MangaViewer.Pages
             _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
             _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
             _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            _hybridOnnxFallbackToggle.IsOn = _ocr.HybridOnnxFallbackEnabled;
             _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
             _onnxEpManualListBox.Text = _ocr.OnnxExecutionProviderManualList;
             _onnxEpManualListBox.IsEnabled = _ocr.OnnxExecutionProviderMode == OcrService.OnnxEpRegistrationMode.Manual;
             _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
             _onnxEpCompatibleListText.Text = string.Empty;
+            _onnxTrtCudaGraphToggle.IsOn = _ocr.OnnxTrtRtxEnableCudaGraph;
+            _onnxTrtRuntimeCachePathBox.Text = _ocr.OnnxTrtRtxRuntimeCachePath;
+            _onnxUseEpContextToggle.IsOn = _ocr.OnnxUseEpContextModel;
+            _onnxAutoCompileEpContextToggle.IsOn = _ocr.OnnxAutoCompileEpContextModel;
             UpdateDocLayoutModelStatus();
 
             var thinkingItem = _ocrThinkingLevelCombo.Items
@@ -1246,6 +1331,11 @@ namespace MangaViewer.Pages
             _ocr.SetHybridTextExtractionParallelism(value);
         }
 
+        private void HybridOnnxFallbackToggle_Toggled(object sender, RoutedEventArgs e)
+        {
+            _ocr.SetHybridOnnxFallbackEnabled(_hybridOnnxFallbackToggle.IsOn);
+        }
+
         private async void DocLayoutModelDownloadButton_Click(object sender, RoutedEventArgs e)
         {
             _docLayoutModelDownloadButton.IsEnabled = false;
@@ -1269,8 +1359,9 @@ namespace MangaViewer.Pages
         private void UpdateDocLayoutModelStatus()
         {
             bool installed = _ocr.IsDocLayoutModelInstalled();
+            bool epContextInstalled = _ocr.IsDocLayoutEpContextModelInstalled();
             _docLayoutModelStatusText.Text = installed
-                ? "Installed"
+                ? (epContextInstalled ? "Installed + EP context ready" : "Installed")
                 : "Not installed (required for Hybrid OCR).";
         }
 
@@ -1388,6 +1479,7 @@ namespace MangaViewer.Pages
             _ocrStructuredOutputToggle.IsEnabled = isVlm;
             _ocrOllamaTemperatureBox.IsEnabled = isVlm;
             _hybridTextParallelBox.IsEnabled = isHybrid;
+            _hybridOnnxFallbackToggle.IsEnabled = isHybrid;
         }
 
         private void UpdateOcrGroupingAvailability()

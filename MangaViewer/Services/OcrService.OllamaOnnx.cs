@@ -27,8 +27,19 @@ namespace MangaViewer.Services
         public string GetDocLayoutModelPath()
             => Path.Combine(AppContext.BaseDirectory, DocLayoutModelRelativePath.Replace('/', Path.DirectorySeparatorChar));
 
+        public string GetDocLayoutEpContextModelPath()
+        {
+            string onnxPath = GetDocLayoutModelPath();
+            string directory = Path.GetDirectoryName(onnxPath) ?? AppContext.BaseDirectory;
+            string fileNameWithoutExt = Path.GetFileNameWithoutExtension(onnxPath);
+            return Path.Combine(directory, fileNameWithoutExt + ".epctx.onnx");
+        }
+
         public bool IsDocLayoutModelInstalled()
             => File.Exists(GetDocLayoutModelPath());
+
+        public bool IsDocLayoutEpContextModelInstalled()
+            => File.Exists(GetDocLayoutEpContextModelPath());
 
         public async Task DownloadDocLayoutModelAsync(CancellationToken cancellationToken)
         {
@@ -207,7 +218,14 @@ namespace MangaViewer.Services
             {
                 var sourceImage = await TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
                 if (sourceImage.Bytes == null || sourceImage.Width <= 0 || sourceImage.Height <= 0)
-                    return new OllamaOcrResponse();
+                {
+                    return await BuildHybridFallbackResponseAsync(
+                        imagePath,
+                        "Hybrid OCR source image unavailable",
+                        cancellationToken,
+                        forceRefresh,
+                        null).ConfigureAwait(false);
+                }
 
                 var layoutBoxes = await DetectLayoutWithOnnxAsync(
                     sourceImage.Bytes,
@@ -215,7 +233,14 @@ namespace MangaViewer.Services
                     sourceImage.Height,
                     cancellationToken).ConfigureAwait(false);
                 if (layoutBoxes.Count == 0)
-                    return new OllamaOcrResponse();
+                {
+                    return await BuildHybridFallbackResponseAsync(
+                        imagePath,
+                        "Hybrid OCR ONNX layout detection returned no boxes",
+                        cancellationToken,
+                        forceRefresh,
+                        null).ConfigureAwait(false);
+                }
 
                 var resultBoxes = BuildLayoutBoundingBoxes(layoutBoxes, sourceImage.Width, sourceImage.Height);
                 onLayoutBoxesReady?.Invoke(resultBoxes);
@@ -238,7 +263,60 @@ namespace MangaViewer.Services
             catch (Exception ex)
             {
                 Log.Error(ex, "[OcrService] Hybrid OCR failed");
-                return new OllamaOcrResponse();
+                return await BuildHybridFallbackResponseAsync(
+                    imagePath,
+                    "Hybrid OCR failed while executing ONNX layout detection",
+                    cancellationToken,
+                    forceRefresh,
+                    ex).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<OllamaOcrResponse> BuildHybridFallbackResponseAsync(
+            string imagePath,
+            string reason,
+            CancellationToken cancellationToken,
+            bool forceRefresh,
+            Exception? ex)
+        {
+            string message = $"Hybrid OCR ONNX EP failed. Falling back to VLM OCR. Reason={reason}";
+            if (ex != null)
+                message += $", Error={ex.Message}";
+
+            Debug.WriteLine($"[OcrService][ONNX] {message}");
+
+            if (!HybridOnnxFallbackEnabled)
+            {
+                return new OllamaOcrResponse
+                {
+                    UsedFallback = false,
+                    StatusMessage = message + ", FallbackDisabledByUser=true"
+                };
+            }
+
+            try
+            {
+                var fallback = await GetOllamaOcrAsync(imagePath, cancellationToken, forceRefresh).ConfigureAwait(false);
+                return new OllamaOcrResponse
+                {
+                    Text = fallback.Text,
+                    Boxes = fallback.Boxes,
+                    UsedFallback = true,
+                    StatusMessage = message
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception fallbackEx)
+            {
+                Log.Error(fallbackEx, "[OcrService] Hybrid OCR fallback failed");
+                return new OllamaOcrResponse
+                {
+                    UsedFallback = true,
+                    StatusMessage = message + $", FallbackError={fallbackEx.Message}"
+                };
             }
         }
 
@@ -325,6 +403,14 @@ namespace MangaViewer.Services
         {
             await EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
 
+            if (OnnxUseEpContextModel
+                && OnnxAutoCompileEpContextModel
+                && IsDocLayoutModelInstalled()
+                && !IsDocLayoutEpContextModelInstalled())
+            {
+                await CompileDocLayoutEpContextModelAsync(cancellationToken).ConfigureAwait(false);
+            }
+
             Debug.WriteLine($"[OcrService][ONNX] Bounding-box detection request started. InputImage={imageWidth}x{imageHeight}, Bytes={imageBytes?.Length ?? 0}");
 
             var session = GetOrCreateDocLayoutSession();
@@ -386,6 +472,7 @@ namespace MangaViewer.Services
             };
 
             using var results = session.Run(inputs);
+            TryLogDocLayoutRuntimeExecutionProviders(session);
             var output = results.FirstOrDefault(r => string.Equals(r.Name, outputName, StringComparison.Ordinal)) ?? results.FirstOrDefault();
             if (output == null)
             {
@@ -504,7 +591,7 @@ namespace MangaViewer.Services
 
         private InferenceSession? GetOrCreateDocLayoutSession()
         {
-            string modelPath = GetDocLayoutModelPath();
+            string modelPath = ResolveDocLayoutLoadModelPath();
             if (!File.Exists(modelPath))
             {
                 Debug.WriteLine($"[OcrService][ONNX] Model file not found. Path={modelPath}");
@@ -524,9 +611,10 @@ namespace MangaViewer.Services
                 try
                 {
                     _docLayoutSession?.Dispose();
-                    var sessionOptions = new SessionOptions();
+                    var sessionOptions = CreateDocLayoutSessionOptions();
                     _docLayoutSession = new InferenceSession(modelPath, sessionOptions);
                     _docLayoutModelPath = modelPath;
+                    _docLayoutRuntimeEpLogged = false;
                     Debug.WriteLine($"[OcrService][ONNX] Model loaded. Success=True, Inputs={_docLayoutSession.InputMetadata.Count}, Outputs={_docLayoutSession.OutputMetadata.Count}");
                     return _docLayoutSession;
                 }
@@ -545,6 +633,275 @@ namespace MangaViewer.Services
                 _docLayoutSession?.Dispose();
                 _docLayoutSession = null;
                 _docLayoutModelPath = null;
+                _docLayoutRuntimeEpLogged = false;
+            }
+        }
+
+        private SessionOptions CreateDocLayoutSessionOptions()
+        {
+            var sessionOptions = new SessionOptions();
+
+            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
+            sessionOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+            sessionOptions.EnableMemoryPattern = true;
+            sessionOptions.EnableCpuMemArena = true;
+
+            var requestedProviders = ResolveRequestedExecutionProviders();
+            if (requestedProviders.Count > 0)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Requested EP chain: {string.Join(" -> ", requestedProviders)}");
+            }
+            else
+            {
+                Debug.WriteLine("[OcrService][ONNX] Requested EP chain: <none> (runtime default registration will be used)");
+            }
+
+            var appendedProviders = new List<string>();
+            foreach (string providerName in requestedProviders)
+            {
+                Dictionary<string, string>? providerOptions = BuildExecutionProviderOptions(providerName);
+                if (TryAppendExecutionProviderByName(sessionOptions, providerName, providerOptions))
+                    appendedProviders.Add(providerName);
+            }
+
+            if (appendedProviders.Count > 0)
+                Debug.WriteLine($"[OcrService][ONNX] EP passed to SessionOptions: {string.Join(" -> ", appendedProviders)}");
+            else
+                Debug.WriteLine("[OcrService][ONNX] EP append API unavailable for named providers. Using registered certified EPs.");
+
+            return sessionOptions;
+        }
+
+        private Dictionary<string, string>? BuildExecutionProviderOptions(string providerName)
+        {
+            if (string.IsNullOrWhiteSpace(providerName))
+                return null;
+
+            if (!providerName.Contains("tensorrtrtx", StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["enable_cuda_graph"] = OnnxTrtRtxEnableCudaGraph ? "1" : "0"
+            };
+
+            string runtimeCachePath = OnnxTrtRtxRuntimeCachePath?.Trim() ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(runtimeCachePath))
+            {
+                try
+                {
+                    Directory.CreateDirectory(runtimeCachePath);
+                    options["nv_runtime_cache_path"] = runtimeCachePath;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Failed to create runtime cache dir: {runtimeCachePath}, Error={ex.Message}");
+                }
+            }
+
+            return options;
+        }
+
+        private List<string> ResolveRequestedExecutionProviders()
+        {
+            var providers = new List<string>();
+
+            if (OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual && !string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
+            {
+                providers.AddRange(OnnxExecutionProviderManualList
+                    .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                    .Distinct(StringComparer.OrdinalIgnoreCase));
+                return providers;
+            }
+
+            var compatible = GetCompatibleOnnxExecutionProviders();
+            foreach (var provider in compatible)
+            {
+                if (provider.ReadyState.Contains("Ready", StringComparison.OrdinalIgnoreCase))
+                    providers.Add(provider.Name);
+            }
+
+            return providers;
+        }
+
+        private static bool TryAppendExecutionProviderByName(SessionOptions sessionOptions, string providerName, IReadOnlyDictionary<string, string>? providerOptions)
+        {
+            if (string.IsNullOrWhiteSpace(providerName))
+                return false;
+
+            var methods = typeof(SessionOptions).GetMethods()
+                .Where(m => string.Equals(m.Name, "AppendExecutionProvider", StringComparison.Ordinal))
+                .ToArray();
+
+            foreach (var method in methods)
+            {
+                var parameters = method.GetParameters();
+                try
+                {
+                    if (parameters.Length == 1 && parameters[0].ParameterType == typeof(string))
+                    {
+                        method.Invoke(sessionOptions, new object[] { providerName });
+                        return true;
+                    }
+
+                    if (parameters.Length == 2 && parameters[0].ParameterType == typeof(string))
+                    {
+                        object? argument = BuildProviderOptionsArgument(parameters[1].ParameterType, providerOptions);
+                        if (argument == null && parameters[1].ParameterType.IsValueType)
+                            argument = Activator.CreateInstance(parameters[1].ParameterType);
+                        method.Invoke(sessionOptions, new[] { (object)providerName, argument! });
+                        return true;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Failed to append EP '{providerName}': {ex.Message}");
+                }
+            }
+
+            return false;
+        }
+
+        private static object? BuildProviderOptionsArgument(Type parameterType, IReadOnlyDictionary<string, string>? options)
+        {
+            if (options == null || options.Count == 0)
+                return null;
+
+            if (parameterType.IsAssignableFrom(typeof(Dictionary<string, string>)))
+                return new Dictionary<string, string>(options, StringComparer.OrdinalIgnoreCase);
+
+            if (parameterType.IsAssignableFrom(typeof(IReadOnlyDictionary<string, string>)))
+                return new Dictionary<string, string>(options, StringComparer.OrdinalIgnoreCase);
+
+            if (parameterType.IsAssignableFrom(typeof(IDictionary<string, string>)))
+                return new Dictionary<string, string>(options, StringComparer.OrdinalIgnoreCase);
+
+            return null;
+        }
+
+        private string ResolveDocLayoutLoadModelPath()
+        {
+            if (OnnxUseEpContextModel)
+            {
+                string epContextPath = GetDocLayoutEpContextModelPath();
+                if (File.Exists(epContextPath))
+                    return epContextPath;
+            }
+
+            return GetDocLayoutModelPath();
+        }
+
+        public async Task<bool> CompileDocLayoutEpContextModelAsync(CancellationToken cancellationToken)
+        {
+            string inputModelPath = GetDocLayoutModelPath();
+            if (!File.Exists(inputModelPath))
+            {
+                OnnxExecutionProviderStatus = "EP context compile skipped: model file not found";
+                return false;
+            }
+
+            string outputModelPath = GetDocLayoutEpContextModelPath();
+            string? outputDirectory = Path.GetDirectoryName(outputModelPath);
+            if (!string.IsNullOrWhiteSpace(outputDirectory))
+                Directory.CreateDirectory(outputDirectory);
+
+            await EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
+
+            bool compiledByCompileApi = false;
+            try
+            {
+                compiledByCompileApi = TryCompileDocLayoutEpContextWithCompileApi(inputModelPath, outputModelPath);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Compile API EP context generation failed: {ex.Message}");
+            }
+
+            if (!compiledByCompileApi)
+            {
+                try
+                {
+                    using var options = CreateDocLayoutSessionOptions();
+                    options.OptimizedModelFilePath = outputModelPath;
+                    using var _ = new InferenceSession(inputModelPath, options);
+                    compiledByCompileApi = File.Exists(outputModelPath);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Optimized model fallback generation failed: {ex.Message}");
+                    compiledByCompileApi = false;
+                }
+            }
+
+            if (!compiledByCompileApi)
+            {
+                OnnxExecutionProviderStatus = "EP context compile failed (Compile API unavailable and optimized-model fallback failed)";
+                return false;
+            }
+
+            InvalidateDocLayoutSession();
+            OnnxExecutionProviderStatus = $"EP context model ready: {Path.GetFileName(outputModelPath)}";
+            return true;
+        }
+
+        private bool TryCompileDocLayoutEpContextWithCompileApi(string inputModelPath, string outputModelPath)
+        {
+            var ortAssembly = typeof(InferenceSession).Assembly;
+            Type? modelCompilerType = ortAssembly.GetType("Microsoft.ML.OnnxRuntime.ModelCompiler");
+            if (modelCompilerType == null)
+                return false;
+
+            using var options = CreateDocLayoutSessionOptions();
+            object? modelCompiler = null;
+            foreach (var ctor in modelCompilerType.GetConstructors())
+            {
+                var parameters = ctor.GetParameters();
+                if (parameters.Length == 2
+                    && parameters[0].ParameterType == typeof(SessionOptions)
+                    && parameters[1].ParameterType == typeof(string))
+                {
+                    modelCompiler = ctor.Invoke(new object[] { options, inputModelPath });
+                    break;
+                }
+            }
+
+            if (modelCompiler == null)
+                return false;
+
+            var compileToFileMethod = modelCompilerType.GetMethod("CompileToFile", new[] { typeof(string) })
+                ?? modelCompilerType.GetMethod("Compile", new[] { typeof(string) });
+            if (compileToFileMethod == null)
+                return false;
+
+            compileToFileMethod.Invoke(modelCompiler, new object[] { outputModelPath });
+            return File.Exists(outputModelPath);
+        }
+
+        private void TryLogDocLayoutRuntimeExecutionProviders(InferenceSession session)
+        {
+            lock (_docLayoutSessionGate)
+            {
+                if (_docLayoutRuntimeEpLogged)
+                    return;
+
+                _docLayoutRuntimeEpLogged = true;
+            }
+
+            try
+            {
+                var method = session.GetType().GetMethod("GetExecutionProviderNames", Type.EmptyTypes);
+                if (method?.Invoke(session, null) is IEnumerable<string> names)
+                {
+                    string epChain = string.Join(" -> ", names.Where(n => !string.IsNullOrWhiteSpace(n)));
+                    Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain: {epChain}");
+                    return;
+                }
+
+                Debug.WriteLine("[OcrService][ONNX] Runtime EP execution chain: unavailable (GetExecutionProviderNames API not found)");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain logging failed: {ex.Message}");
             }
         }
 

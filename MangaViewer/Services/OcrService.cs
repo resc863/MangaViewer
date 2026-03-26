@@ -63,6 +63,8 @@ namespace MangaViewer.Services
         {
             public string Text { get; init; } = string.Empty;
             public List<BoundingBoxViewModel> Boxes { get; init; } = new();
+            public bool UsedFallback { get; init; }
+            public string StatusMessage { get; init; } = string.Empty;
         }
 
         private sealed class OllamaModelCapabilities
@@ -148,11 +150,16 @@ namespace MangaViewer.Services
         public bool OllamaStructuredOutputEnabled { get; private set; } = true;
         public double OllamaTemperature { get; private set; } = 1.0;
         public int HybridTextExtractionParallelism { get; private set; } = 2;
+        public bool HybridOnnxFallbackEnabled { get; private set; } = true;
         public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
         public int PrefetchAdjacentPageCount { get; private set; } = 1;
         public OnnxEpRegistrationMode OnnxExecutionProviderMode { get; private set; } = OnnxEpRegistrationMode.Auto;
         public string OnnxExecutionProviderManualList { get; private set; } = string.Empty;
         public string OnnxExecutionProviderStatus { get; private set; } = "Not initialized";
+        public bool OnnxTrtRtxEnableCudaGraph { get; private set; } = true;
+        public string OnnxTrtRtxRuntimeCachePath { get; private set; } = string.Empty;
+        public bool OnnxUseEpContextModel { get; private set; } = true;
+        public bool OnnxAutoCompileEpContextModel { get; private set; } = true;
 
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
@@ -161,6 +168,7 @@ namespace MangaViewer.Services
         private readonly object _docLayoutSessionGate = new();
         private InferenceSession? _docLayoutSession;
         private string? _docLayoutModelPath;
+        private bool _docLayoutRuntimeEpLogged;
         private readonly object _cacheGate = new();
         private readonly SemaphoreSlim _onnxEpRegisterGate = new(1, 1);
         private volatile bool _onnxEpInitialized;
@@ -183,10 +191,16 @@ namespace MangaViewer.Services
             OllamaStructuredOutputEnabled = SettingsProvider.Get("OcrOllamaStructuredOutputEnabled", true);
             OllamaTemperature = Math.Clamp(SettingsProvider.Get("OcrOllamaTemperature", 1.0), 0.0, 2.0);
             HybridTextExtractionParallelism = Math.Clamp(SettingsProvider.Get("OcrHybridTextExtractionParallelism", 2), 1, 8);
+            HybridOnnxFallbackEnabled = SettingsProvider.Get("OcrHybridOnnxFallbackEnabled", true);
             PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
             PrefetchAdjacentPageCount = Math.Clamp(SettingsProvider.Get("OcrPrefetchAdjacentPageCount", 1), 0, 10);
             OnnxExecutionProviderMode = (OnnxEpRegistrationMode)SettingsProvider.Get("OcrOnnxEpMode", (int)OnnxEpRegistrationMode.Auto);
             OnnxExecutionProviderManualList = SettingsProvider.Get("OcrOnnxEpManualList", string.Empty);
+            OnnxTrtRtxEnableCudaGraph = SettingsProvider.Get("OcrOnnxTrtRtxEnableCudaGraph", true);
+            OnnxTrtRtxRuntimeCachePath = SettingsProvider.Get("OcrOnnxTrtRtxRuntimeCachePath",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer", "onnx", "trt_rtx_cache"));
+            OnnxUseEpContextModel = SettingsProvider.Get("OcrOnnxUseEpContextModel", true);
+            OnnxAutoCompileEpContextModel = SettingsProvider.Get("OcrOnnxAutoCompileEpContextModel", true);
         }
 
         public void SetLanguage(string languageTag)
@@ -318,6 +332,14 @@ namespace MangaViewer.Services
             SettingsProvider.Set("OcrHybridTextExtractionParallelism", clamped);
         }
 
+        public void SetHybridOnnxFallbackEnabled(bool enabled)
+        {
+            if (HybridOnnxFallbackEnabled == enabled) return;
+            HybridOnnxFallbackEnabled = enabled;
+            SettingsProvider.Set("OcrHybridOnnxFallbackEnabled", enabled);
+            OnSettingsChanged();
+        }
+
         public void SetPrefetchAdjacentPagesEnabled(bool enabled)
         {
             if (PrefetchAdjacentPagesEnabled == enabled) return;
@@ -353,14 +375,71 @@ namespace MangaViewer.Services
             SettingsProvider.Set("OcrOnnxEpManualList", normalized);
         }
 
+        public void SetOnnxTrtRtxEnableCudaGraph(bool enabled)
+        {
+            if (OnnxTrtRtxEnableCudaGraph == enabled) return;
+            OnnxTrtRtxEnableCudaGraph = enabled;
+            SettingsProvider.Set("OcrOnnxTrtRtxEnableCudaGraph", enabled);
+            InvalidateDocLayoutSession();
+        }
+
+        public void SetOnnxTrtRtxRuntimeCachePath(string? path)
+        {
+            string normalized = path?.Trim() ?? string.Empty;
+            if (string.Equals(OnnxTrtRtxRuntimeCachePath, normalized, StringComparison.Ordinal)) return;
+            OnnxTrtRtxRuntimeCachePath = normalized;
+            SettingsProvider.Set("OcrOnnxTrtRtxRuntimeCachePath", normalized);
+            InvalidateDocLayoutSession();
+        }
+
+        public void SetOnnxUseEpContextModel(bool enabled)
+        {
+            if (OnnxUseEpContextModel == enabled) return;
+            OnnxUseEpContextModel = enabled;
+            SettingsProvider.Set("OcrOnnxUseEpContextModel", enabled);
+            InvalidateDocLayoutSession();
+        }
+
+        public void SetOnnxAutoCompileEpContextModel(bool enabled)
+        {
+            if (OnnxAutoCompileEpContextModel == enabled) return;
+            OnnxAutoCompileEpContextModel = enabled;
+            SettingsProvider.Set("OcrOnnxAutoCompileEpContextModel", enabled);
+        }
+
+        public void InitializeManualOnnxExecutionProvidersOnStartup()
+        {
+            if (OnnxExecutionProviderMode != OnnxEpRegistrationMode.Manual)
+                return;
+            if (string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
+                return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await EnsureOnnxExecutionProvidersReadyAsync(CancellationToken.None, force: false).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "[OcrService] Manual EP startup initialization failed");
+                }
+            });
+        }
+
         public async Task<bool> EnsureOnnxExecutionProvidersReadyAsync(CancellationToken cancellationToken, bool force)
         {
             if (!force)
             {
-                if (OnnxExecutionProviderMode != OnnxEpRegistrationMode.Auto)
-                    return false;
                 if (_onnxEpInitialized)
                     return true;
+
+                if (OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual
+                    && string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
+                {
+                    OnnxExecutionProviderStatus = "Manual mode enabled but EP list is empty";
+                    return false;
+                }
             }
 
             await _onnxEpRegisterGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -368,14 +447,28 @@ namespace MangaViewer.Services
             {
                 if (!force)
                 {
-                    if (OnnxExecutionProviderMode != OnnxEpRegistrationMode.Auto)
-                        return false;
                     if (_onnxEpInitialized)
                         return true;
+
+                    if (OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual
+                        && string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
+                    {
+                        OnnxExecutionProviderStatus = "Manual mode enabled but EP list is empty";
+                        return false;
+                    }
                 }
 
                 var catalog = ExecutionProviderCatalog.GetDefault();
-                await catalog.EnsureAndRegisterCertifiedAsync().AsTask(cancellationToken).ConfigureAwait(false);
+
+                if (OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual && !force)
+                {
+                    await EnsureManualExecutionProvidersReadyAndRegisteredAsync(catalog, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await catalog.EnsureAndRegisterCertifiedAsync().AsTask(cancellationToken).ConfigureAwait(false);
+                }
+
                 _onnxEpInitialized = true;
 
                 string modePrefix = OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual
@@ -403,6 +496,78 @@ namespace MangaViewer.Services
             {
                 _onnxEpRegisterGate.Release();
             }
+        }
+
+        private async Task EnsureManualExecutionProvidersReadyAndRegisteredAsync(ExecutionProviderCatalog catalog, CancellationToken cancellationToken)
+        {
+            var manualEntries = ParseManualExecutionProviderEntries(OnnxExecutionProviderManualList);
+            var providers = catalog.FindAllProviders();
+
+            var matchedProviders = providers
+                .Where(provider => manualEntries.Any(entry => IsMatchingExecutionProvider(entry, provider.Name)))
+                .ToList();
+
+            if (matchedProviders.Count == 0)
+                throw new InvalidOperationException($"No compatible EP matched manual list: {OnnxExecutionProviderManualList}");
+
+            foreach (var provider in matchedProviders)
+            {
+                if (!provider.ReadyState.ToString().Equals("Ready", StringComparison.OrdinalIgnoreCase))
+                    await provider.EnsureReadyAsync().AsTask(cancellationToken).ConfigureAwait(false);
+            }
+
+            await catalog.RegisterCertifiedAsync().AsTask(cancellationToken).ConfigureAwait(false);
+
+            var unresolvedEntries = manualEntries
+                .Where(entry => !matchedProviders.Any(provider => IsMatchingExecutionProvider(entry, provider.Name)))
+                .ToList();
+
+            if (unresolvedEntries.Count > 0)
+            {
+                OnnxExecutionProviderStatus =
+                    $"Manual mode: ready={matchedProviders.Count}, unresolved={string.Join(", ", unresolvedEntries)}";
+            }
+            else
+            {
+                OnnxExecutionProviderStatus = $"Manual mode: ready={matchedProviders.Count}";
+            }
+        }
+
+        private static List<string> ParseManualExecutionProviderEntries(string manualList)
+        {
+            return manualList
+                .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static bool IsMatchingExecutionProvider(string manualEntry, string providerName)
+        {
+            if (string.Equals(manualEntry, providerName, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            string normalizedEntry = NormalizeExecutionProviderName(manualEntry);
+            string normalizedProvider = NormalizeExecutionProviderName(providerName);
+
+            return string.Equals(normalizedEntry, normalizedProvider, StringComparison.Ordinal)
+                || string.Equals(normalizedEntry + "ep", normalizedProvider, StringComparison.Ordinal)
+                || string.Equals(normalizedEntry, normalizedProvider + "ep", StringComparison.Ordinal);
+        }
+
+        private static string NormalizeExecutionProviderName(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            var chars = value
+                .ToLowerInvariant()
+                .Where(char.IsLetterOrDigit)
+                .ToArray();
+
+            string normalized = new string(chars);
+            normalized = normalized.Replace("executionprovider", string.Empty, StringComparison.Ordinal);
+            normalized = normalized.Replace("provider", string.Empty, StringComparison.Ordinal);
+            return normalized;
         }
 
         public void ClearCache()
