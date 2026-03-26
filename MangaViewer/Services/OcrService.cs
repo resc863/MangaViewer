@@ -150,7 +150,7 @@ namespace MangaViewer.Services
         public bool OllamaStructuredOutputEnabled { get; private set; } = true;
         public double OllamaTemperature { get; private set; } = 1.0;
         public int HybridTextExtractionParallelism { get; private set; } = 2;
-        public bool HybridOnnxFallbackEnabled { get; private set; } = true;
+        public bool HybridOnnxFallbackEnabled { get; private set; } = false;
         public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
         public int PrefetchAdjacentPageCount { get; private set; } = 1;
         public OnnxEpRegistrationMode OnnxExecutionProviderMode { get; private set; } = OnnxEpRegistrationMode.Auto;
@@ -191,7 +191,7 @@ namespace MangaViewer.Services
             OllamaStructuredOutputEnabled = SettingsProvider.Get("OcrOllamaStructuredOutputEnabled", true);
             OllamaTemperature = Math.Clamp(SettingsProvider.Get("OcrOllamaTemperature", 1.0), 0.0, 2.0);
             HybridTextExtractionParallelism = Math.Clamp(SettingsProvider.Get("OcrHybridTextExtractionParallelism", 2), 1, 8);
-            HybridOnnxFallbackEnabled = SettingsProvider.Get("OcrHybridOnnxFallbackEnabled", true);
+            HybridOnnxFallbackEnabled = SettingsProvider.Get("OcrHybridOnnxFallbackEnabled", false);
             PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
             PrefetchAdjacentPageCount = Math.Clamp(SettingsProvider.Get("OcrPrefetchAdjacentPageCount", 1), 0, 10);
             OnnxExecutionProviderMode = (OnnxEpRegistrationMode)SettingsProvider.Get("OcrOnnxEpMode", (int)OnnxEpRegistrationMode.Auto);

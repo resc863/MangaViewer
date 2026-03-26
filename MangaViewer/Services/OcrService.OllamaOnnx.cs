@@ -332,7 +332,19 @@ namespace MangaViewer.Services
 
         private async Task<List<DocLayoutBox>> DetectLayoutWithOnnxAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
         {
-            return await RunDocLayoutDetectionAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return await RunDocLayoutDetectionAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Primary EP layout detection failed. Retrying with CPU EP. Error={ex.Message}");
+                return await RunDocLayoutDetectionWithCpuFallbackAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         private static List<BoundingBoxViewModel> BuildLayoutBoundingBoxes(
@@ -419,6 +431,48 @@ namespace MangaViewer.Services
                 Debug.WriteLine("[OcrService][ONNX] Bounding-box detection completed. Returned=False, BoxCount=0 (session unavailable)");
                 return new List<DocLayoutBox>();
             }
+
+            return await RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<List<DocLayoutBox>> RunDocLayoutDetectionWithCpuFallbackAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+        {
+            string modelPath = GetDocLayoutModelPath();
+            if (!File.Exists(modelPath))
+                modelPath = ResolveDocLayoutLoadModelPath();
+
+            if (!File.Exists(modelPath))
+            {
+                Debug.WriteLine($"[OcrService][ONNX] CPU fallback model file not found. Path={modelPath}");
+                return new List<DocLayoutBox>();
+            }
+
+            using var options = CreateCpuOnlyDocLayoutSessionOptions();
+            using var session = new InferenceSession(modelPath, options);
+            Debug.WriteLine($"[OcrService][ONNX] CPU fallback session loaded. Path={modelPath}");
+            return await RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+        }
+
+        private static SessionOptions CreateCpuOnlyDocLayoutSessionOptions()
+        {
+            var options = new SessionOptions
+            {
+                GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+                EnableMemoryPattern = true,
+                EnableCpuMemArena = true
+            };
+
+            return options;
+        }
+
+        private async Task<List<DocLayoutBox>> RunDocLayoutDetectionCoreAsync(
+            InferenceSession session,
+            byte[] imageBytes,
+            int imageWidth,
+            int imageHeight,
+            CancellationToken cancellationToken)
+        {
 
             using var inputStream = new InMemoryRandomAccessStream();
             await inputStream.WriteAsync(imageBytes.AsBuffer()).AsTask(cancellationToken).ConfigureAwait(false);
@@ -729,6 +783,9 @@ namespace MangaViewer.Services
             if (string.IsNullOrWhiteSpace(providerName))
                 return false;
 
+            if (TryAppendExecutionProviderByDevice(sessionOptions, providerName, providerOptions))
+                return true;
+
             var methods = typeof(SessionOptions).GetMethods()
                 .Where(m => string.Equals(m.Name, "AppendExecutionProvider", StringComparison.Ordinal))
                 .ToArray();
@@ -760,6 +817,34 @@ namespace MangaViewer.Services
             }
 
             return false;
+        }
+
+        private static bool TryAppendExecutionProviderByDevice(SessionOptions sessionOptions, string providerName, IReadOnlyDictionary<string, string>? providerOptions)
+        {
+            try
+            {
+                OrtEnv ortEnv = OrtEnv.Instance();
+                var epDevices = ortEnv.GetEpDevices()
+                    .Where(device => string.Equals(device.EpName, providerName, StringComparison.OrdinalIgnoreCase))
+                    .Where(device => !providerName.Contains("tensorrtrtx", StringComparison.OrdinalIgnoreCase)
+                        || device.HardwareDevice.Type == OrtHardwareDeviceType.GPU)
+                    .ToList();
+
+                if (epDevices.Count == 0)
+                    return false;
+
+                var options = providerOptions == null
+                    ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    : new Dictionary<string, string>(providerOptions, StringComparer.OrdinalIgnoreCase);
+
+                sessionOptions.AppendExecutionProvider(ortEnv, epDevices, options);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Failed to append EP '{providerName}' by OrtEnv device selection: {ex.Message}");
+                return false;
+            }
         }
 
         private static object? BuildProviderOptionsArgument(Type parameterType, IReadOnlyDictionary<string, string>? options)
