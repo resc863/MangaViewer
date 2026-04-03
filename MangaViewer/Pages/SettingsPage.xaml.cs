@@ -539,6 +539,48 @@ namespace MangaViewer.Pages
             updateModelRowVisibility(currentProvider);
             updateSystemPromptBox();
 
+            var thinkingLevelCombo = new ComboBox { Width = 160 };
+
+            static string NormalizeOllamaThinkingLevel(string? level)
+            {
+                if (string.IsNullOrWhiteSpace(level)) return "Off";
+                if (level.Equals("Off", StringComparison.OrdinalIgnoreCase)
+                    || level.Equals("False", StringComparison.OrdinalIgnoreCase)
+                    || level.Equals("0", StringComparison.OrdinalIgnoreCase))
+                    return "Off";
+                return "On";
+            }
+
+            void PopulateThinkingLevels(string provider, ComboBox combo)
+            {
+                combo.Items.Clear();
+                if (provider == "Ollama")
+                {
+                    combo.Items.Add(new ComboBoxItem { Content = "²¨Áü", Tag = "Off" });
+                    combo.Items.Add(new ComboBoxItem { Content = "ÄÑÁü", Tag = "On" });
+
+                    string normalized = NormalizeOllamaThinkingLevel(translationSettings.ThinkingLevel);
+                    var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == normalized)
+                        ?? (ComboBoxItem)combo.Items[0];
+                    combo.SelectedItem = selected;
+
+                    if (!string.Equals(translationSettings.ThinkingLevel, normalized, StringComparison.OrdinalIgnoreCase))
+                        translationSettings.ThinkingLevel = normalized;
+                    return;
+                }
+
+                combo.Items.Add(new ComboBoxItem { Content = "²¨Áü", Tag = "Off" });
+                combo.Items.Add(new ComboBoxItem { Content = "ÃÖ¼Ò", Tag = "Minimal" });
+                combo.Items.Add(new ComboBoxItem { Content = "³·À½", Tag = "Low" });
+                combo.Items.Add(new ComboBoxItem { Content = "º¸Åë", Tag = "Medium" });
+                combo.Items.Add(new ComboBoxItem { Content = "³ôÀ½", Tag = "High" });
+
+                var saved = translationSettings.ThinkingLevel;
+                var selectedNonOllama = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == saved)
+                    ?? (ComboBoxItem)combo.Items[0];
+                combo.SelectedItem = selectedNonOllama;
+            }
+
             translationProviderCombo.SelectionChanged += (s, e) =>
             {
                 var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
@@ -554,6 +596,7 @@ namespace MangaViewer.Pages
                 updateModelRowVisibility(provider);
                 updateApiKeyBox();
                 updateSystemPromptBox();
+                PopulateThinkingLevels(provider, thinkingLevelCombo);
             };
 
             translationModelBox.LostFocus += (s, e) =>
@@ -794,16 +837,7 @@ namespace MangaViewer.Pages
             translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalValue);
             stack.Children.Add(translationOverlayBoxScaleVerticalRow);
 
-            var thinkingLevelCombo = new ComboBox { Width = 160 };
-            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "²¨Áü", Tag = "Off" });
-            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "ÃÖ¼Ò", Tag = "Minimal" });
-            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "³·À½", Tag = "Low" });
-            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "º¸Åë", Tag = "Medium" });
-            thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "³ôÀ½", Tag = "High" });
-            var savedThinking = translationSettings.ThinkingLevel;
-            var thinkingItem = thinkingLevelCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == savedThinking)
-                               ?? (ComboBoxItem)thinkingLevelCombo.Items[0];
-            thinkingLevelCombo.SelectedItem = thinkingItem;
+            PopulateThinkingLevels(currentProvider, thinkingLevelCombo);
             thinkingLevelCombo.SelectionChanged += (s, e) =>
             {
                 if (thinkingLevelCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)

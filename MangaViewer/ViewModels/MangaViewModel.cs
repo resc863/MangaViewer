@@ -1421,7 +1421,7 @@ namespace MangaViewer.ViewModels
             {
                 model = settings.OllamaModel;
                 systemPrompt = settings.OllamaSystemPrompt;
-                client = new OllamaChatClient(settings.OllamaEndpoint, model, thinkingLevel);
+                client = new OllamaChatClient(settings.OllamaEndpoint, model, NormalizeOllamaThinkingLevel(thinkingLevel));
             }
             else
             {
@@ -1439,10 +1439,13 @@ namespace MangaViewer.ViewModels
             }
 
             string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
+            string effectiveThinkingLevel = settings.Provider == "Ollama"
+                ? NormalizeOllamaThinkingLevel(settings.ThinkingLevel)
+                : settings.ThinkingLevel;
 
             string cacheKey = settings.Provider == "Ollama"
-                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={settings.ThinkingLevel}|lang={targetLanguage}|{text}"
-                : $"{settings.Provider}|{model}|{settings.ThinkingLevel}|lang={targetLanguage}|{text}";
+                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={effectiveThinkingLevel}|lang={targetLanguage}|{text}"
+                : $"{settings.Provider}|{model}|{effectiveThinkingLevel}|lang={targetLanguage}|{text}";
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
@@ -1460,6 +1463,16 @@ namespace MangaViewer.ViewModels
                 _translationCache[cacheKey] = result;
                 return result;
             }
+        }
+
+        private static string NormalizeOllamaThinkingLevel(string? thinkingLevel)
+        {
+            if (string.IsNullOrWhiteSpace(thinkingLevel)) return "Off";
+            if (thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase))
+                return "Off";
+            return "On";
         }
 
         private void StartAdjacentPagePrefetch()

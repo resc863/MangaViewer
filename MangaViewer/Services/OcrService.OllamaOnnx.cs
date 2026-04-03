@@ -1299,7 +1299,7 @@ namespace MangaViewer.Services
             if (isQwenFamilyModel)
             {
                 structuredInstruction = @"Return JSON only.
-Use a simple shape like { ""result"": [ { ""text_content"": ""..."", ""bbox_2d"": [x1, y1, x2, y2] } ] }.
+Use a simple shape like { ""result"": [ { ""text_content"": ""..."", ""bbox_2d"": [ymin, xmin, ymax, xmax] } ] }.
 Include OCR text and location information in reading order.";
             }
             else if (isGemmaFamilyModel)
@@ -1561,7 +1561,7 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
 
                 var rawBoxes = new List<RawOllamaBox>();
                 OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(modelName);
-                bool useNormalizedYxOrder = modelFamily != OllamaVisionModelFamily.Qwen;
+                bool useNormalizedYxOrder = true; // All models now use [ymin, xmin, ymax, xmax] format
                 foreach (var item in boxesElement.EnumerateArray())
                 {
                     if (item.ValueKind != JsonValueKind.Object) continue;
