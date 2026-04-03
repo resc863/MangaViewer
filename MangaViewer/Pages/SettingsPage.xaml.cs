@@ -55,8 +55,10 @@ namespace MangaViewer.Pages
         private NumberBox _translationAdjacentPrefetchCountBox = null!;
         private Slider _translationOverlayFontSlider = null!;
         private TextBlock _translationOverlayFontValue = null!;
-        private Slider _translationOverlayBoxScaleSlider = null!;
-        private TextBlock _translationOverlayBoxScaleValue = null!;
+        private Slider _translationOverlayBoxScaleHorizontalSlider = null!;
+        private TextBlock _translationOverlayBoxScaleHorizontalValue = null!;
+        private Slider _translationOverlayBoxScaleVerticalSlider = null!;
+        private TextBlock _translationOverlayBoxScaleVerticalValue = null!;
         private Slider _tagFontSlider = null!;
         private TextBlock _tagFontValue = null!;
 
@@ -756,23 +758,41 @@ namespace MangaViewer.Pages
             translationOverlayFontRow.Children.Add(_translationOverlayFontValue);
             stack.Children.Add(translationOverlayFontRow);
 
-            _translationOverlayBoxScaleSlider = new Slider
+            _translationOverlayBoxScaleHorizontalSlider = new Slider
             {
                 Minimum = 0.6,
                 Maximum = 2.2,
                 Width = 220,
                 StepFrequency = 0.05,
-                Value = translationSettings.OverlayBoxScale
+                Value = translationSettings.OverlayBoxScaleHorizontal
             };
-            _translationOverlayBoxScaleSlider.ValueChanged += TranslationOverlayBoxScaleSlider_ValueChanged;
-            _translationOverlayBoxScaleValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
-            UpdateTranslationOverlayBoxScaleValue();
+            _translationOverlayBoxScaleHorizontalSlider.ValueChanged += TranslationOverlayBoxScaleHorizontalSlider_ValueChanged;
+            _translationOverlayBoxScaleHorizontalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateTranslationOverlayBoxScaleHorizontalValue();
 
-            var translationOverlayBoxScaleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayBoxScaleRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 크기:", VerticalAlignment = VerticalAlignment.Center });
-            translationOverlayBoxScaleRow.Children.Add(_translationOverlayBoxScaleSlider);
-            translationOverlayBoxScaleRow.Children.Add(_translationOverlayBoxScaleValue);
-            stack.Children.Add(translationOverlayBoxScaleRow);
+            var translationOverlayBoxScaleHorizontalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            translationOverlayBoxScaleHorizontalRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 가로 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalSlider);
+            translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalValue);
+            stack.Children.Add(translationOverlayBoxScaleHorizontalRow);
+
+            _translationOverlayBoxScaleVerticalSlider = new Slider
+            {
+                Minimum = 0.6,
+                Maximum = 2.2,
+                Width = 220,
+                StepFrequency = 0.05,
+                Value = translationSettings.OverlayBoxScaleVertical
+            };
+            _translationOverlayBoxScaleVerticalSlider.ValueChanged += TranslationOverlayBoxScaleVerticalSlider_ValueChanged;
+            _translationOverlayBoxScaleVerticalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
+            UpdateTranslationOverlayBoxScaleVerticalValue();
+
+            var translationOverlayBoxScaleVerticalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            translationOverlayBoxScaleVerticalRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 세로 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalSlider);
+            translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalValue);
+            stack.Children.Add(translationOverlayBoxScaleVerticalRow);
 
             var thinkingLevelCombo = new ComboBox { Width = 160 };
             thinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
@@ -1246,8 +1266,10 @@ namespace MangaViewer.Pages
             _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
             _translationOverlayFontSlider.Value = translationSettings.OverlayFontSize;
             UpdateTranslationOverlayFontValue();
-            _translationOverlayBoxScaleSlider.Value = translationSettings.OverlayBoxScale;
-            UpdateTranslationOverlayBoxScaleValue();
+            _translationOverlayBoxScaleHorizontalSlider.Value = translationSettings.OverlayBoxScaleHorizontal;
+            UpdateTranslationOverlayBoxScaleHorizontalValue();
+            _translationOverlayBoxScaleVerticalSlider.Value = translationSettings.OverlayBoxScaleVertical;
+            UpdateTranslationOverlayBoxScaleVerticalValue();
             UpdateOcrThinkingComboAvailability();
             UpdateOllamaSettingsVisibility();
             UpdateOcrGroupingAvailability();
@@ -1519,16 +1541,25 @@ namespace MangaViewer.Pages
             UpdateTranslationOverlayFontValue();
         }
 
-        private void TranslationOverlayBoxScaleSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        private void TranslationOverlayBoxScaleHorizontalSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
         {
-            TranslationSettingsService.Instance.OverlayBoxScale = e.NewValue;
-            UpdateTranslationOverlayBoxScaleValue();
+            TranslationSettingsService.Instance.OverlayBoxScaleHorizontal = e.NewValue;
+            UpdateTranslationOverlayBoxScaleHorizontalValue();
+        }
+
+        private void TranslationOverlayBoxScaleVerticalSlider_ValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        {
+            TranslationSettingsService.Instance.OverlayBoxScaleVertical = e.NewValue;
+            UpdateTranslationOverlayBoxScaleVerticalValue();
         }
 
         private void UpdateTranslationOverlayFontValue()
             => _translationOverlayFontValue.Text = Math.Round(_translationOverlayFontSlider.Value).ToString();
 
-        private void UpdateTranslationOverlayBoxScaleValue()
-            => _translationOverlayBoxScaleValue.Text = $"x{_translationOverlayBoxScaleSlider.Value:F2}";
+        private void UpdateTranslationOverlayBoxScaleHorizontalValue()
+            => _translationOverlayBoxScaleHorizontalValue.Text = $"x{_translationOverlayBoxScaleHorizontalSlider.Value:F2}";
+
+        private void UpdateTranslationOverlayBoxScaleVerticalValue()
+            => _translationOverlayBoxScaleVerticalValue.Text = $"x{_translationOverlayBoxScaleVerticalSlider.Value:F2}";
     }
 }

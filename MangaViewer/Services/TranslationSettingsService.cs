@@ -192,6 +192,36 @@ namespace MangaViewer.Services
             }
         }
 
+        public double OverlayBoxScaleHorizontal
+        {
+            get
+            {
+                double legacy = Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScale", 1.0), 0.6, 2.2);
+                return Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScaleHorizontal", legacy), 0.6, 2.2);
+            }
+            set
+            {
+                double clamped = Math.Clamp(value, 0.6, 2.2);
+                SettingsProvider.Set("TranslationOverlayBoxScaleHorizontal", clamped);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
+        public double OverlayBoxScaleVertical
+        {
+            get
+            {
+                double legacy = Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScale", 1.0), 0.6, 2.2);
+                return Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScaleVertical", legacy), 0.6, 2.2);
+            }
+            set
+            {
+                double clamped = Math.Clamp(value, 0.6, 2.2);
+                SettingsProvider.Set("TranslationOverlayBoxScaleVertical", clamped);
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+
         public double OverlayBoxScale
         {
             get => Math.Clamp(SettingsProvider.Get("TranslationOverlayBoxScale", 1.0), 0.6, 2.2);
@@ -199,6 +229,8 @@ namespace MangaViewer.Services
             {
                 double clamped = Math.Clamp(value, 0.6, 2.2);
                 SettingsProvider.Set("TranslationOverlayBoxScale", clamped);
+                SettingsProvider.Set("TranslationOverlayBoxScaleHorizontal", clamped);
+                SettingsProvider.Set("TranslationOverlayBoxScaleVertical", clamped);
                 SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }

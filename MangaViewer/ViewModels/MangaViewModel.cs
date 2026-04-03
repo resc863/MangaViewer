@@ -1060,8 +1060,16 @@ namespace MangaViewer.ViewModels
             {
                 if (hasBoxOcr)
                 {
-                    await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
-                    await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                    if (_mangaManager.IsRightToLeft)
+                    {
+                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                    }
+                    else
+                    {
+                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                    }
                     PageViewChanged?.Invoke(this, EventArgs.Empty);
                 }
                 else
@@ -1468,8 +1476,9 @@ namespace MangaViewer.ViewModels
             var token = _adjacentPrefetchCts.Token;
             int currentPageIndex = _mangaManager.CurrentPageIndex;
 
-            var ocrPaths = GetAdjacentPageImagePaths(currentPageIndex, ocrRadius);
-            var translationPaths = GetAdjacentPageImagePaths(currentPageIndex, translationRadius);
+            bool prioritizeReverseReading = _mangaManager.IsRightToLeft;
+            var ocrPaths = GetAdjacentPageImagePaths(currentPageIndex, ocrRadius, prioritizeReverseReading);
+            var translationPaths = GetAdjacentPageImagePaths(currentPageIndex, translationRadius, prioritizeReverseReading);
 
             _ = Task.Run(async () =>
             {
@@ -1503,34 +1512,41 @@ namespace MangaViewer.ViewModels
             }, token);
         }
 
-        private List<string> GetAdjacentPageImagePaths(int centerPageIndex, int radius)
+        private List<string> GetAdjacentPageImagePaths(int centerPageIndex, int radius, bool prioritizeReverseReading)
         {
             var result = new List<string>();
             if (radius <= 0 || _mangaManager.TotalPages <= 0) return result;
 
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            void AddPagePaths(int pageIndex)
+            {
+                if (pageIndex < 0 || pageIndex >= _mangaManager.TotalPages)
+                    return;
+
+                var pagePaths = _mangaManager.GetImagePathsForPage(pageIndex);
+                for (int i = 0; i < pagePaths.Count; i++)
+                {
+                    string p = pagePaths[i];
+                    if (!string.IsNullOrWhiteSpace(p) && seen.Add(p))
+                        result.Add(p);
+                }
+            }
+
             for (int offset = 1; offset <= radius; offset++)
             {
-                int back = centerPageIndex - offset;
-                if (back >= 0)
-                {
-                    var backPaths = _mangaManager.GetImagePathsForPage(back);
-                    for (int i = 0; i < backPaths.Count; i++)
-                    {
-                        string p = backPaths[i];
-                        if (!string.IsNullOrWhiteSpace(p) && seen.Add(p)) result.Add(p);
-                    }
-                }
-
                 int forward = centerPageIndex + offset;
-                if (forward < _mangaManager.TotalPages)
+                int backward = centerPageIndex - offset;
+
+                if (prioritizeReverseReading)
                 {
-                    var forwardPaths = _mangaManager.GetImagePathsForPage(forward);
-                    for (int i = 0; i < forwardPaths.Count; i++)
-                    {
-                        string p = forwardPaths[i];
-                        if (!string.IsNullOrWhiteSpace(p) && seen.Add(p)) result.Add(p);
-                    }
+                    AddPagePaths(backward);
+                    AddPagePaths(forward);
+                }
+                else
+                {
+                    AddPagePaths(forward);
+                    AddPagePaths(backward);
                 }
             }
 

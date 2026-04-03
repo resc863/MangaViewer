@@ -774,7 +774,8 @@ namespace MangaViewer.Pages
             if (useTranslationOverlay)
             {
                 double preferredOverlayFontSize = TranslationSettingsService.Instance.OverlayFontSize;
-                double preferredOverlayBoxScale = TranslationSettingsService.Instance.OverlayBoxScale;
+                double preferredOverlayBoxScaleHorizontal = TranslationSettingsService.Instance.OverlayBoxScaleHorizontal;
+                double preferredOverlayBoxScaleVertical = TranslationSettingsService.Instance.OverlayBoxScaleVertical;
                 var groupRects = overlayGroups.Select(g => g.Rect).ToList();
                 for (int i = 0; i < overlayGroups.Count; i++)
                 {
@@ -783,8 +784,8 @@ namespace MangaViewer.Pages
                     // Hybrid: 라인 수가 아닌 박스 크기 + 텍스트 길이 기반으로 폰트 계산.
                     // Non-hybrid: 주변 밀도/영역을 고려해 오버레이 크기와 폰트를 계산.
                     var placement = isHybridTranslationOverlay
-                        ? BuildHybridOverlayPlacement(group, overlayText, preferredOverlayFontSize, preferredOverlayBoxScale, imageBounds)
-                        : ComputeOverlayPlacement(i, overlayText, group.Rect, groupRects, imageBounds, preferredOverlayFontSize, preferredOverlayBoxScale);
+                        ? BuildHybridOverlayPlacement(group, overlayText, preferredOverlayFontSize, preferredOverlayBoxScaleHorizontal, preferredOverlayBoxScaleVertical, imageBounds)
+                        : ComputeOverlayPlacement(i, overlayText, group.Rect, groupRects, imageBounds, preferredOverlayFontSize, preferredOverlayBoxScaleHorizontal, preferredOverlayBoxScaleVertical);
                     var constrainedRect = placement.Rect;
 
                     var border = new Border
@@ -844,10 +845,11 @@ namespace MangaViewer.Pages
             (Rect Rect, string OverlayText, BoundingBoxViewModel TagBox) group,
             string overlayText,
             double preferredOverlayFontSize,
-            double preferredOverlayBoxScale,
+            double preferredOverlayBoxScaleHorizontal,
+            double preferredOverlayBoxScaleVertical,
             Rect imageBounds)
         {
-            var rect = ScaleRectAroundCenter(group.Rect, preferredOverlayBoxScale, imageBounds);
+            var rect = ScaleRectAroundCenter(group.Rect, preferredOverlayBoxScaleHorizontal, preferredOverlayBoxScaleVertical, imageBounds);
             double fontSize = ComputeHybridOverlayFontSize(
                 overlayText,
                 preferredOverlayFontSize,
@@ -997,7 +999,8 @@ namespace MangaViewer.Pages
             IReadOnlyList<Rect> allSourceRects,
             Rect imageBounds,
             double preferredFontSize,
-            double preferredScale)
+            double preferredHorizontalScale,
+            double preferredVerticalScale)
         {
             string normalizedText = string.IsNullOrWhiteSpace(text) ? " " : text.Trim();
             int textLength = Math.Max(1, normalizedText.Replace("\r", string.Empty).Replace("\n", string.Empty).Length);
@@ -1039,9 +1042,10 @@ namespace MangaViewer.Pages
             if (desiredH >= maxH - 0.5)
                 fontSize = Math.Max(8, fontSize - 0.6);
 
-            double scale = Math.Clamp(preferredScale, 0.6, 2.2);
-            desiredW = Math.Min(imageBounds.Width, Math.Max(32, desiredW * scale));
-            desiredH = Math.Min(imageBounds.Height, Math.Max(24, desiredH * scale));
+            double horizontalScale = Math.Clamp(preferredHorizontalScale, 0.6, 2.2);
+            double verticalScale = Math.Clamp(preferredVerticalScale, 0.6, 2.2);
+            desiredW = Math.Min(imageBounds.Width, Math.Max(32, desiredW * horizontalScale));
+            desiredH = Math.Min(imageBounds.Height, Math.Max(24, desiredH * verticalScale));
 
             var centeredRect = CreateCenteredRect(sourceRect, desiredW, desiredH);
             return new OverlayPlacement(FitInside(centeredRect, imageBounds), fontSize);
@@ -1054,11 +1058,12 @@ namespace MangaViewer.Pages
             return new Rect(centerX - width / 2.0, centerY - height / 2.0, width, height);
         }
 
-        private static Rect ScaleRectAroundCenter(Rect sourceRect, double scale, Rect imageBounds)
+        private static Rect ScaleRectAroundCenter(Rect sourceRect, double horizontalScale, double verticalScale, Rect imageBounds)
         {
-            double clampedScale = Math.Clamp(scale, 0.6, 2.2);
-            double width = Math.Min(imageBounds.Width, Math.Max(32, sourceRect.Width * clampedScale));
-            double height = Math.Min(imageBounds.Height, Math.Max(24, sourceRect.Height * clampedScale));
+            double clampedHorizontalScale = Math.Clamp(horizontalScale, 0.6, 2.2);
+            double clampedVerticalScale = Math.Clamp(verticalScale, 0.6, 2.2);
+            double width = Math.Min(imageBounds.Width, Math.Max(32, sourceRect.Width * clampedHorizontalScale));
+            double height = Math.Min(imageBounds.Height, Math.Max(24, sourceRect.Height * clampedVerticalScale));
             return FitInside(CreateCenteredRect(sourceRect, width, height), imageBounds);
         }
 

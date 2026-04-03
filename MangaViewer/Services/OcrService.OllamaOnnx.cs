@@ -94,9 +94,15 @@ namespace MangaViewer.Services
             string cacheKey = BuildOllamaCacheKey(imagePath, mode);
             lock (_cacheGate)
             {
-                return _ollamaCache.ContainsKey(cacheKey);
+                if (!_ollamaCache.TryGetValue(cacheKey, out var cached))
+                    return false;
+
+                return ShouldReuseCachedOcrResult(cached);
             }
         }
+
+        private static bool ShouldReuseCachedOcrResult(OllamaOcrResponse? response)
+            => response != null && response.Boxes.Count > 0;
 
         public async Task<OllamaOcrResponse> GetOllamaOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh = false)
         {
@@ -109,7 +115,8 @@ namespace MangaViewer.Services
             {
                 lock (_cacheGate)
                 {
-                    if (_ollamaCache.TryGetValue(cacheKey, out var cached))
+                    if (_ollamaCache.TryGetValue(cacheKey, out var cached)
+                        && ShouldReuseCachedOcrResult(cached))
                         return cached;
                 }
             }
@@ -168,6 +175,7 @@ namespace MangaViewer.Services
 
                 OllamaOcrResponse result = ParseStructuredOllamaResponse(
                     responseText,
+                    OllamaModel,
                     sourceImageWidth,
                     sourceImageHeight,
                     originalImageWidth,
@@ -175,7 +183,10 @@ namespace MangaViewer.Services
 
                 lock (_cacheGate)
                 {
-                    _ollamaCache[cacheKey] = result;
+                    if (ShouldReuseCachedOcrResult(result))
+                        _ollamaCache[cacheKey] = result;
+                    else
+                        _ollamaCache.Remove(cacheKey);
                 }
 
                 return result;
@@ -206,7 +217,8 @@ namespace MangaViewer.Services
             {
                 lock (_cacheGate)
                 {
-                    if (_ollamaCache.TryGetValue(cacheKey, out var cached))
+                    if (_ollamaCache.TryGetValue(cacheKey, out var cached)
+                        && ShouldReuseCachedOcrResult(cached))
                     {
                         onLayoutBoxesReady?.Invoke(cached.Boxes);
                         return cached;
@@ -254,7 +266,10 @@ namespace MangaViewer.Services
 
                 lock (_cacheGate)
                 {
-                    _ollamaCache[cacheKey] = result;
+                    if (ShouldReuseCachedOcrResult(result))
+                        _ollamaCache[cacheKey] = result;
+                    else
+                        _ollamaCache.Remove(cacheKey);
                 }
 
                 return result;
@@ -1257,6 +1272,9 @@ namespace MangaViewer.Services
 
         private async Task<string> SendOllamaVisionOcrRequestAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
         {
+            OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(OllamaModel);
+            bool isQwenFamilyModel = modelFamily == OllamaVisionModelFamily.Qwen;
+            bool isGemmaFamilyModel = modelFamily == OllamaVisionModelFamily.Gemma;
             object? think = null;
             bool thinkEnabled = false;
             OllamaModelCapabilities capabilities;
@@ -1277,20 +1295,28 @@ namespace MangaViewer.Services
             string thinkInstruction = thinkEnabled
                 ? "Think briefly and answer quickly. Keep internal reasoning minimal and do not include it in the output."
                 : string.Empty;
-            string structuredInstruction = OllamaStructuredOutputEnabled
-                ? @"Use this schema exactly:
-[
-  {
-    ""bbox_2d"": [23, 82, 122, 143],
-    ""text_content"": ""text snippet""
-  }
-]
-Coordinates should be numbers and represent the detected box in reading order."
-                : "Return valid JSON only. Include OCR result text and bounding boxes when available.";
+            string structuredInstruction;
+            if (isQwenFamilyModel)
+            {
+                structuredInstruction = @"Return JSON only.
+Use a simple shape like { ""result"": [ { ""text_content"": ""..."", ""bbox_2d"": [x1, y1, x2, y2] } ] }.
+Include OCR text and location information in reading order.";
+            }
+            else if (isGemmaFamilyModel)
+            {
+                structuredInstruction = @"Recognize text and return JSON with bounding boxes.
+Use a simple shape like { ""result"": [ { ""label"": ""..."", ""box_2d"": [ymin, xmin, ymax, xmax] } ] }.";
+            }
+            else
+            {
+                structuredInstruction = @"Include OCR text and location information when available.
+When returning box coordinates, use [ymin, xmin, ymax, xmax].
+Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge x=1000, bottom edge y=1000.";
+            }
             string contentFilterInstruction = "Include only dialogue or narration text that should be read by the user. Exclude non-dialogue text such as sound effects, onomatopoeia, decorative background text, and UI/watermark text.";
-            string speechBubbleInstruction = "If dialogue is inside a speech bubble, set bbox_2d to the full speech bubble area (bubble boundary), not just the tight text glyph bounds.";
+            string speechBubbleInstruction = "If dialogue is inside a speech bubble, set bounding box to the full speech bubble area (bubble boundary), not just the tight text glyph bounds.";
 
-            string prompt = $@"Extract only dialogue/narration text in speech bubble from the image and return ONLY JSON.
+            string prompt = $@"Extract only dialogue/narration text in speech bubble from the image.
 {structuredInstruction}
 {contentFilterInstruction}
 {speechBubbleInstruction}
@@ -1310,7 +1336,14 @@ Coordinates should be numbers and represent the detected box in reading order."
                 ["messages"] = new[] { message }
             };
 
-            payload["format"] = "json";
+            if (isQwenFamilyModel || isGemmaFamilyModel)
+            {
+                payload["format"] = BuildOcrJsonSchema();
+            }
+            else
+            {
+                payload["format"] = "json";
+            }
             payload["options"] = new Dictionary<string, object?>
             {
                 ["temperature"] = OllamaTemperature,
@@ -1445,30 +1478,48 @@ Coordinates should be numbers and represent the detected box in reading order."
         {
             return new Dictionary<string, object?>
             {
-                ["type"] = "array",
-                ["minItems"] = 0,
-                ["items"] = new Dictionary<string, object?>
+                ["type"] = "object",
+                ["additionalProperties"] = false,
+                ["properties"] = new Dictionary<string, object?>
                 {
-                    ["type"] = "object",
-                    ["additionalProperties"] = false,
-                    ["properties"] = new Dictionary<string, object?>
+                    ["result"] = new Dictionary<string, object?>
                     {
-                        ["bbox_2d"] = new Dictionary<string, object?>
+                        ["type"] = "array",
+                        ["minItems"] = 0,
+                        ["items"] = new Dictionary<string, object?>
                         {
-                            ["type"] = "array",
-                            ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
-                            ["minItems"] = 4,
-                            ["maxItems"] = 4
-                        },
-                        ["text_content"] = new Dictionary<string, object?> { ["type"] = "string" },
-                    },
-                    ["required"] = new[] { "bbox_2d", "text_content" }
-                }
+                            ["type"] = "object",
+                            ["additionalProperties"] = false,
+                            ["properties"] = new Dictionary<string, object?>
+                            {
+                                ["bbox_2d"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "array",
+                                    ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
+                                    ["minItems"] = 4,
+                                    ["maxItems"] = 4
+                                },
+                                ["box_2d"] = new Dictionary<string, object?>
+                                {
+                                    ["type"] = "array",
+                                    ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
+                                    ["minItems"] = 4,
+                                    ["maxItems"] = 4
+                                },
+                                ["text_content"] = new Dictionary<string, object?> { ["type"] = "string" },
+                                ["text"] = new Dictionary<string, object?> { ["type"] = "string" },
+                                ["label"] = new Dictionary<string, object?> { ["type"] = "string" }
+                            }
+                        }
+                    }
+                },
+                ["required"] = new[] { "result" }
             };
         }
 
         private static OllamaOcrResponse ParseStructuredOllamaResponse(
             string responseText,
+            string modelName,
             int sourceImageWidth,
             int sourceImageHeight,
             int originalImageWidth,
@@ -1497,12 +1548,20 @@ Coordinates should be numbers and represent the detected box in reading order."
                 {
                     boxesElement = rootBoxes;
                 }
+                else if (root.ValueKind == JsonValueKind.Object
+                    && root.TryGetProperty("result", out var rootResult)
+                    && rootResult.ValueKind == JsonValueKind.Array)
+                {
+                    boxesElement = rootResult;
+                }
                 else
                 {
                     return new OllamaOcrResponse { Text = responseText.Trim() };
                 }
 
                 var rawBoxes = new List<RawOllamaBox>();
+                OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(modelName);
+                bool useNormalizedYxOrder = modelFamily != OllamaVisionModelFamily.Qwen;
                 foreach (var item in boxesElement.EnumerateArray())
                 {
                     if (item.ValueKind != JsonValueKind.Object) continue;
@@ -1511,9 +1570,11 @@ Coordinates should be numbers and represent the detected box in reading order."
                         ? (bt.GetString() ?? string.Empty)
                         : (item.TryGetProperty("text", out var legacyBt) && legacyBt.ValueKind == JsonValueKind.String
                             ? (legacyBt.GetString() ?? string.Empty)
-                            : string.Empty);
+                            : (item.TryGetProperty("label", out var labelBt) && labelBt.ValueKind == JsonValueKind.String
+                                ? (labelBt.GetString() ?? string.Empty)
+                                : string.Empty));
 
-                    if (!TryReadBbox2D(item, out var x1, out var y1, out var x2, out var y2))
+                    if (!TryReadBbox2D(item, out var x1, out var y1, out var x2, out var y2, useNormalizedYxOrder))
                     {
                         double legacyX = ReadDouble(item, "x");
                         double legacyY = ReadDouble(item, "y");
@@ -1530,6 +1591,7 @@ Coordinates should be numbers and represent the detected box in reading order."
 
                 OllamaCoordinateSpace coordinateSpace = SelectOllamaCoordinateSpace(
                     rawBoxes,
+                    modelName,
                     sourceImageWidth,
                     sourceImageHeight,
                     originalImageWidth,
@@ -1582,11 +1644,12 @@ Coordinates should be numbers and represent the detected box in reading order."
             };
         }
 
-        private static bool TryReadBbox2D(JsonElement item, out double x1, out double y1, out double x2, out double y2)
+        private static bool TryReadBbox2D(JsonElement item, out double x1, out double y1, out double x2, out double y2, bool yxOrder)
         {
             x1 = y1 = x2 = y2 = 0;
             if (item.ValueKind != JsonValueKind.Object) return false;
-            if (!item.TryGetProperty("bbox_2d", out var bboxElement) || bboxElement.ValueKind != JsonValueKind.Array)
+            if (!(item.TryGetProperty("bbox_2d", out var bboxElement) || item.TryGetProperty("box_2d", out bboxElement))
+                || bboxElement.ValueKind != JsonValueKind.Array)
                 return false;
 
             var vals = new List<double>(4);
@@ -1601,15 +1664,26 @@ Coordinates should be numbers and represent the detected box in reading order."
             }
 
             if (vals.Count != 4) return false;
-            x1 = vals[0];
-            y1 = vals[1];
-            x2 = vals[2];
-            y2 = vals[3];
+            if (yxOrder)
+            {
+                y1 = vals[0];
+                x1 = vals[1];
+                y2 = vals[2];
+                x2 = vals[3];
+            }
+            else
+            {
+                x1 = vals[0];
+                y1 = vals[1];
+                x2 = vals[2];
+                y2 = vals[3];
+            }
             return true;
         }
 
         private static OllamaCoordinateSpace SelectOllamaCoordinateSpace(
             IReadOnlyList<RawOllamaBox> boxes,
+            string modelName,
             int sourceImageWidth,
             int sourceImageHeight,
             int originalImageWidth,
@@ -1617,6 +1691,13 @@ Coordinates should be numbers and represent the detected box in reading order."
         {
             if (boxes.Count == 0 || sourceImageWidth <= 0 || sourceImageHeight <= 0 || originalImageWidth <= 0 || originalImageHeight <= 0)
                 return OllamaCoordinateSpace.SourcePixel;
+
+            OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(modelName);
+            if (modelFamily != OllamaVisionModelFamily.Qwen)
+            {
+                Debug.WriteLine($"[OcrService][Ollama] Coordinate space selected: {OllamaCoordinateSpace.Normalized1000}, model={modelName}, family={modelFamily}, boxCount={boxes.Count}");
+                return OllamaCoordinateSpace.Normalized1000;
+            }
 
             // Prefer assumed smart-resize coordinate space when original dimensions can be
             // transformed with the same constraints used by common VLM preprocessors.
@@ -1702,7 +1783,12 @@ Coordinates should be numbers and represent the detected box in reading order."
             double sourceW;
             double sourceH;
 
-            if (coordinateSpace == OllamaCoordinateSpace.AssumedSmartResize)
+            if (coordinateSpace == OllamaCoordinateSpace.Normalized1000)
+            {
+                sourceW = 1000.0;
+                sourceH = 1000.0;
+            }
+            else if (coordinateSpace == OllamaCoordinateSpace.AssumedSmartResize)
             {
                 if (!TryComputeSmartResizeDimensions(originalImageWidth, originalImageHeight, out int resizedW, out int resizedH))
                     return new Rect();
@@ -1729,6 +1815,41 @@ Coordinates should be numbers and represent the detected box in reading order."
             double sw = clampedW / sourceW * originalImageWidth;
             double sh = clampedH / sourceH * originalImageHeight;
             return new Rect(sx, sy, sw, sh);
+        }
+
+        private enum OllamaVisionModelFamily
+        {
+            Qwen,
+            Gemma,
+            Other
+        }
+
+        private static OllamaVisionModelFamily GetOllamaVisionModelFamily(string? modelName)
+        {
+            if (string.IsNullOrWhiteSpace(modelName))
+                return OllamaVisionModelFamily.Other;
+
+            string normalized = modelName.Trim().ToLowerInvariant();
+            if (normalized.StartsWith("qwen3.5", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen3_5", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen-3.5", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen-3_5", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen3-vl", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen3_vl", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen-3-vl", StringComparison.Ordinal)
+                || normalized.StartsWith("qwen-3_vl", StringComparison.Ordinal))
+            {
+                return OllamaVisionModelFamily.Qwen;
+            }
+
+            if (normalized.StartsWith("gemma3", StringComparison.Ordinal)
+                || normalized.StartsWith("gemma3n", StringComparison.Ordinal)
+                || normalized.StartsWith("gemma4", StringComparison.Ordinal))
+            {
+                return OllamaVisionModelFamily.Gemma;
+            }
+
+            return OllamaVisionModelFamily.Other;
         }
     }
 }

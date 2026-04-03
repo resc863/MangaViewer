@@ -83,7 +83,8 @@ namespace MangaViewer.Services
         private enum OllamaCoordinateSpace
         {
             SourcePixel,
-            AssumedSmartResize
+            AssumedSmartResize,
+            Normalized1000
         }
 
         public IReadOnlyList<OnnxExecutionProviderInfo> GetCompatibleOnnxExecutionProviders()
@@ -477,7 +478,10 @@ namespace MangaViewer.Services
                 string manualInfo = string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList)
                     ? string.Empty
                     : $", manual list={OnnxExecutionProviderManualList}";
-                OnnxExecutionProviderStatus = $"{modePrefix}: EP registration succeeded{manualInfo}";
+                bool hasManualFallbackStatus = OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual
+                    && OnnxExecutionProviderStatus.Contains("fallback", StringComparison.OrdinalIgnoreCase);
+                if (!hasManualFallbackStatus)
+                    OnnxExecutionProviderStatus = $"{modePrefix}: EP registration succeeded{manualInfo}";
                 Debug.WriteLine($"[OcrService][ONNX] {OnnxExecutionProviderStatus}");
                 return true;
             }
@@ -508,7 +512,13 @@ namespace MangaViewer.Services
                 .ToList();
 
             if (matchedProviders.Count == 0)
-                throw new InvalidOperationException($"No compatible EP matched manual list: {OnnxExecutionProviderManualList}");
+            {
+                await catalog.EnsureAndRegisterCertifiedAsync().AsTask(cancellationToken).ConfigureAwait(false);
+                OnnxExecutionProviderStatus =
+                    $"Manual mode fallback: no compatible EP matched manual list ({OnnxExecutionProviderManualList}), using certified/default EP registration";
+                Debug.WriteLine($"[OcrService][ONNX] {OnnxExecutionProviderStatus}");
+                return;
+            }
 
             foreach (var provider in matchedProviders)
             {
