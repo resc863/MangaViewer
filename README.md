@@ -29,6 +29,8 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
     - Parallelism: crop OCR runs with throttled concurrency (`HybridTextExtractionParallelism`)
     - Result: read-order-preserving `BoundingBoxViewModel` list + joined OCR text
     - Cache mode is separated by key suffix (`mode=hybrid` vs `mode=vlm`)
+    - Progressive UX: per-page OCR progress popup and staged box preview updates while OCR is still running
+    - Prompting note: in Hybrid OCR, prompt-injected general VLMs (e.g., `gemma`) currently produce better practical quality than `GLM-OCR` in many pages
   - Overlay rendering structure (`MangaReaderPage`)
     - `RedrawAllOcr` → `RedrawOcr` → `DrawBoxes` pipeline
     - Normal mode: draw original OCR boxes (`Rectangle`) with object-pool reuse
@@ -42,11 +44,13 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 
 - Translation (OCR result translation)
   - Translates Ollama OCR output to Korean via LLM API
-  - Providers: **Google Gemini** / **OpenAI** / **Anthropic (Claude)**
+  - Providers: **Google Gemini** / **OpenAI** / **Anthropic (Claude)** / **Ollama**
   - Per-provider API key and model configuration
     - Google: fetch model list button (available after entering API key)
     - OpenAI: manual model name input, custom endpoint supported (OpenAI-compatible APIs, default: `https://api.openai.com/v1/`)
     - Anthropic: manual model name input
+    - Ollama: endpoint/model configurable, thinking on/off normalization supported
+  - Target translation language is configurable (default: Korean)
   - Per-page OCR/translation state preserved independently (state restored on page revisit)
   - Translation result cache (prevents redundant requests for identical text/provider/model combinations)
 
@@ -368,7 +372,7 @@ Placement/sizing helpers:
   1. Load original bytes (`TryGetHybridSourceImageAsync`)
   2. Detect layout regions (`RunDocLayoutDetectionAsync`)
   3. Build ordered UI boxes (`BuildLayoutBoundingBoxes`)
-  4. Crop and OCR each region in parallel (`RecognizeLayoutBoxesWithGlmOcrAsync`)
+  4. Crop and OCR each region in parallel (hybrid crop OCR workers)
   5. Compose final response (`BuildOllamaOcrResponse`)
 - Coordinate handling:
   - Structured VLM JSON is parsed by `ParseStructuredOllamaResponse`

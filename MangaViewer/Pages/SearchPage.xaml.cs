@@ -240,17 +240,17 @@ namespace MangaViewer.Pages
             _lastContextTarget = fe;
             try { await ViewModel.LoadItemDetailsAsync(item); } catch (Exception ex) { Debug.WriteLine("[SearchPage] Details load error: " + ex.Message); }
 
-            var detailItem = mf.Items.OfType<MenuFlyoutItem>().FirstOrDefault(i => (string)i.Text == "상세 정보");
+            var detailItem = mf.Items.OfType<MenuFlyoutItem>().FirstOrDefault(i => i.Name == "DetailsMenuItem");
             if (detailItem != null) detailItem.Tag = item;
 
-            FillSubMenu(mf, "작가", item.Artists);
-            FillSubMenu(mf, "그룹", item.Groups);
-            FillSubMenu(mf, "태그", item.SearchableTags);
+            FillSubMenu(mf, "ArtistItem", item.Artists);
+            FillSubMenu(mf, "GroupItem", item.Groups);
+            FillSubMenu(mf, "TagsRoot", item.SearchableTags);
         }
 
-        private void FillSubMenu(MenuFlyout root, string header, System.Collections.IEnumerable values)
+        private void FillSubMenu(MenuFlyout root, string itemName, System.Collections.IEnumerable values)
         {
-            var sub = root.Items.OfType<MenuFlyoutSubItem>().FirstOrDefault(i => (string)i.Text == header);
+            var sub = root.Items.OfType<MenuFlyoutSubItem>().FirstOrDefault(i => i.Name == itemName);
             if (sub == null) return;
             sub.Items.Clear();
             foreach (var v in values)

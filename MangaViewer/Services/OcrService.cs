@@ -55,7 +55,6 @@ namespace MangaViewer.Services
         private const int DocLayoutInputSize = 800;
         private const float DocLayoutScoreThreshold = 0.5f;
         private const string DocLayoutModelRelativePath = "onnx/PP-DocLayoutV3.onnx";
-        private const string HybridOllamaModel = "glm-ocr:latest";
         private static readonly TimeSpan OllamaRequestTimeout = TimeSpan.FromSeconds(180);
         private static readonly TimeSpan OllamaThinkingRequestTimeout = TimeSpan.FromMinutes(10);
 

@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="ThumbnailPaneToggle.ToolTipService.ToolTip" xml:space="preserve"><value>썸네일 패널</value></data>
+  <data name="BookmarkPaneToggle.ToolTipService.ToolTip" xml:space="preserve"><value>북마크 패널</value></data>
+  <data name="AddBookmarkButton.Label" xml:space="preserve"><value>북마크 추가</value></data>
+  <data name="OpenFolderButton.Label" xml:space="preserve"><value>폴더 열기</value></data>
+  <data name="OcrToggle.Label" xml:space="preserve"><value>OCR</value></data>
+  <data name="TranslationToggle.Label" xml:space="preserve"><value>번역</value></data>
+  <data name="NavLibraryItem.Content" xml:space="preserve"><value>라이브러리</value></data>
+  <data name="NavReaderItem.Content" xml:space="preserve"><value>리더</value></data>
+  <data name="NavSearchItem.Content" xml:space="preserve"><value>검색</value></data>
+  <data name="FooterBrandText.Text" xml:space="preserve"><value>Manga Viewer</value></data>
+  <data name="RemoveBookmarkButton.Content" xml:space="preserve"><value>제거</value></data>
+  <data name="SingleOcrTextBox.PlaceholderText" xml:space="preserve"><value>OCR 텍스트</value></data>
+  <data name="SingleTranslationTextBox.PlaceholderText" xml:space="preserve"><value>번역 결과</value></data>
+  <data name="LeftOcrTextBox.PlaceholderText" xml:space="preserve"><value>왼쪽 OCR 텍스트</value></data>
+  <data name="LeftTranslationTextBox.PlaceholderText" xml:space="preserve"><value>왼쪽 번역</value></data>
+  <data name="RightOcrTextBox.PlaceholderText" xml:space="preserve"><value>오른쪽 OCR 텍스트</value></data>
+  <data name="RightTranslationTextBox.PlaceholderText" xml:space="preserve"><value>오른쪽 번역</value></data>
+  <data name="LibraryHeaderTitle.Text" xml:space="preserve"><value>만화 라이브러리</value></data>
+  <data name="LibraryRefreshButton.Content" xml:space="preserve"><value>새로고침</value></data>
+  <data name="LibraryEmptyTitle.Text" xml:space="preserve"><value>라이브러리 폴더가 없습니다</value></data>
+  <data name="LibraryEmptyDescription.Text" xml:space="preserve"><value>설정에서 만화 라이브러리 폴더를 추가하세요</value></data>
+  <data name="QueryBox.PlaceholderText" xml:space="preserve"><value>검색어 입력</value></data>
+  <data name="SearchButton.Content" xml:space="preserve"><value>검색</value></data>
+  <data name="OpenMenuItem.Text" xml:space="preserve"><value>불러오기</value></data>
+  <data name="DetailsMenuItem.Text" xml:space="preserve"><value>상세 정보</value></data>
+  <data name="ArtistItem.Text" xml:space="preserve"><value>작가</value></data>
+  <data name="GroupItem.Text" xml:space="preserve"><value>그룹</value></data>
+  <data name="TagsRoot.Text" xml:space="preserve"><value>태그</value></data>
+  <data name="OpenLinkButton.Content" xml:space="preserve"><value>원본 열기</value></data>
+  <data name="LanguageHeader.Text" xml:space="preserve"><value>언어</value></data>
+  <data name="ArtistsHeader.Text" xml:space="preserve"><value>작가</value></data>
+  <data name="GroupsHeader.Text" xml:space="preserve"><value>그룹</value></data>
+  <data name="ParodiesHeader.Text" xml:space="preserve"><value>패러디</value></data>
+  <data name="MaleTagHeader.Text" xml:space="preserve"><value>Male 태그</value></data>
+  <data name="FemaleTagHeader.Text" xml:space="preserve"><value>Female 태그</value></data>
+  <data name="OtherTagHeader.Text" xml:space="preserve"><value>기타 태그</value></data>
+  <data name="Reader.Direction.Reverse" xml:space="preserve"><value>읽기 방향: 역방향</value></data>
+  <data name="Reader.Direction.Forward" xml:space="preserve"><value>읽기 방향: 정방향</value></data>
+  <data name="Reader.Cover.Single" xml:space="preserve"><value>표지: 한 장으로 보기</value></data>
+  <data name="Reader.Cover.Double" xml:space="preserve"><value>표지: 두 장으로 보기</value></data>
+  <data name="Settings.General.Header" xml:space="preserve"><value>앱 설정</value></data>
+  <data name="Settings.AppLanguage.Label" xml:space="preserve"><value>UI 언어:</value></data>
+  <data name="Settings.AppLanguage.Auto" xml:space="preserve"><value>시스템 기본값</value></data>
+  <data name="Settings.AppLanguage.Korean" xml:space="preserve"><value>한국어</value></data>
+  <data name="Settings.AppLanguage.English" xml:space="preserve"><value>영어</value></data>
+  <data name="Settings.AppLanguage.Japanese" xml:space="preserve"><value>일본어</value></data>
+  <data name="Settings.AppLanguage.Restart.Title" xml:space="preserve"><value>언어 변경</value></data>
+  <data name="Settings.AppLanguage.Restart.Message" xml:space="preserve"><value>일부 UI는 앱을 다시 시작하면 완전히 적용됩니다.</value></data>
+  <data name="Settings.Common.Remove" xml:space="preserve"><value>제거</value></data>
+  <data name="Settings.Common.Delete" xml:space="preserve"><value>삭제</value></data>
+  <data name="Settings.Common.Use" xml:space="preserve"><value>사용</value></data>
+  <data name="Settings.Common.NotUse" xml:space="preserve"><value>사용 안 함</value></data>
+  <data name="Settings.Common.Auto" xml:space="preserve"><value>자동</value></data>
+  <data name="Settings.Common.Manual" xml:space="preserve"><value>수동</value></data>
+  <data name="Settings.Common.Off" xml:space="preserve"><value>꺼짐</value></data>
+  <data name="Settings.Common.On" xml:space="preserve"><value>켜짐</value></data>
+  <data name="Settings.Common.Enabled" xml:space="preserve"><value>활성화</value></data>
+  <data name="Settings.Common.Disabled" xml:space="preserve"><value>비활성화</value></data>
+  <data name="Settings.Common.Apply" xml:space="preserve"><value>적용</value></data>
+  <data name="Settings.Common.Refresh" xml:space="preserve"><value>새로고침</value></data>
+  <data name="Settings.Common.Loading" xml:space="preserve"><value>가져오는 중...</value></data>
+  <data name="Settings.Common.ErrorPrefix" xml:space="preserve"><value>오류: </value></data>
+  <data name="Settings.Common.FailedPrefix" xml:space="preserve"><value>실패: </value></data>
+  <data name="Settings.Common.Downloading" xml:space="preserve"><value>다운로드 중...</value></data>
+  <data name="Settings.Common.DownloadFailedPrefix" xml:space="preserve"><value>다운로드 실패: </value></data>
+  <data name="Settings.Common.Enumerating" xml:space="preserve"><value>열거 중...</value></data>
+  <data name="Settings.Common.None" xml:space="preserve"><value>(없음)</value></data>
+  <data name="Settings.Common.Registering" xml:space="preserve"><value>등록 중...</value></data>
+  <data name="Settings.Common.Ok" xml:space="preserve"><value>확인</value></data>
+  <data name="Settings.Common.CountUnit" xml:space="preserve"><value>{0}개</value></data>
+  <data name="Settings.Library.Header" xml:space="preserve"><value>만화 라이브러리</value></data>
+  <data name="Settings.Library.AddFolder" xml:space="preserve"><value>라이브러리 폴더 추가</value></data>
+  <data name="Settings.Ocr.Header" xml:space="preserve"><value>OCR 설정</value></data>
+  <data name="Settings.Ocr.Engine" xml:space="preserve"><value>OCR 엔진:</value></data>
+  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama 주소:</value></data>
+  <data name="Settings.Ocr.LoadModels" xml:space="preserve"><value>모델 불러오기</value></data>
+  <data name="Settings.Ocr.Model" xml:space="preserve"><value>OCR 모델:</value></data>
+  <data name="Settings.Ocr.Output.Json" xml:space="preserve"><value>JSON(박스 포함)</value></data>
+  <data name="Settings.Ocr.Output.Text" xml:space="preserve"><value>일반 텍스트</value></data>
+  <data name="Settings.Ocr.OutputFormat" xml:space="preserve"><value>출력 형식:</value></data>
+  <data name="Settings.Ocr.HybridParallel" xml:space="preserve"><value>하이브리드 텍스트 병렬:</value></data>
+  <data name="Settings.Ocr.HybridFallback" xml:space="preserve"><value>하이브리드 VLM 폴백:</value></data>
+  <data name="Settings.Ocr.DocLayout.Download" xml:space="preserve"><value>PP-DocLayoutV3 모델 다운로드</value></data>
+  <data name="Settings.Ocr.DocLayout.Model" xml:space="preserve"><value>DocLayout 모델:</value></data>
+  <data name="Settings.Ocr.DocLayout.InstalledWithEp" xml:space="preserve"><value>설치됨 + EP 컨텍스트 준비됨</value></data>
+  <data name="Settings.Ocr.DocLayout.Installed" xml:space="preserve"><value>설치됨</value></data>
+  <data name="Settings.Ocr.DocLayout.NotInstalled" xml:space="preserve"><value>설치되지 않음 (Hybrid OCR 필수).</value></data>
+  <data name="Settings.Ocr.OnnxEpMode" xml:space="preserve"><value>ONNX EP 모드:</value></data>
+  <data name="Settings.Ocr.ManualEpList" xml:space="preserve"><value>수동 EP 목록:</value></data>
+  <data name="Settings.Ocr.EpRegisterNow" xml:space="preserve"><value>EP 즉시 등록</value></data>
+  <data name="Settings.Ocr.GetCompatibleEps" xml:space="preserve"><value>호환 EP 조회</value></data>
+  <data name="Settings.Ocr.ExecutionProvider" xml:space="preserve"><value>실행 공급자:</value></data>
+  <data name="Settings.Ocr.CompatibleEps" xml:space="preserve"><value>호환 EP:</value></data>
+  <data name="Settings.Ocr.Status.CudaGraphUpdated" xml:space="preserve"><value>TensorRT RTX CUDA graph 옵션이 업데이트되었습니다</value></data>
+  <data name="Settings.Ocr.TensorRtCudaGraph" xml:space="preserve"><value>TensorRT RTX CUDA graph:</value></data>
+  <data name="Settings.Ocr.TensorRtRuntimeCache" xml:space="preserve"><value>TensorRT RTX 런타임 캐시:</value></data>
+  <data name="Settings.Ocr.UseCompiledModel" xml:space="preserve"><value>컴파일 모델 사용</value></data>
+  <data name="Settings.Ocr.UseSourceOnnx" xml:space="preserve"><value>원본 ONNX 사용</value></data>
+  <data name="Settings.Ocr.Status.EpContextEnabled" xml:space="preserve"><value>EP 컨텍스트 로드 활성화</value></data>
+  <data name="Settings.Ocr.Status.EpContextDisabled" xml:space="preserve"><value>EP 컨텍스트 로드 비활성화</value></data>
+  <data name="Settings.Ocr.EpContextLoad" xml:space="preserve"><value>EP 컨텍스트 로드:</value></data>
+  <data name="Settings.Ocr.AutoCompile" xml:space="preserve"><value>자동 컴파일</value></data>
+  <data name="Settings.Ocr.ManualCompile" xml:space="preserve"><value>수동 컴파일</value></data>
+  <data name="Settings.Ocr.Status.EpAutoCompileEnabled" xml:space="preserve"><value>EP 컨텍스트 자동 컴파일 활성화</value></data>
+  <data name="Settings.Ocr.Status.EpAutoCompileDisabled" xml:space="preserve"><value>EP 컨텍스트 자동 컴파일 비활성화</value></data>
+  <data name="Settings.Ocr.EpContextCompileMode" xml:space="preserve"><value>EP 컨텍스트 컴파일 모드:</value></data>
+  <data name="Settings.Ocr.CompileEpContextNow" xml:space="preserve"><value>EP 컨텍스트 즉시 컴파일</value></data>
+  <data name="Settings.Ocr.Status.CompilingEpContext" xml:space="preserve"><value>EP 컨텍스트 컴파일 중...</value></data>
+  <data name="Settings.Ocr.EpContextCompile" xml:space="preserve"><value>EP 컨텍스트 컴파일:</value></data>
+  <data name="Settings.Ocr.Language" xml:space="preserve"><value>언어:</value></data>
+  <data name="Settings.Ocr.Group.Word" xml:space="preserve"><value>단어</value></data>
+  <data name="Settings.Ocr.Group.Line" xml:space="preserve"><value>줄</value></data>
+  <data name="Settings.Ocr.Group.Paragraph" xml:space="preserve"><value>문단</value></data>
+  <data name="Settings.Ocr.Group.Label" xml:space="preserve"><value>그룹:</value></data>
+  <data name="Settings.Ocr.Writing.Horizontal" xml:space="preserve"><value>가로</value></data>
+  <data name="Settings.Ocr.Writing.Vertical" xml:space="preserve"><value>세로</value></data>
+  <data name="Settings.Ocr.Writing.Label" xml:space="preserve"><value>텍스트 방향:</value></data>
+  <data name="Settings.Ocr.AdjacentCache" xml:space="preserve"><value>인접 페이지 OCR 캐시:</value></data>
+  <data name="Settings.Ocr.AdjacentCount" xml:space="preserve"><value>OCR 인접 페이지 수:</value></data>
+  <data name="Settings.Ocr.Thinking.Supported" xml:space="preserve"><value>선택 모델: Thinking 지원</value></data>
+  <data name="Settings.Ocr.Thinking.NotSupported" xml:space="preserve"><value>선택 모델: Thinking 미지원</value></data>
+  <data name="Settings.Ocr.LoadingModels" xml:space="preserve"><value>모델 조회 중...</value></data>
+  <data name="Settings.Ocr.ModelsCountVisionTool" xml:space="preserve"><value>{0}개 (Vision+Tool)</value></data>
+  <data name="Settings.Translation.Header" xml:space="preserve"><value>번역 설정</value></data>
+  <data name="Settings.Translation.ApiKey" xml:space="preserve"><value>API 키:</value></data>
+  <data name="Settings.Translation.TargetLanguage" xml:space="preserve"><value>타겟 언어:</value></data>
+  <data name="Settings.Translation.SelectModel" xml:space="preserve"><value>모델을 선택하세요</value></data>
+  <data name="Settings.Translation.FetchModelList" xml:space="preserve"><value>목록 가져오기</value></data>
+  <data name="Settings.Translation.Model" xml:space="preserve"><value>모델:</value></data>
+  <data name="Settings.Translation.SystemPromptPlaceholder" xml:space="preserve"><value>시스템 프롬프트</value></data>
+  <data name="Settings.Thinking.Minimal" xml:space="preserve"><value>최소</value></data>
+  <data name="Settings.Thinking.Low" xml:space="preserve"><value>낮음</value></data>
+  <data name="Settings.Thinking.Medium" xml:space="preserve"><value>보통</value></data>
+  <data name="Settings.Thinking.High" xml:space="preserve"><value>높음</value></data>
+  <data name="Settings.Translation.EnterApiKeyFirst" xml:space="preserve"><value>API 키를 먼저 입력하세요</value></data>
+  <data name="Settings.Translation.Provider" xml:space="preserve"><value>공급자:</value></data>
+  <data name="Settings.Translation.SystemPrompt" xml:space="preserve"><value>시스템 프롬프트:</value></data>
+  <data name="Settings.Translation.AdjacentCache" xml:space="preserve"><value>인접 페이지 번역 캐시:</value></data>
+  <data name="Settings.Translation.AdjacentCount" xml:space="preserve"><value>번역 인접 페이지 수:</value></data>
+  <data name="Settings.Translation.OverlayFontSize" xml:space="preserve"><value>번역 바운딩 박스 글자 크기:</value></data>
+  <data name="Settings.Translation.OverlayBoxHorizontal" xml:space="preserve"><value>번역 바운딩 박스 가로 크기:</value></data>
+  <data name="Settings.Translation.OverlayBoxVertical" xml:space="preserve"><value>번역 바운딩 박스 세로 크기:</value></data>
+  <data name="Settings.Tag.Header" xml:space="preserve"><value>태그 표시</value></data>
+  <data name="Settings.Tag.FontSize" xml:space="preserve"><value>태그 폰트 크기:</value></data>
+  <data name="Settings.Thumbnail.Header" xml:space="preserve"><value>썸네일 설정</value></data>
+  <data name="Settings.Thumbnail.DecodeWidth" xml:space="preserve"><value>디코드 폭(px):</value></data>
+  <data name="Settings.Cache.Header" xml:space="preserve"><value>이미지 캐시</value></data>
+  <data name="Settings.Cache.MaxImageCount" xml:space="preserve"><value>최대 이미지 수</value></data>
+  <data name="Settings.Cache.MaxSizeGb" xml:space="preserve"><value>최대 용량(GB)</value></data>
+  <data name="Settings.Cache.ClearAll" xml:space="preserve"><value>캐시 전체 삭제</value></data>
+  <data name="Settings.Cache.Summary" xml:space="preserve"><value>합계: {0} images, {1:F1} MB</value></data>
+</root>

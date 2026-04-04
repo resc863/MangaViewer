@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <data name="ThumbnailPaneToggle.ToolTipService.ToolTip" xml:space="preserve"><value>サムネイルパネル</value></data>
+  <data name="BookmarkPaneToggle.ToolTipService.ToolTip" xml:space="preserve"><value>ブックマークパネル</value></data>
+  <data name="AddBookmarkButton.Label" xml:space="preserve"><value>ブックマーク追加</value></data>
+  <data name="OpenFolderButton.Label" xml:space="preserve"><value>フォルダーを開く</value></data>
+  <data name="OcrToggle.Label" xml:space="preserve"><value>OCR</value></data>
+  <data name="TranslationToggle.Label" xml:space="preserve"><value>翻訳</value></data>
+  <data name="NavLibraryItem.Content" xml:space="preserve"><value>ライブラリ</value></data>
+  <data name="NavReaderItem.Content" xml:space="preserve"><value>リーダー</value></data>
+  <data name="NavSearchItem.Content" xml:space="preserve"><value>検索</value></data>
+  <data name="FooterBrandText.Text" xml:space="preserve"><value>Manga Viewer</value></data>
+  <data name="RemoveBookmarkButton.Content" xml:space="preserve"><value>削除</value></data>
+  <data name="SingleOcrTextBox.PlaceholderText" xml:space="preserve"><value>OCRテキスト</value></data>
+  <data name="SingleTranslationTextBox.PlaceholderText" xml:space="preserve"><value>翻訳結果</value></data>
+  <data name="LeftOcrTextBox.PlaceholderText" xml:space="preserve"><value>左OCRテキスト</value></data>
+  <data name="LeftTranslationTextBox.PlaceholderText" xml:space="preserve"><value>左翻訳</value></data>
+  <data name="RightOcrTextBox.PlaceholderText" xml:space="preserve"><value>右OCRテキスト</value></data>
+  <data name="RightTranslationTextBox.PlaceholderText" xml:space="preserve"><value>右翻訳</value></data>
+  <data name="LibraryHeaderTitle.Text" xml:space="preserve"><value>マンガライブラリ</value></data>
+  <data name="LibraryRefreshButton.Content" xml:space="preserve"><value>更新</value></data>
+  <data name="LibraryEmptyTitle.Text" xml:space="preserve"><value>ライブラリフォルダーがありません</value></data>
+  <data name="LibraryEmptyDescription.Text" xml:space="preserve"><value>設定でマンガライブラリフォルダーを追加してください</value></data>
+  <data name="QueryBox.PlaceholderText" xml:space="preserve"><value>検索語を入力</value></data>
+  <data name="SearchButton.Content" xml:space="preserve"><value>検索</value></data>
+  <data name="OpenMenuItem.Text" xml:space="preserve"><value>開く</value></data>
+  <data name="DetailsMenuItem.Text" xml:space="preserve"><value>詳細</value></data>
+  <data name="ArtistItem.Text" xml:space="preserve"><value>作者</value></data>
+  <data name="GroupItem.Text" xml:space="preserve"><value>グループ</value></data>
+  <data name="TagsRoot.Text" xml:space="preserve"><value>タグ</value></data>
+  <data name="OpenLinkButton.Content" xml:space="preserve"><value>元ページを開く</value></data>
+  <data name="LanguageHeader.Text" xml:space="preserve"><value>言語</value></data>
+  <data name="ArtistsHeader.Text" xml:space="preserve"><value>作者</value></data>
+  <data name="GroupsHeader.Text" xml:space="preserve"><value>グループ</value></data>
+  <data name="ParodiesHeader.Text" xml:space="preserve"><value>パロディ</value></data>
+  <data name="MaleTagHeader.Text" xml:space="preserve"><value>Maleタグ</value></data>
+  <data name="FemaleTagHeader.Text" xml:space="preserve"><value>Femaleタグ</value></data>
+  <data name="OtherTagHeader.Text" xml:space="preserve"><value>その他タグ</value></data>
+  <data name="Reader.Direction.Reverse" xml:space="preserve"><value>読み方向: 右から左</value></data>
+  <data name="Reader.Direction.Forward" xml:space="preserve"><value>読み方向: 左から右</value></data>
+  <data name="Reader.Cover.Single" xml:space="preserve"><value>表紙: 1ページ表示</value></data>
+  <data name="Reader.Cover.Double" xml:space="preserve"><value>表紙: 2ページ表示</value></data>
+  <data name="Settings.General.Header" xml:space="preserve"><value>アプリ設定</value></data>
+  <data name="Settings.AppLanguage.Label" xml:space="preserve"><value>UI言語:</value></data>
+  <data name="Settings.AppLanguage.Auto" xml:space="preserve"><value>システム既定</value></data>
+  <data name="Settings.AppLanguage.Korean" xml:space="preserve"><value>韓国語</value></data>
+  <data name="Settings.AppLanguage.English" xml:space="preserve"><value>英語</value></data>
+  <data name="Settings.AppLanguage.Japanese" xml:space="preserve"><value>日本語</value></data>
+  <data name="Settings.AppLanguage.Restart.Title" xml:space="preserve"><value>言語変更</value></data>
+  <data name="Settings.AppLanguage.Restart.Message" xml:space="preserve"><value>すべてのUIテキストを完全に反映するにはアプリを再起動してください。</value></data>
+  <data name="Settings.Common.Remove" xml:space="preserve"><value>削除</value></data>
+  <data name="Settings.Common.Delete" xml:space="preserve"><value>削除</value></data>
+  <data name="Settings.Common.Use" xml:space="preserve"><value>使用</value></data>
+  <data name="Settings.Common.NotUse" xml:space="preserve"><value>未使用</value></data>
+  <data name="Settings.Common.Auto" xml:space="preserve"><value>自動</value></data>
+  <data name="Settings.Common.Manual" xml:space="preserve"><value>手動</value></data>
+  <data name="Settings.Common.Off" xml:space="preserve"><value>オフ</value></data>
+  <data name="Settings.Common.On" xml:space="preserve"><value>オン</value></data>
+  <data name="Settings.Common.Enabled" xml:space="preserve"><value>有効</value></data>
+  <data name="Settings.Common.Disabled" xml:space="preserve"><value>無効</value></data>
+  <data name="Settings.Common.Apply" xml:space="preserve"><value>適用</value></data>
+  <data name="Settings.Common.Refresh" xml:space="preserve"><value>更新</value></data>
+  <data name="Settings.Common.Loading" xml:space="preserve"><value>読み込み中...</value></data>
+  <data name="Settings.Common.ErrorPrefix" xml:space="preserve"><value>エラー: </value></data>
+  <data name="Settings.Common.FailedPrefix" xml:space="preserve"><value>失敗: </value></data>
+  <data name="Settings.Common.Downloading" xml:space="preserve"><value>ダウンロード中...</value></data>
+  <data name="Settings.Common.DownloadFailedPrefix" xml:space="preserve"><value>ダウンロード失敗: </value></data>
+  <data name="Settings.Common.Enumerating" xml:space="preserve"><value>列挙中...</value></data>
+  <data name="Settings.Common.None" xml:space="preserve"><value>(なし)</value></data>
+  <data name="Settings.Common.Registering" xml:space="preserve"><value>登録中...</value></data>
+  <data name="Settings.Common.Ok" xml:space="preserve"><value>OK</value></data>
+  <data name="Settings.Common.CountUnit" xml:space="preserve"><value>{0}</value></data>
+  <data name="Settings.Library.Header" xml:space="preserve"><value>マンガライブラリ</value></data>
+  <data name="Settings.Library.AddFolder" xml:space="preserve"><value>ライブラリフォルダー追加</value></data>
+  <data name="Settings.Ocr.Header" xml:space="preserve"><value>OCR設定</value></data>
+  <data name="Settings.Ocr.Engine" xml:space="preserve"><value>OCRエンジン:</value></data>
+  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollamaエンドポイント:</value></data>
+  <data name="Settings.Ocr.LoadModels" xml:space="preserve"><value>モデル読み込み</value></data>
+  <data name="Settings.Ocr.Model" xml:space="preserve"><value>OCRモデル:</value></data>
+  <data name="Settings.Ocr.Output.Json" xml:space="preserve"><value>JSON（ボックス含む）</value></data>
+  <data name="Settings.Ocr.Output.Text" xml:space="preserve"><value>テキスト</value></data>
+  <data name="Settings.Ocr.OutputFormat" xml:space="preserve"><value>出力形式:</value></data>
+  <data name="Settings.Ocr.HybridParallel" xml:space="preserve"><value>Hybrid text parallel:</value></data>
+  <data name="Settings.Ocr.HybridFallback" xml:space="preserve"><value>Hybrid VLMフォールバック:</value></data>
+  <data name="Settings.Ocr.DocLayout.Download" xml:space="preserve"><value>PP-DocLayoutV3モデルをダウンロード</value></data>
+  <data name="Settings.Ocr.DocLayout.Model" xml:space="preserve"><value>DocLayoutモデル:</value></data>
+  <data name="Settings.Ocr.DocLayout.InstalledWithEp" xml:space="preserve"><value>インストール済み + EPコンテキスト準備完了</value></data>
+  <data name="Settings.Ocr.DocLayout.Installed" xml:space="preserve"><value>インストール済み</value></data>
+  <data name="Settings.Ocr.DocLayout.NotInstalled" xml:space="preserve"><value>未インストール（Hybrid OCRに必要）</value></data>
+  <data name="Settings.Ocr.OnnxEpMode" xml:space="preserve"><value>ONNX EPモード:</value></data>
+  <data name="Settings.Ocr.ManualEpList" xml:space="preserve"><value>手動EPリスト:</value></data>
+  <data name="Settings.Ocr.EpRegisterNow" xml:space="preserve"><value>EPを今すぐ登録</value></data>
+  <data name="Settings.Ocr.GetCompatibleEps" xml:space="preserve"><value>互換EPを取得</value></data>
+  <data name="Settings.Ocr.ExecutionProvider" xml:space="preserve"><value>実行プロバイダー:</value></data>
+  <data name="Settings.Ocr.CompatibleEps" xml:space="preserve"><value>互換EP:</value></data>
+  <data name="Settings.Ocr.Status.CudaGraphUpdated" xml:space="preserve"><value>TensorRT RTX CUDA graphオプションを更新しました</value></data>
+  <data name="Settings.Ocr.TensorRtCudaGraph" xml:space="preserve"><value>TensorRT RTX CUDA graph:</value></data>
+  <data name="Settings.Ocr.TensorRtRuntimeCache" xml:space="preserve"><value>TensorRT RTXランタイムキャッシュ:</value></data>
+  <data name="Settings.Ocr.UseCompiledModel" xml:space="preserve"><value>コンパイル済みモデルを使用</value></data>
+  <data name="Settings.Ocr.UseSourceOnnx" xml:space="preserve"><value>ソースONNXを使用</value></data>
+  <data name="Settings.Ocr.Status.EpContextEnabled" xml:space="preserve"><value>EPコンテキスト読込を有効化</value></data>
+  <data name="Settings.Ocr.Status.EpContextDisabled" xml:space="preserve"><value>EPコンテキスト読込を無効化</value></data>
+  <data name="Settings.Ocr.EpContextLoad" xml:space="preserve"><value>EPコンテキスト読込:</value></data>
+  <data name="Settings.Ocr.AutoCompile" xml:space="preserve"><value>自動コンパイル</value></data>
+  <data name="Settings.Ocr.ManualCompile" xml:space="preserve"><value>手動コンパイル</value></data>
+  <data name="Settings.Ocr.Status.EpAutoCompileEnabled" xml:space="preserve"><value>EPコンテキスト自動コンパイル有効</value></data>
+  <data name="Settings.Ocr.Status.EpAutoCompileDisabled" xml:space="preserve"><value>EPコンテキスト自動コンパイル無効</value></data>
+  <data name="Settings.Ocr.EpContextCompileMode" xml:space="preserve"><value>EPコンテキストコンパイルモード:</value></data>
+  <data name="Settings.Ocr.CompileEpContextNow" xml:space="preserve"><value>EPコンテキストを今すぐコンパイル</value></data>
+  <data name="Settings.Ocr.Status.CompilingEpContext" xml:space="preserve"><value>EPコンテキストをコンパイル中...</value></data>
+  <data name="Settings.Ocr.EpContextCompile" xml:space="preserve"><value>EPコンテキストコンパイル:</value></data>
+  <data name="Settings.Ocr.Language" xml:space="preserve"><value>言語:</value></data>
+  <data name="Settings.Ocr.Group.Word" xml:space="preserve"><value>単語</value></data>
+  <data name="Settings.Ocr.Group.Line" xml:space="preserve"><value>行</value></data>
+  <data name="Settings.Ocr.Group.Paragraph" xml:space="preserve"><value>段落</value></data>
+  <data name="Settings.Ocr.Group.Label" xml:space="preserve"><value>グループ:</value></data>
+  <data name="Settings.Ocr.Writing.Horizontal" xml:space="preserve"><value>横書き</value></data>
+  <data name="Settings.Ocr.Writing.Vertical" xml:space="preserve"><value>縦書き</value></data>
+  <data name="Settings.Ocr.Writing.Label" xml:space="preserve"><value>文字方向:</value></data>
+  <data name="Settings.Ocr.AdjacentCache" xml:space="preserve"><value>隣接ページOCRキャッシュ:</value></data>
+  <data name="Settings.Ocr.AdjacentCount" xml:space="preserve"><value>OCR隣接ページ数:</value></data>
+  <data name="Settings.Ocr.Thinking.Supported" xml:space="preserve"><value>選択モデル: Thinking対応</value></data>
+  <data name="Settings.Ocr.Thinking.NotSupported" xml:space="preserve"><value>選択モデル: Thinking非対応</value></data>
+  <data name="Settings.Ocr.LoadingModels" xml:space="preserve"><value>モデル取得中...</value></data>
+  <data name="Settings.Ocr.ModelsCountVisionTool" xml:space="preserve"><value>{0} (Vision+Tool)</value></data>
+  <data name="Settings.Translation.Header" xml:space="preserve"><value>翻訳設定</value></data>
+  <data name="Settings.Translation.ApiKey" xml:space="preserve"><value>APIキー:</value></data>
+  <data name="Settings.Translation.TargetLanguage" xml:space="preserve"><value>対象言語:</value></data>
+  <data name="Settings.Translation.SelectModel" xml:space="preserve"><value>モデルを選択</value></data>
+  <data name="Settings.Translation.FetchModelList" xml:space="preserve"><value>一覧取得</value></data>
+  <data name="Settings.Translation.Model" xml:space="preserve"><value>モデル:</value></data>
+  <data name="Settings.Translation.SystemPromptPlaceholder" xml:space="preserve"><value>システムプロンプト</value></data>
+  <data name="Settings.Thinking.Minimal" xml:space="preserve"><value>最小</value></data>
+  <data name="Settings.Thinking.Low" xml:space="preserve"><value>低</value></data>
+  <data name="Settings.Thinking.Medium" xml:space="preserve"><value>中</value></data>
+  <data name="Settings.Thinking.High" xml:space="preserve"><value>高</value></data>
+  <data name="Settings.Translation.EnterApiKeyFirst" xml:space="preserve"><value>先にAPIキーを入力してください</value></data>
+  <data name="Settings.Translation.Provider" xml:space="preserve"><value>プロバイダー:</value></data>
+  <data name="Settings.Translation.SystemPrompt" xml:space="preserve"><value>システムプロンプト:</value></data>
+  <data name="Settings.Translation.AdjacentCache" xml:space="preserve"><value>隣接ページ翻訳キャッシュ:</value></data>
+  <data name="Settings.Translation.AdjacentCount" xml:space="preserve"><value>翻訳隣接ページ数:</value></data>
+  <data name="Settings.Translation.OverlayFontSize" xml:space="preserve"><value>翻訳オーバーレイ文字サイズ:</value></data>
+  <data name="Settings.Translation.OverlayBoxHorizontal" xml:space="preserve"><value>翻訳オーバーレイ横サイズ:</value></data>
+  <data name="Settings.Translation.OverlayBoxVertical" xml:space="preserve"><value>翻訳オーバーレイ縦サイズ:</value></data>
+  <data name="Settings.Tag.Header" xml:space="preserve"><value>タグ表示</value></data>
+  <data name="Settings.Tag.FontSize" xml:space="preserve"><value>タグ文字サイズ:</value></data>
+  <data name="Settings.Thumbnail.Header" xml:space="preserve"><value>サムネイル設定</value></data>
+  <data name="Settings.Thumbnail.DecodeWidth" xml:space="preserve"><value>デコード幅(px):</value></data>
+  <data name="Settings.Cache.Header" xml:space="preserve"><value>画像キャッシュ</value></data>
+  <data name="Settings.Cache.MaxImageCount" xml:space="preserve"><value>最大画像数</value></data>
+  <data name="Settings.Cache.MaxSizeGb" xml:space="preserve"><value>最大容量(GB)</value></data>
+  <data name="Settings.Cache.ClearAll" xml:space="preserve"><value>キャッシュをすべて削除</value></data>
+  <data name="Settings.Cache.Summary" xml:space="preserve"><value>合計: {0} images, {1:F1} MB</value></data>
+</root>

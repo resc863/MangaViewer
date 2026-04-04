@@ -21,10 +21,10 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             
-            <TextBlock Grid.Column="0" Text="만화 라이브러리" 
+            <TextBlock x:Name="LibraryHeaderTitle" x:Uid="LibraryHeaderTitle" Grid.Column="0" Text="만화 라이브러리" 
                        Style="{StaticResource TitleTextBlockStyle}"/>
             
-            <Button Grid.Column="1" 
+            <Button x:Name="LibraryRefreshButton" x:Uid="LibraryRefreshButton" Grid.Column="1" 
                     Content="새로고침" 
                     Command="{Binding RefreshCommand}"
                     Style="{StaticResource AccentButtonStyle}"/>
@@ -102,10 +102,10 @@
                               FontFamily="Segoe MDL2 Assets"
                               FontSize="48"
                               Opacity="0.6"/>
-                    <TextBlock Text="라이브러리 폴더가 없습니다"
+                    <TextBlock x:Name="LibraryEmptyTitle" x:Uid="LibraryEmptyTitle" Text="라이브러리 폴더가 없습니다"
                                Style="{StaticResource SubtitleTextBlockStyle}"
                                Opacity="0.6"/>
-                    <TextBlock Text="설정에서 만화 라이브러리 폴더를 추가하세요"
+                    <TextBlock x:Name="LibraryEmptyDescription" x:Uid="LibraryEmptyDescription" Text="설정에서 만화 라이브러리 폴더를 추가하세요"
                                Style="{StaticResource BodyTextBlockStyle}"
                                Opacity="0.6"/>
                 </StackPanel>

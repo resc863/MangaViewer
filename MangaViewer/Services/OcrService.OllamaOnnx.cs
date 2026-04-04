@@ -97,12 +97,27 @@ namespace MangaViewer.Services
                 if (!_ollamaCache.TryGetValue(cacheKey, out var cached))
                     return false;
 
-                return ShouldReuseCachedOcrResult(cached);
+                if (!ShouldReuseCachedOcrResult(cached))
+                    return false;
+
+                if (Backend == OcrBackend.Hybrid && HasIncompleteHybridTextBoxes(cached))
+                    return false;
+
+                return true;
             }
         }
 
         private static bool ShouldReuseCachedOcrResult(OllamaOcrResponse? response)
             => response != null && response.Boxes.Count > 0;
+
+        private static bool HasIncompleteHybridTextBoxes(OllamaOcrResponse? response)
+            => response != null && response.Boxes.Any(IsIncompleteHybridTextBox);
+
+        private static bool IsIncompleteHybridTextBox(BoundingBoxViewModel box)
+            => box != null && string.IsNullOrWhiteSpace(box.Text);
+
+        private static List<BoundingBoxViewModel> GetIncompleteHybridTextBoxes(IReadOnlyList<BoundingBoxViewModel> boxes)
+            => boxes.Where(IsIncompleteHybridTextBox).ToList();
 
         public async Task<OllamaOcrResponse> GetOllamaOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh = false)
         {
@@ -213,6 +228,7 @@ namespace MangaViewer.Services
             // 3) Each region is cropped losslessly and recognized by GLM OCR in parallel (throttled).
             // 4) Final text/boxes are composed and cached.
             string cacheKey = BuildOllamaCacheKey(imagePath, "hybrid");
+            OllamaOcrResponse? cachedHybrid = null;
             if (!forceRefresh)
             {
                 lock (_cacheGate)
@@ -220,8 +236,48 @@ namespace MangaViewer.Services
                     if (_ollamaCache.TryGetValue(cacheKey, out var cached)
                         && ShouldReuseCachedOcrResult(cached))
                     {
-                        onLayoutBoxesReady?.Invoke(cached.Boxes);
-                        return cached;
+                        cachedHybrid = cached;
+                    }
+                }
+
+                if (cachedHybrid != null)
+                {
+                    onLayoutBoxesReady?.Invoke(cachedHybrid.Boxes);
+
+                    var pendingBoxes = GetIncompleteHybridTextBoxes(cachedHybrid.Boxes);
+                    if (pendingBoxes.Count == 0)
+                        return cachedHybrid;
+
+                    try
+                    {
+                        var sourceImage = await TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                        if (sourceImage.Bytes != null && sourceImage.Width > 0 && sourceImage.Height > 0)
+                        {
+                            await RecognizeLayoutBoxesWithGlmOcrAsync(
+                                sourceImage.Bytes,
+                                pendingBoxes,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+
+                        var resumed = BuildOllamaOcrResponse(cachedHybrid.Boxes);
+                        lock (_cacheGate)
+                        {
+                            if (ShouldReuseCachedOcrResult(resumed))
+                                _ollamaCache[cacheKey] = resumed;
+                            else
+                                _ollamaCache.Remove(cacheKey);
+                        }
+
+                        return resumed;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[OcrService][ONNX] Hybrid OCR partial retry failed. Error={ex.Message}");
+                        return cachedHybrid;
                     }
                 }
             }
@@ -1072,16 +1128,33 @@ namespace MangaViewer.Services
 
         private async Task<string> SendOllamaCropOcrRequestAsync(byte[] imageBytes, CancellationToken cancellationToken)
         {
+            bool thinkEnabled = false;
+            object? think = null;
+            try
+            {
+                OllamaModelCapabilities capabilities = await GetOllamaModelCapabilitiesAsync(OllamaModel, cancellationToken).ConfigureAwait(false);
+                if (capabilities.Thinking)
+                {
+                    thinkEnabled = BuildThinkParameter(OllamaThinkingLevel);
+                    think = thinkEnabled;
+                }
+            }
+            catch
+            {
+            }
+
+            string cropPrompt = BuildHybridCropOcrPrompt(OllamaModel);
+
             var message = new Dictionary<string, object?>
             {
                 ["role"] = "user",
-                ["content"] = "Extract all readable text from this cropped manga region. Return plain text only.",
+                ["content"] = cropPrompt,
                 ["images"] = new[] { Convert.ToBase64String(imageBytes) }
             };
 
             var payload = new Dictionary<string, object?>
             {
-                ["model"] = HybridOllamaModel,
+                ["model"] = OllamaModel,
                 ["stream"] = false,
                 ["messages"] = new[] { message },
                 ["options"] = new Dictionary<string, object?>
@@ -1091,13 +1164,19 @@ namespace MangaViewer.Services
                 }
             };
 
+            if (think != null)
+                payload["think"] = think;
+
             using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/chat")
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
 
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(OllamaRequestTimeout);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
 
             using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
@@ -1120,6 +1199,20 @@ namespace MangaViewer.Services
             }
 
             return string.Empty;
+        }
+
+        private static string BuildHybridCropOcrPrompt(string? modelName)
+        {
+            if (IsGlmFamilyModel(modelName))
+            {
+                return "Text Recognition:";
+            }
+
+            return @"Recognize all readable text in this cropped manga region.
+Consider typical Japanese manga speech-bubble text writing/reading order.
+Return only the recognized text as plain text.
+Do not return JSON, markdown, labels, or explanations.
+If no readable text exists, return an empty string.";
         }
 
         private static async Task<(int Width, int Height)> TryGetOriginalImageSizeFromPathAsync(string imagePath, CancellationToken cancellationToken)
@@ -1353,8 +1446,6 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             if (think != null)
                 payload["think"] = think;
 
-            TimeSpan requestTimeout = thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout;
-
             string payloadJson = JsonSerializer.Serialize(payload);
             Debug.WriteLine($"[OcrService][Ollama] Request JSON: {TruncateForDebug(payloadJson)}");
 
@@ -1363,8 +1454,11 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                 Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
             };
 
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(requestTimeout);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
 
             using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
@@ -1411,8 +1505,9 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
 
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(OllamaRequestTimeout, thinkingEnabled: false);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(OllamaRequestTimeout);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
 
             using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
@@ -1850,6 +1945,17 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             }
 
             return OllamaVisionModelFamily.Other;
+        }
+
+        private static bool IsGlmFamilyModel(string? modelName)
+        {
+            if (string.IsNullOrWhiteSpace(modelName))
+                return false;
+
+            string normalized = modelName.Trim().ToLowerInvariant();
+            return normalized.StartsWith("glm", StringComparison.Ordinal)
+                || normalized.Contains("/glm", StringComparison.Ordinal)
+                || normalized.Contains("-glm", StringComparison.Ordinal);
         }
     }
 }

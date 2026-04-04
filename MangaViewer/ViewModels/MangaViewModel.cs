@@ -13,6 +13,7 @@ using Microsoft.UI.Xaml.Controls;
 using MangaViewer.Services.Thumbnails;
 using MangaViewer.Services.Logging;
 using System.IO;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -20,6 +21,11 @@ namespace MangaViewer.ViewModels
 {
     public partial class MangaViewModel : BaseViewModel, IDisposable
     {
+        private static readonly JsonSerializerOptions PromptJsonSerializerOptions = new()
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
+
         private readonly MangaManager _mangaManager = new();
         private readonly ImageCacheService _imageCache = ImageCacheService.Instance;
         private readonly OcrService _ocrService = OcrService.Instance;
@@ -59,6 +65,9 @@ namespace MangaViewer.ViewModels
         private string _ocrStatusMessage = string.Empty;
         private bool _isInfoBarOpen;
         private InfoBarSeverity _ocrSeverity = InfoBarSeverity.Informational;
+        private string _progressPopupMessage = string.Empty;
+        private bool _isProgressPopupOpen;
+        private int _progressPopupVersion;
 
         public ReadOnlyObservableCollection<MangaPageViewModel> Thumbnails => _mangaManager.Pages;
         public ObservableCollection<MangaPageViewModel> Bookmarks { get; } = new();
@@ -121,6 +130,7 @@ namespace MangaViewer.ViewModels
                     if (_isTranslationActive && _isOcrActive)
                     {
                         _ = RunTranslationAsync();
+                        StartAdjacentPagePrefetch();
                     }
                     else
                     {
@@ -144,6 +154,8 @@ namespace MangaViewer.ViewModels
         public string OcrStatusMessage { get => _ocrStatusMessage; private set => SetProperty(ref _ocrStatusMessage, value); }
         public bool IsInfoBarOpen { get => _isInfoBarOpen; private set => SetProperty(ref _isInfoBarOpen, value); }
         public InfoBarSeverity OcrSeverity { get => _ocrSeverity; private set => SetProperty(ref _ocrSeverity, value); }
+        public string ProgressPopupMessage { get => _progressPopupMessage; private set => SetProperty(ref _progressPopupMessage, value); }
+        public bool IsProgressPopupOpen { get => _isProgressPopupOpen; private set => SetProperty(ref _isProgressPopupOpen, value); }
         public bool IsStreamingGallery
         {
             get => _isStreamingGallery;
@@ -187,8 +199,18 @@ namespace MangaViewer.ViewModels
         public bool IsControlEnabled => !IsLoading && !IsOcrRunning;
         public bool IsOcrToggleEnabled => !IsLoading && _mangaManager.TotalImages > 0;
 
-        public string DirectionButtonText => _mangaManager.IsRightToLeft ? "읽기 방향: 역방향" : "읽기 방향: 정방향";
-        public string CoverButtonText => _mangaManager.IsCoverSeparate ? "표지: 한 장으로 보기" : "표지: 두 장으로 보기";
+        public string DirectionButtonText => _mangaManager.IsRightToLeft
+            ? LocalizationHelper.GetString("Reader.Direction.Reverse", "읽기 방향: 역방향")
+            : LocalizationHelper.GetString("Reader.Direction.Forward", "읽기 방향: 정방향");
+        public string CoverButtonText => _mangaManager.IsCoverSeparate
+            ? LocalizationHelper.GetString("Reader.Cover.Single", "표지: 한 장으로 보기")
+            : LocalizationHelper.GetString("Reader.Cover.Double", "표지: 두 장으로 보기");
+
+        public void RefreshLocalizedTexts()
+        {
+            OnPropertyChanged(nameof(DirectionButtonText));
+            OnPropertyChanged(nameof(CoverButtonText));
+        }
 
         // Commands
         public AsyncRelayCommand OpenFolderCommand { get; }
@@ -858,6 +880,7 @@ namespace MangaViewer.ViewModels
 
                 totalBoxes += result.Boxes.Count;
                 completedPages++;
+                ShowProgressPopup(BuildPerPageProgressMessage("OCR", completedPages, totalPages, paths[pageIndex]));
 
                 RaiseOllamaOcrTextVisibilityChanged();
                 PageViewChanged?.Invoke(this, EventArgs.Empty);
@@ -961,6 +984,7 @@ namespace MangaViewer.ViewModels
 
                 totalBoxes += result.Boxes.Count;
                 completedPages++;
+                ShowProgressPopup(BuildPerPageProgressMessage("OCR", completedPages, totalPages, paths[pageIndex]));
 
                 if (!string.IsNullOrWhiteSpace(result.StatusMessage))
                     fallbackStatusMessage = result.StatusMessage;
@@ -1036,6 +1060,26 @@ namespace MangaViewer.ViewModels
             bool hasPlainTextOcr = !string.IsNullOrWhiteSpace(LeftOcrText) || !string.IsNullOrWhiteSpace(RightOcrText);
             if (!hasBoxOcr && !hasPlainTextOcr) return;
 
+            bool leftHasTranslationTarget = hasBoxOcr
+                ? _leftOcrBoxes.Any(b => !string.IsNullOrWhiteSpace(b.Text))
+                : !string.IsNullOrWhiteSpace(LeftOcrText);
+            bool rightHasTranslationTarget = hasBoxOcr
+                ? _rightOcrBoxes.Any(b => !string.IsNullOrWhiteSpace(b.Text))
+                : !string.IsNullOrWhiteSpace(RightOcrText);
+
+            int totalTranslationTargets = (leftHasTranslationTarget ? 1 : 0) + (rightHasTranslationTarget ? 1 : 0);
+            int completedTranslationTargets = 0;
+
+            void NotifyTranslationProgress(bool isLeft)
+            {
+                if (totalTranslationTargets <= 0)
+                    return;
+
+                completedTranslationTargets++;
+                string? path = isLeft ? LeftImageFilePath : RightImageFilePath;
+                ShowProgressPopup(BuildPerPageProgressMessage("번역", completedTranslationTargets, totalTranslationTargets, path));
+            }
+
             SetOcrStatus("번역 실행 중...", InfoBarSeverity.Informational, false);
 
             if (hasBoxOcr)
@@ -1063,12 +1107,20 @@ namespace MangaViewer.ViewModels
                     if (_mangaManager.IsRightToLeft)
                     {
                         await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                        if (rightHasTranslationTarget)
+                            NotifyTranslationProgress(isLeft: false);
                         await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                        if (leftHasTranslationTarget)
+                            NotifyTranslationProgress(isLeft: true);
                     }
                     else
                     {
                         await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                        if (leftHasTranslationTarget)
+                            NotifyTranslationProgress(isLeft: true);
                         await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                        if (rightHasTranslationTarget)
+                            NotifyTranslationProgress(isLeft: false);
                     }
                     PageViewChanged?.Invoke(this, EventArgs.Empty);
                 }
@@ -1077,11 +1129,13 @@ namespace MangaViewer.ViewModels
                     if (!string.IsNullOrWhiteSpace(LeftOcrText))
                     {
                         TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText).ConfigureAwait(true);
+                        NotifyTranslationProgress(isLeft: true);
                     }
 
                     if (!string.IsNullOrWhiteSpace(RightOcrText))
                     {
                         TranslatedRightOcrText = await TranslateTextAsync(RightOcrText).ConfigureAwait(true);
+                        NotifyTranslationProgress(isLeft: false);
                     }
                 }
 
@@ -1124,7 +1178,16 @@ namespace MangaViewer.ViewModels
 
             try
             {
-                using var timeoutCts = new CancellationTokenSource(TranslationPerSideTimeout);
+                TimeSpan timeout = TranslationPerSideTimeout;
+                var settings = TranslationSettingsService.Instance;
+                if (string.Equals(settings.Provider, "Ollama", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool thinkingEnabled = !NormalizeOllamaThinkingLevel(settings.ThinkingLevel)
+                        .Equals("Off", StringComparison.OrdinalIgnoreCase);
+                    timeout = OllamaRequestLoadCoordinator.GetSuggestedTimeout(timeout, thinkingEnabled);
+                }
+
+                using var timeoutCts = new CancellationTokenSource(timeout);
                 await TranslateBoundingBoxesWithContextAsync(boxes, pageOcrText, timeoutCts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
@@ -1187,7 +1250,7 @@ namespace MangaViewer.ViewModels
                 boxes = merged.Select(x => new { index = x.Index, text = x.Text }).ToArray()
             };
 
-            string jsonPayload = JsonSerializer.Serialize(boxPayload);
+            string jsonPayload = JsonSerializer.Serialize(boxPayload, PromptJsonSerializerOptions);
             string boxSystemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
                 ? "You are a professional manga translator."
                 : systemPrompt;
@@ -1204,6 +1267,10 @@ namespace MangaViewer.ViewModels
                     "Use the exact same index values from input. " +
                     "Do not add markdown, comments, or extra keys.\nInput JSON:\n" + jsonPayload)
             };
+
+            Log.Info($"[Translation][Request] provider={settings.Provider}, model={model}, thinking={settings.ThinkingLevel}, targetLanguage={targetLanguage}, mode=box");
+            Log.Info($"[Translation][Request][System] {boxSystemPrompt}");
+            Log.Info($"[Translation][Request][User] {messages[1].Text}");
 
             using (client)
             {
@@ -1456,6 +1523,10 @@ namespace MangaViewer.ViewModels
             messages.Add(new ChatMessage(ChatRole.System, effectiveSystemPrompt));
             messages.Add(new ChatMessage(ChatRole.User, text));
 
+            Log.Info($"[Translation][Request] provider={settings.Provider}, model={model}, thinking={effectiveThinkingLevel}, targetLanguage={targetLanguage}");
+            Log.Info($"[Translation][Request][System] {effectiveSystemPrompt}");
+            Log.Info($"[Translation][Request][User] {text}");
+
             using (client)
             {
                 var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken);
@@ -1497,24 +1568,30 @@ namespace MangaViewer.ViewModels
             {
                 try
                 {
+                    var translationPathSet = new HashSet<string>(translationPaths, StringComparer.OrdinalIgnoreCase);
+
                     foreach (var path in ocrPaths)
                     {
                         token.ThrowIfCancellationRequested();
-                        if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
-                            await _ocrService.GetHybridOcrAsync(path, token).ConfigureAwait(false);
-                        else
-                            await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
+
+                        var ocrResult = await GetBackendOcrForAdjacentPrefetchAsync(path, token).ConfigureAwait(false);
+                        if (!translationPathSet.Remove(path))
+                            continue;
+
+                        if (!string.IsNullOrWhiteSpace(ocrResult.Text))
+                            await TranslateTextAsync(ocrResult.Text, token).ConfigureAwait(false);
                     }
 
-                    if (translationPaths.Count == 0)
+                    if (translationPathSet.Count == 0)
                         return;
 
-                    foreach (var path in translationPaths)
+                    foreach (var path in translationPathSet)
                     {
                         token.ThrowIfCancellationRequested();
-                        var text = await _ocrService.GetOllamaTextAsync(path, token).ConfigureAwait(false);
-                        if (!string.IsNullOrWhiteSpace(text))
-                            await TranslateTextAsync(text, token).ConfigureAwait(false);
+
+                        var ocrResult = await GetBackendOcrForAdjacentPrefetchAsync(path, token).ConfigureAwait(false);
+                        if (!string.IsNullOrWhiteSpace(ocrResult.Text))
+                            await TranslateTextAsync(ocrResult.Text, token).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException) { }
@@ -1523,6 +1600,14 @@ namespace MangaViewer.ViewModels
                     Log.Error(ex, "[Prefetch] Adjacent OCR/translation prefetch failed");
                 }
             }, token);
+        }
+
+        private Task<OcrService.OllamaOcrResponse> GetBackendOcrForAdjacentPrefetchAsync(string imagePath, CancellationToken token)
+        {
+            if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
+                return _ocrService.GetHybridOcrAsync(imagePath, token);
+
+            return _ocrService.GetOllamaOcrAsync(imagePath, token);
         }
 
         private List<string> GetAdjacentPageImagePaths(int centerPageIndex, int radius, bool prioritizeReverseReading)
@@ -1628,6 +1713,45 @@ namespace MangaViewer.ViewModels
             OcrStatusMessage = message;
             OcrSeverity = severity;
             IsInfoBarOpen = open;
+        }
+
+        private static readonly TimeSpan ProgressPopupDuration = TimeSpan.FromSeconds(1.8);
+
+        private string BuildPerPageProgressMessage(string operationName, int completed, int total, string? imagePath)
+        {
+            int pageNumber = ResolveImagePageNumber(imagePath);
+            if (pageNumber > 0)
+                return $"{operationName} 진행: {completed}/{Math.Max(1, total)} (페이지 {pageNumber})";
+
+            return $"{operationName} 진행: {completed}/{Math.Max(1, total)}";
+        }
+
+        private int ResolveImagePageNumber(string? imagePath)
+        {
+            if (string.IsNullOrWhiteSpace(imagePath))
+                return 0;
+
+            int imageIndex = _mangaManager.FindImageIndexByPath(imagePath);
+            return imageIndex >= 0 ? imageIndex + 1 : 0;
+        }
+
+        private async void ShowProgressPopup(string message)
+        {
+            ProgressPopupMessage = message;
+            IsProgressPopupOpen = true;
+
+            int version = Interlocked.Increment(ref _progressPopupVersion);
+            try
+            {
+                await Task.Delay(ProgressPopupDuration).ConfigureAwait(true);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (version == _progressPopupVersion)
+                IsProgressPopupOpen = false;
         }
 
         private void AddCurrentBookmark()

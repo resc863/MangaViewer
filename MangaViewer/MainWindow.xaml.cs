@@ -13,6 +13,7 @@ using System;
 using Windows.System;
 using Microsoft.UI.Composition.SystemBackdrops; // Mica
 using WinRT; // DispatcherQueue
+using MangaViewer.Helpers;
 
 namespace MangaViewer
 {
@@ -28,7 +29,7 @@ namespace MangaViewer
         public MainWindow()
         {
             this.InitializeComponent();
-            Title = "Manga Viewer";
+            Title = LocalizationHelper.GetString("FooterBrandText.Text", "Manga Viewer");
             ExtendsContentIntoTitleBar = true;
             // Use only the right-side transparent DragRegion as the draggable title bar area
             SetTitleBar(DragRegion);

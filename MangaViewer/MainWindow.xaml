@@ -39,25 +39,29 @@
                         VerticalAlignment="Center"
                         HorizontalAlignment="Left">
                 <CommandBar.PrimaryCommands>
-                    <AppBarToggleButton ToolTipService.ToolTip="썸네일 패널"
+                    <AppBarToggleButton x:Name="ThumbnailPaneToggle"
+                                         x:Uid="ThumbnailPaneToggle"
+                                         ToolTipService.ToolTip="썸네일 패널"
                                          IsChecked="{Binding IsPaneOpen, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE70e;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
-                    <AppBarToggleButton ToolTipService.ToolTip="북마크 패널"
+                    <AppBarToggleButton x:Name="BookmarkPaneToggle"
+                                         x:Uid="BookmarkPaneToggle"
+                                         ToolTipService.ToolTip="북마크 패널"
                                          IsChecked="{Binding IsBookmarkPaneOpen, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE735;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
-                    <AppBarButton Label="북마크 추가" Command="{Binding AddBookmarkCommand}">
+                    <AppBarButton x:Name="AddBookmarkButton" x:Uid="AddBookmarkButton" Label="북마크 추가" Command="{Binding AddBookmarkCommand}">
                         <AppBarButton.Icon>
                             <FontIcon Glyph="&#xE141;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarSeparator/>
-                    <AppBarButton Label="폴더 열기"
+                    <AppBarButton x:Name="OpenFolderButton" x:Uid="OpenFolderButton" Label="폴더 열기"
                                   Click="OpenFolder_Click"
                                   IsEnabled="{Binding IsOpenFolderEnabled}"
                                   Visibility="{Binding IsOpenFolderEnabled, Converter={StaticResource BooleanToVisibilityConverter}}">
@@ -79,12 +83,12 @@
                         </AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarSeparator/>
-                    <AppBarToggleButton Label="OCR" IsEnabled="{Binding IsOcrToggleEnabled}" IsChecked="{Binding IsOcrActive, Mode=TwoWay}">
+                    <AppBarToggleButton x:Name="OcrToggle" x:Uid="OcrToggle" Label="OCR" IsEnabled="{Binding IsOcrToggleEnabled}" IsChecked="{Binding IsOcrActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE8C3;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
-                    <AppBarToggleButton Label="번역" IsEnabled="{Binding IsTranslationToggleEnabled}" IsChecked="{Binding IsTranslationActive, Mode=TwoWay}">
+                    <AppBarToggleButton x:Name="TranslationToggle" x:Uid="TranslationToggle" Label="번역" IsEnabled="{Binding IsTranslationToggleEnabled}" IsChecked="{Binding IsTranslationActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE8C1;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
@@ -101,13 +105,13 @@
                         IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested"
                         Background="Transparent">
             <NavigationView.MenuItems>
-                <NavigationViewItem Content="라이브러리" Icon="Library" Tag="Library"/>
-                <NavigationViewItem Content="리더" Icon="Document" Tag="Reader"/>
-                <NavigationViewItem Content="검색" Icon="Find" Tag="Search"/>
+                <NavigationViewItem x:Name="NavLibraryItem" x:Uid="NavLibraryItem" Content="라이브러리" Icon="Library" Tag="Library"/>
+                <NavigationViewItem x:Name="NavReaderItem" x:Uid="NavReaderItem" Content="리더" Icon="Document" Tag="Reader"/>
+                <NavigationViewItem x:Name="NavSearchItem" x:Uid="NavSearchItem" Content="검색" Icon="Find" Tag="Search"/>
             </NavigationView.MenuItems>
             <NavigationView.PaneFooter>
                 <StackPanel Margin="12,12,12,24" Background="Transparent">
-                    <TextBlock Text="Manga Viewer" Opacity="0.6" FontSize="12"/>
+                    <TextBlock x:Name="FooterBrandText" x:Uid="FooterBrandText" Text="Manga Viewer" Opacity="0.6" FontSize="12"/>
                 </StackPanel>
             </NavigationView.PaneFooter>
             <Frame x:Name="ContentFrame" Background="Transparent" />

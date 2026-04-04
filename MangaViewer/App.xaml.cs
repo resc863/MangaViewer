@@ -7,6 +7,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Dispatching;
 using MangaViewer.Services;
+using System;
+using System.Globalization;
+using Windows.Globalization;
 
 namespace MangaViewer
 {
@@ -22,11 +25,39 @@ namespace MangaViewer
 
         public App()
         {
+            ApplyAppLanguage();
             InitializeComponent();
             ConfigureLogging();
             
             // Handle application exit to cleanup resources
             this.UnhandledException += OnUnhandledException;
+        }
+
+        private static void ApplyAppLanguage()
+        {
+            var selected = SettingsProvider.Get("AppLanguage", "auto");
+            if (string.IsNullOrWhiteSpace(selected) || string.Equals(selected, "auto", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplicationLanguages.PrimaryLanguageOverride = string.Empty;
+            }
+            else
+            {
+                ApplicationLanguages.PrimaryLanguageOverride = selected;
+            }
+
+            var cultureName = string.IsNullOrWhiteSpace(ApplicationLanguages.PrimaryLanguageOverride)
+                ? CultureInfo.CurrentUICulture.Name
+                : ApplicationLanguages.PrimaryLanguageOverride;
+
+            try
+            {
+                var culture = new CultureInfo(cultureName);
+                CultureInfo.DefaultThreadCurrentCulture = culture;
+                CultureInfo.DefaultThreadCurrentUICulture = culture;
+            }
+            catch
+            {
+            }
         }
 
         private static void ConfigureLogging()

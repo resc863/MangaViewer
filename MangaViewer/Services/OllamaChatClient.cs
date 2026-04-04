@@ -2,6 +2,7 @@ using Microsoft.Extensions.AI;
 using System;
 using System.Collections.Generic;
 using System.Net.Http;
+using System.Text.Encodings.Web;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -13,6 +14,12 @@ namespace MangaViewer.Services
     public sealed class OllamaChatClient : IChatClient
     {
         private static readonly HttpClient s_httpClient = new();
+        private static readonly TimeSpan BaseRequestTimeout = TimeSpan.FromSeconds(180);
+        private static readonly TimeSpan ThinkingRequestTimeout = TimeSpan.FromMinutes(10);
+        private static readonly JsonSerializerOptions s_jsonOptions = new()
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+        };
 
         private readonly string _endpoint;
         private readonly string _model;
@@ -56,14 +63,23 @@ namespace MangaViewer.Services
 
             payload["think"] = BuildThinkParameter(_thinkingLevel);
 
+            string requestJson = JsonSerializer.Serialize(payload, s_jsonOptions);
+
             using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint + "/api/chat")
             {
-                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                Content = new StringContent(requestJson, new UTF8Encoding(false), "application/json")
             };
 
-            using var response = await s_httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            bool thinkingEnabled = BuildThinkParameter(_thinkingLevel);
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+                thinkingEnabled ? ThinkingRequestTimeout : BaseRequestTimeout,
+                thinkingEnabled);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
+
+            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
 
             string text = string.Empty;
             using var doc = JsonDocument.Parse(json);

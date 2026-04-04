@@ -9,15 +9,20 @@ using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
 using MangaViewer.Services.Thumbnails; // moved thumbnail services
+using MangaViewer.Helpers;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Globalization;
+using Windows.Globalization;
 
 namespace MangaViewer.Pages
 {
     public sealed partial class SettingsPage : Page
     {
+        private static string L(string key, string fallback) => LocalizationHelper.GetString(key, fallback);
+
         private readonly OcrService _ocr = OcrService.Instance;
         private readonly TagSettingsService _tagSettings = TagSettingsService.Instance;
         private readonly ThumbnailSettingsService _thumbSettings = ThumbnailSettingsService.Instance;
@@ -64,6 +69,8 @@ namespace MangaViewer.Pages
 
         private Slider _thumbWidthSlider = null!;
         private TextBlock _thumbWidthValue = null!;
+        private ComboBox _appLanguageCombo = null!;
+        private bool _isInitializingSettingsUi;
 
         private ListView _cacheList = null!;
         private TextBlock _cacheSummary = null!;
@@ -164,12 +171,27 @@ namespace MangaViewer.Pages
         private void BuildUi()
         {
             var stack = new StackPanel { Spacing = 18, Padding = new Thickness(24) };
+
+            stack.Children.Add(new TextBlock
+            {
+                Text = LocalizationHelper.GetString("Settings.General.Header", "앱 설정"),
+                FontSize = 20,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
+            });
+
+            _appLanguageCombo = new ComboBox { Width = 180 };
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Auto", "시스템 기본값"), Tag = "auto" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Korean", "한국어"), Tag = "ko-KR" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.English", "English"), Tag = "en-US" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Japanese", "日本語"), Tag = "ja-JP" });
+            _appLanguageCombo.SelectionChanged += AppLanguageCombo_SelectionChanged;
+            stack.Children.Add(Row(LocalizationHelper.GetString("Settings.AppLanguage.Label", "UI 언어:"), _appLanguageCombo));
             
             // Library section
-            stack.Children.Add(new TextBlock { Text = "만화 라이브러리", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Library.Header", "만화 라이브러리"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             
             var libraryBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var addLibBtn = new Button { Content = "라이브러리 폴더 추가" }; 
+            var addLibBtn = new Button { Content = L("Settings.Library.AddFolder", "라이브러리 폴더 추가") }; 
             addLibBtn.Click += AddLibraryFolder_Click;
             libraryBtnRow.Children.Add(addLibBtn);
             stack.Children.Add(libraryBtnRow);
@@ -186,38 +208,38 @@ namespace MangaViewer.Pages
             _libraryPathsList.ContainerContentChanging += LibraryPathsList_ContainerContentChanging;
             stack.Children.Add(_libraryPathsList);
             
-            stack.Children.Add(new TextBlock { Text = "OCR 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Ocr.Header", "OCR 설정"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _ocrBackendCombo = new ComboBox { Width = 220 };
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Hybrid (DocLayout + glm-ocr)", Tag = "hybrid" });
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "VLM (Full image)", Tag = "vlm" });
             _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
-            stack.Children.Add(Row("OCR 엔진:", _ocrBackendCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Engine", "OCR 엔진:"), _ocrBackendCombo));
 
             _ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
             _ollamaEndpointBox.LostFocus += OllamaEndpointBox_LostFocus;
             _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
-            _ollamaSettingsPanel.Children.Add(Row("Ollama 주소:", _ollamaEndpointBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OllamaEndpoint", "Ollama 주소:"), _ollamaEndpointBox));
 
             _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "VLM model" };
             _ocrOllamaModelCombo.SelectionChanged += OcrOllamaModelCombo_SelectionChanged;
-            var fetchOcrOllamaModelsBtn = new Button { Content = "모델 불러오기", Margin = new Thickness(8, 0, 0, 0) };
+            var fetchOcrOllamaModelsBtn = new Button { Content = L("Settings.Ocr.LoadModels", "모델 불러오기"), Margin = new Thickness(8, 0, 0, 0) };
             _ocrOllamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var ocrModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             ocrModelInner.Children.Add(_ocrOllamaModelCombo);
             ocrModelInner.Children.Add(fetchOcrOllamaModelsBtn);
             ocrModelInner.Children.Add(_ocrOllamaModelStatus);
-            _ollamaSettingsPanel.Children.Add(Row("OCR 모델:", ocrModelInner));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.Model", "OCR 모델:"), ocrModelInner));
 
             _ocrThinkingLevelCombo = new ComboBox { Width = 180 };
-            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
-            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = "켜짐", Tag = "On" });
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "켜짐"), Tag = "On" });
             _ocrThinkingLevelCombo.SelectionChanged += OcrThinkingLevelCombo_SelectionChanged;
             _ollamaSettingsPanel.Children.Add(Row("Thinking:", _ocrThinkingLevelCombo));
 
-            _ocrStructuredOutputToggle = new ToggleSwitch { OnContent = "JSON(박스 포함)", OffContent = "일반 텍스트" };
+            _ocrStructuredOutputToggle = new ToggleSwitch { OnContent = L("Settings.Ocr.Output.Json", "JSON(박스 포함)"), OffContent = L("Settings.Ocr.Output.Text", "일반 텍스트") };
             _ocrStructuredOutputToggle.Toggled += OcrStructuredOutputToggle_Toggled;
-            _ollamaSettingsPanel.Children.Add(Row("출력 형식:", _ocrStructuredOutputToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OutputFormat", "출력 형식:"), _ocrStructuredOutputToggle));
 
             _ocrOllamaTemperatureBox = new NumberBox
             {
@@ -239,17 +261,17 @@ namespace MangaViewer.Pages
                 SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
             };
             _hybridTextParallelBox.ValueChanged += HybridTextParallelBox_ValueChanged;
-            _ollamaSettingsPanel.Children.Add(Row("Hybrid text parallel:", _hybridTextParallelBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.HybridParallel", "Hybrid text parallel:"), _hybridTextParallelBox));
 
             _hybridOnnxFallbackToggle = new ToggleSwitch
             {
-                OnContent = "Enabled",
-                OffContent = "Disabled"
+                OnContent = L("Settings.Common.Enabled", "Enabled"),
+                OffContent = L("Settings.Common.Disabled", "Disabled")
             };
             _hybridOnnxFallbackToggle.Toggled += HybridOnnxFallbackToggle_Toggled;
-            _ollamaSettingsPanel.Children.Add(Row("Hybrid fallback to VLM:", _hybridOnnxFallbackToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.HybridFallback", "Hybrid fallback to VLM:"), _hybridOnnxFallbackToggle));
 
-            _docLayoutModelDownloadButton = new Button { Content = "Download PP-DocLayoutV3 model" };
+            _docLayoutModelDownloadButton = new Button { Content = L("Settings.Ocr.DocLayout.Download", "Download PP-DocLayoutV3 model") };
             _docLayoutModelDownloadButton.Click += DocLayoutModelDownloadButton_Click;
             _docLayoutModelStatusText = new TextBlock
             {
@@ -261,20 +283,20 @@ namespace MangaViewer.Pages
             var docLayoutRow = new StackPanel { Orientation = Orientation.Horizontal };
             docLayoutRow.Children.Add(_docLayoutModelDownloadButton);
             docLayoutRow.Children.Add(_docLayoutModelStatusText);
-            _ollamaSettingsPanel.Children.Add(Row("DocLayout model:", docLayoutRow));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.DocLayout.Model", "DocLayout model:"), docLayoutRow));
 
             _onnxEpModeCombo = new ComboBox { Width = 180 };
-            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = "Auto", Tag = "auto" });
-            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = "Manual", Tag = "manual" });
+            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "Auto"), Tag = "auto" });
+            _onnxEpModeCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Manual", "Manual"), Tag = "manual" });
             _onnxEpModeCombo.SelectionChanged += OnnxEpModeCombo_SelectionChanged;
-            _ollamaSettingsPanel.Children.Add(Row("ONNX EP mode:", _onnxEpModeCombo));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OnnxEpMode", "ONNX EP mode:"), _onnxEpModeCombo));
 
             _onnxEpManualListBox = new TextBox { Width = 300, PlaceholderText = "QNN, DML ... (optional)" };
             _onnxEpManualListBox.LostFocus += OnnxEpManualListBox_LostFocus;
-            _ollamaSettingsPanel.Children.Add(Row("Manual EP list:", _onnxEpManualListBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.ManualEpList", "Manual EP list:"), _onnxEpManualListBox));
 
-            _onnxEpRegisterNowButton = new Button { Content = "EP register now" };
-            var onnxEpRefreshCompatibleButton = new Button { Content = "Get compatible EPs", Margin = new Thickness(8, 0, 0, 0) };
+            _onnxEpRegisterNowButton = new Button { Content = L("Settings.Ocr.EpRegisterNow", "EP register now") };
+            var onnxEpRefreshCompatibleButton = new Button { Content = L("Settings.Ocr.GetCompatibleEps", "Get compatible EPs"), Margin = new Thickness(8, 0, 0, 0) };
             onnxEpRefreshCompatibleButton.Click += OnnxEpRefreshCompatibleButton_Click;
             _onnxEpRegisterNowButton.Click += OnnxEpRegisterNowButton_Click;
             _onnxEpStatusText = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.7, FontSize = 12 };
@@ -282,7 +304,7 @@ namespace MangaViewer.Pages
             epRow.Children.Add(_onnxEpRegisterNowButton);
             epRow.Children.Add(onnxEpRefreshCompatibleButton);
             epRow.Children.Add(_onnxEpStatusText);
-            _ollamaSettingsPanel.Children.Add(Row("Execution Provider:", epRow));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.ExecutionProvider", "Execution Provider:"), epRow));
 
             _onnxEpCompatibleListText = new TextBlock
             {
@@ -292,48 +314,48 @@ namespace MangaViewer.Pages
                 Opacity = 0.8,
                 FontSize = 12
             };
-            _ollamaSettingsPanel.Children.Add(Row("Compatible EPs:", _onnxEpCompatibleListText));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.CompatibleEps", "Compatible EPs:"), _onnxEpCompatibleListText));
 
-            _onnxTrtCudaGraphToggle = new ToggleSwitch { OnContent = "Enabled", OffContent = "Disabled" };
+            _onnxTrtCudaGraphToggle = new ToggleSwitch { OnContent = L("Settings.Common.Enabled", "Enabled"), OffContent = L("Settings.Common.Disabled", "Disabled") };
             _onnxTrtCudaGraphToggle.Toggled += (s, e) =>
             {
                 _ocr.SetOnnxTrtRtxEnableCudaGraph(_onnxTrtCudaGraphToggle.IsOn);
-                _onnxEpStatusText.Text = "TensorRT RTX CUDA graph option updated";
+                _onnxEpStatusText.Text = L("Settings.Ocr.Status.CudaGraphUpdated", "TensorRT RTX CUDA graph option updated");
             };
-            _ollamaSettingsPanel.Children.Add(Row("TensorRT RTX CUDA graph:", _onnxTrtCudaGraphToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.TensorRtCudaGraph", "TensorRT RTX CUDA graph:"), _onnxTrtCudaGraphToggle));
 
             _onnxTrtRuntimeCachePathBox = new TextBox { Width = 420, PlaceholderText = "Runtime cache directory" };
             _onnxTrtRuntimeCachePathBox.LostFocus += (s, e) =>
             {
                 _ocr.SetOnnxTrtRtxRuntimeCachePath(_onnxTrtRuntimeCachePathBox.Text);
             };
-            _ollamaSettingsPanel.Children.Add(Row("TensorRT RTX runtime cache:", _onnxTrtRuntimeCachePathBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.TensorRtRuntimeCache", "TensorRT RTX runtime cache:"), _onnxTrtRuntimeCachePathBox));
 
-            _onnxUseEpContextToggle = new ToggleSwitch { OnContent = "Use compiled model", OffContent = "Use source ONNX" };
+            _onnxUseEpContextToggle = new ToggleSwitch { OnContent = L("Settings.Ocr.UseCompiledModel", "Use compiled model"), OffContent = L("Settings.Ocr.UseSourceOnnx", "Use source ONNX") };
             _onnxUseEpContextToggle.Toggled += (s, e) =>
             {
                 _ocr.SetOnnxUseEpContextModel(_onnxUseEpContextToggle.IsOn);
                 _onnxEpStatusText.Text = _ocr.OnnxUseEpContextModel
-                    ? "EP context loading enabled"
-                    : "EP context loading disabled";
+                    ? L("Settings.Ocr.Status.EpContextEnabled", "EP context loading enabled")
+                    : L("Settings.Ocr.Status.EpContextDisabled", "EP context loading disabled");
             };
-            _ollamaSettingsPanel.Children.Add(Row("EP context load:", _onnxUseEpContextToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.EpContextLoad", "EP context load:"), _onnxUseEpContextToggle));
 
-            _onnxAutoCompileEpContextToggle = new ToggleSwitch { OnContent = "Auto compile", OffContent = "Manual compile" };
+            _onnxAutoCompileEpContextToggle = new ToggleSwitch { OnContent = L("Settings.Ocr.AutoCompile", "Auto compile"), OffContent = L("Settings.Ocr.ManualCompile", "Manual compile") };
             _onnxAutoCompileEpContextToggle.Toggled += (s, e) =>
             {
                 _ocr.SetOnnxAutoCompileEpContextModel(_onnxAutoCompileEpContextToggle.IsOn);
                 _onnxEpStatusText.Text = _ocr.OnnxAutoCompileEpContextModel
-                    ? "EP context auto compile enabled"
-                    : "EP context auto compile disabled";
+                    ? L("Settings.Ocr.Status.EpAutoCompileEnabled", "EP context auto compile enabled")
+                    : L("Settings.Ocr.Status.EpAutoCompileDisabled", "EP context auto compile disabled");
             };
-            _ollamaSettingsPanel.Children.Add(Row("EP context compile mode:", _onnxAutoCompileEpContextToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.EpContextCompileMode", "EP context compile mode:"), _onnxAutoCompileEpContextToggle));
 
-            _onnxCompileEpContextNowButton = new Button { Content = "Compile EP context now" };
+            _onnxCompileEpContextNowButton = new Button { Content = L("Settings.Ocr.CompileEpContextNow", "Compile EP context now") };
             _onnxCompileEpContextNowButton.Click += async (s, e) =>
             {
                 _onnxCompileEpContextNowButton.IsEnabled = false;
-                _onnxEpStatusText.Text = "Compiling EP context...";
+                _onnxEpStatusText.Text = L("Settings.Ocr.Status.CompilingEpContext", "Compiling EP context...");
                 try
                 {
                     bool ok = await _ocr.CompileDocLayoutEpContextModelAsync(CancellationToken.None);
@@ -341,14 +363,14 @@ namespace MangaViewer.Pages
                 }
                 catch (Exception ex)
                 {
-                    _onnxEpStatusText.Text = "Compile failed: " + ex.Message;
+                    _onnxEpStatusText.Text = L("Settings.Common.ErrorPrefix", "Error: ") + ex.Message;
                 }
                 finally
                 {
                     _onnxCompileEpContextNowButton.IsEnabled = true;
                 }
             };
-            _ollamaSettingsPanel.Children.Add(Row("EP context compile:", _onnxCompileEpContextNowButton));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.EpContextCompile", "EP context compile:"), _onnxCompileEpContextNowButton));
 
             if (!string.IsNullOrWhiteSpace(_ocr.OllamaModel))
             {
@@ -360,34 +382,34 @@ namespace MangaViewer.Pages
             stack.Children.Add(_ollamaSettingsPanel);
 
             _langCombo = new ComboBox { Width = 160 };
-            _langCombo.Items.Add(new ComboBoxItem { Content = "자동", Tag = "auto" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = "일본어", Tag = "ja" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = "한국어", Tag = "ko" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = "영어", Tag = "en" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "자동"), Tag = "auto" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Japanese", "일본어"), Tag = "ja" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Korean", "한국어"), Tag = "ko" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.English", "영어"), Tag = "en" });
             _langCombo.SelectionChanged += LangCombo_SelectionChanged;
-            stack.Children.Add(Row("언어:", _langCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Language", "언어:"), _langCombo));
 
             _groupCombo = new ComboBox { Width = 160 };
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "단어", Tag = OcrService.OcrGrouping.Word.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "줄", Tag = OcrService.OcrGrouping.Line.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = "문단", Tag = OcrService.OcrGrouping.Paragraph.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Word", "단어"), Tag = OcrService.OcrGrouping.Word.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Line", "줄"), Tag = OcrService.OcrGrouping.Line.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Paragraph", "문단"), Tag = OcrService.OcrGrouping.Paragraph.ToString() });
             _groupCombo.SelectionChanged += GroupCombo_SelectionChanged;
-            stack.Children.Add(Row("그룹:", _groupCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Group.Label", "그룹:"), _groupCombo));
 
             _writingCombo = new ComboBox { Width = 160 };
-            _writingCombo.Items.Add(new ComboBoxItem { Content = "자동", Tag = OcrService.WritingMode.Auto.ToString() });
-            _writingCombo.Items.Add(new ComboBoxItem { Content = "가로", Tag = OcrService.WritingMode.Horizontal.ToString() });
-            _writingCombo.Items.Add(new ComboBoxItem { Content = "세로", Tag = OcrService.WritingMode.Vertical.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "자동"), Tag = OcrService.WritingMode.Auto.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Horizontal", "가로"), Tag = OcrService.WritingMode.Horizontal.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Vertical", "세로"), Tag = OcrService.WritingMode.Vertical.ToString() });
             _writingCombo.SelectionChanged += WritingCombo_SelectionChanged;
-            stack.Children.Add(Row("텍스트 방향:", _writingCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Writing.Label", "텍스트 방향:"), _writingCombo));
 
-            _ocrAdjacentPrefetchToggle = new ToggleSwitch { OnContent = "사용", OffContent = "사용 안 함" };
+            _ocrAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "사용"), OffContent = L("Settings.Common.NotUse", "사용 안 함") };
             _ocrAdjacentPrefetchToggle.Toggled += (s, e) =>
             {
                 _ocr.SetPrefetchAdjacentPagesEnabled(_ocrAdjacentPrefetchToggle.IsOn);
                 _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
             };
-            stack.Children.Add(Row("인접 페이지 OCR 캐시:", _ocrAdjacentPrefetchToggle));
+            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCache", "인접 페이지 OCR 캐시:"), _ocrAdjacentPrefetchToggle));
 
             _ocrAdjacentPrefetchCountBox = new NumberBox
             {
@@ -402,13 +424,13 @@ namespace MangaViewer.Pages
                 int count = (int)Math.Clamp(Math.Round(_ocrAdjacentPrefetchCountBox.Value), 0, 10);
                 _ocr.SetPrefetchAdjacentPageCount(count);
             };
-            stack.Children.Add(Row("OCR 인접 페이지 수:", _ocrAdjacentPrefetchCountBox));
+            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCount", "OCR 인접 페이지 수:"), _ocrAdjacentPrefetchCountBox));
 
             // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
 
             // Translation section header
-            stack.Children.Add(new TextBlock { Text = "번역 설정", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Translation.Header", "번역 설정"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             var translationProviderCombo = new ComboBox { Width = 160 };
             translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Google", Tag = "Google" });
@@ -418,39 +440,39 @@ namespace MangaViewer.Pages
 
             var translationApiKeyBox = new PasswordBox { Width = 260 };
             var translationSettings = TranslationSettingsService.Instance;
-            var apiKeyRow = Row("API ?:", translationApiKeyBox);
+            var apiKeyRow = Row(L("Settings.Translation.ApiKey", "API 키:"), translationApiKeyBox);
             var translationTargetLanguageBox = new TextBox
             {
                 Width = 220,
                 PlaceholderText = "Korean"
             };
-            var translationTargetLanguageRow = Row("타겟 언어:", translationTargetLanguageBox);
+            var translationTargetLanguageRow = Row(L("Settings.Translation.TargetLanguage", "타겟 언어:"), translationTargetLanguageBox);
 
             // OpenAI / Anthropic 용 모델 텍스트 입력
             var translationModelBox = new TextBox { Width = 260 };
 
             // Google 전용 모델 콤보 + 목록 가져오기 버튼
-            var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = "모델을 선택하세요" };
-            var fetchGoogleModelsBtn = new Button { Content = "목록 가져오기", Margin = new Thickness(8, 0, 0, 0) };
+            var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "모델을 선택하세요") };
+            var fetchGoogleModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "목록 가져오기"), Margin = new Thickness(8, 0, 0, 0) };
             var googleModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var googleModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             googleModelInner.Children.Add(googleModelCombo);
             googleModelInner.Children.Add(fetchGoogleModelsBtn);
             googleModelInner.Children.Add(googleModelStatus);
 
-            var textModelRow = Row("모델:", translationModelBox);
-            var googleModelRow = Row("모델:", googleModelInner);
+            var textModelRow = Row(L("Settings.Translation.Model", "모델:"), translationModelBox);
+            var googleModelRow = Row(L("Settings.Translation.Model", "모델:"), googleModelInner);
             var ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
             var ollamaEndpointRow = Row("Ollama URL:", ollamaEndpointBox);
 
-            var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = "모델을 선택하세요" };
-            var fetchOllamaModelsBtn = new Button { Content = "목록 가져오기", Margin = new Thickness(8, 0, 0, 0) };
+            var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "모델을 선택하세요") };
+            var fetchOllamaModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "목록 가져오기"), Margin = new Thickness(8, 0, 0, 0) };
             var ollamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var ollamaModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             ollamaModelInner.Children.Add(ollamaModelCombo);
             ollamaModelInner.Children.Add(fetchOllamaModelsBtn);
             ollamaModelInner.Children.Add(ollamaModelStatus);
-            var ollamaModelRow = Row("모델:", ollamaModelInner);
+            var ollamaModelRow = Row(L("Settings.Translation.Model", "모델:"), ollamaModelInner);
 
             // 저장된 Google 모델 초기값 로드
             if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.GoogleModel))
@@ -494,7 +516,7 @@ namespace MangaViewer.Pages
                 Height = 80,
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap,
-                PlaceholderText = "시스템 프롬프트"
+                PlaceholderText = L("Settings.Translation.SystemPromptPlaceholder", "시스템 프롬프트")
             };
 
             Action updateSystemPromptBox = () =>
@@ -556,8 +578,8 @@ namespace MangaViewer.Pages
                 combo.Items.Clear();
                 if (provider == "Ollama")
                 {
-                    combo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
-                    combo.Items.Add(new ComboBoxItem { Content = "켜짐", Tag = "On" });
+                    combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
+                    combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "켜짐"), Tag = "On" });
 
                     string normalized = NormalizeOllamaThinkingLevel(translationSettings.ThinkingLevel);
                     var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == normalized)
@@ -569,11 +591,11 @@ namespace MangaViewer.Pages
                     return;
                 }
 
-                combo.Items.Add(new ComboBoxItem { Content = "꺼짐", Tag = "Off" });
-                combo.Items.Add(new ComboBoxItem { Content = "최소", Tag = "Minimal" });
-                combo.Items.Add(new ComboBoxItem { Content = "낮음", Tag = "Low" });
-                combo.Items.Add(new ComboBoxItem { Content = "보통", Tag = "Medium" });
-                combo.Items.Add(new ComboBoxItem { Content = "높음", Tag = "High" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Minimal", "최소"), Tag = "Minimal" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Low", "낮음"), Tag = "Low" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Medium", "보통"), Tag = "Medium" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.High", "높음"), Tag = "High" });
 
                 var saved = translationSettings.ThinkingLevel;
                 var selectedNonOllama = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == saved)
@@ -632,12 +654,12 @@ namespace MangaViewer.Pages
 
                 if (string.IsNullOrWhiteSpace(translationSettings.GoogleApiKey))
                 {
-                    googleModelStatus.Text = "API 키를 먼저 입력하세요";
+                    googleModelStatus.Text = L("Settings.Translation.EnterApiKeyFirst", "API 키를 먼저 입력하세요");
                     return;
                 }
 
                 fetchGoogleModelsBtn.IsEnabled = false;
-                googleModelStatus.Text = "가져오는 중...";
+                googleModelStatus.Text = L("Settings.Common.Loading", "가져오는 중...");
 
                 try
                 {
@@ -681,11 +703,11 @@ namespace MangaViewer.Pages
                     else if (googleModelCombo.Items.Count > 0)
                         googleModelCombo.SelectedIndex = 0;
 
-                    googleModelStatus.Text = $"{modelIds.Count}개";
+                    googleModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}개"), modelIds.Count);
                 }
                 catch (Exception ex)
                 {
-                    googleModelStatus.Text = "오류: " + ex.Message;
+                    googleModelStatus.Text = L("Settings.Common.ErrorPrefix", "Error: ") + ex.Message;
                 }
                 finally
                 {
@@ -696,7 +718,7 @@ namespace MangaViewer.Pages
             fetchOllamaModelsBtn.Click += async (s, e) =>
             {
                 fetchOllamaModelsBtn.IsEnabled = false;
-                ollamaModelStatus.Text = "???????? ??...";
+                ollamaModelStatus.Text = L("Settings.Common.Loading", "가져오는 중...");
 
                 try
                 {
@@ -722,11 +744,11 @@ namespace MangaViewer.Pages
                     else if (ollamaModelCombo.Items.Count > 0)
                         ollamaModelCombo.SelectedIndex = 0;
 
-                    ollamaModelStatus.Text = $"{modelIds.Count}??";
+                    ollamaModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}개"), modelIds.Count);
                 }
                 catch (Exception ex)
                 {
-                    ollamaModelStatus.Text = "????: " + ex.Message;
+                    ollamaModelStatus.Text = L("Settings.Common.ErrorPrefix", "Error: ") + ex.Message;
                 }
                 finally
                 {
@@ -752,22 +774,22 @@ namespace MangaViewer.Pages
                     translationTargetLanguageBox.Text = translationSettings.TargetLanguage;
             };
 
-            stack.Children.Add(Row("공급자:", translationProviderCombo));
+            stack.Children.Add(Row(L("Settings.Translation.Provider", "공급자:"), translationProviderCombo));
             stack.Children.Add(textModelRow);
             stack.Children.Add(googleModelRow);
             stack.Children.Add(ollamaEndpointRow);
             stack.Children.Add(ollamaModelRow);
             stack.Children.Add(translationTargetLanguageRow);
-            stack.Children.Add(Row("시스템 프롬프트:", systemPromptBox));
+            stack.Children.Add(Row(L("Settings.Translation.SystemPrompt", "시스템 프롬프트:"), systemPromptBox));
             stack.Children.Add(apiKeyRow);
 
-            _translationAdjacentPrefetchToggle = new ToggleSwitch { OnContent = "사용", OffContent = "사용 안 함" };
+            _translationAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "사용"), OffContent = L("Settings.Common.NotUse", "사용 안 함") };
             _translationAdjacentPrefetchToggle.Toggled += (s, e) =>
             {
                 translationSettings.PrefetchAdjacentPagesEnabled = _translationAdjacentPrefetchToggle.IsOn;
                 _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
             };
-            stack.Children.Add(Row("인접 페이지 번역 캐시:", _translationAdjacentPrefetchToggle));
+            stack.Children.Add(Row(L("Settings.Translation.AdjacentCache", "인접 페이지 번역 캐시:"), _translationAdjacentPrefetchToggle));
 
             _translationAdjacentPrefetchCountBox = new NumberBox
             {
@@ -782,7 +804,7 @@ namespace MangaViewer.Pages
                 int count = (int)Math.Clamp(Math.Round(_translationAdjacentPrefetchCountBox.Value), 0, 10);
                 translationSettings.PrefetchAdjacentPageCount = count;
             };
-            stack.Children.Add(Row("번역 인접 페이지 수:", _translationAdjacentPrefetchCountBox));
+            stack.Children.Add(Row(L("Settings.Translation.AdjacentCount", "번역 인접 페이지 수:"), _translationAdjacentPrefetchCountBox));
 
             _translationOverlayFontSlider = new Slider
             {
@@ -796,7 +818,7 @@ namespace MangaViewer.Pages
             UpdateTranslationOverlayFontValue();
 
             var translationOverlayFontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayFontRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 글자 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayFontRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayFontSize", "번역 바운딩 박스 글자 크기:"), VerticalAlignment = VerticalAlignment.Center });
             translationOverlayFontRow.Children.Add(_translationOverlayFontSlider);
             translationOverlayFontRow.Children.Add(_translationOverlayFontValue);
             stack.Children.Add(translationOverlayFontRow);
@@ -814,7 +836,7 @@ namespace MangaViewer.Pages
             UpdateTranslationOverlayBoxScaleHorizontalValue();
 
             var translationOverlayBoxScaleHorizontalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayBoxScaleHorizontalRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 가로 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayBoxScaleHorizontalRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayBoxHorizontal", "번역 바운딩 박스 가로 크기:"), VerticalAlignment = VerticalAlignment.Center });
             translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalSlider);
             translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalValue);
             stack.Children.Add(translationOverlayBoxScaleHorizontalRow);
@@ -832,7 +854,7 @@ namespace MangaViewer.Pages
             UpdateTranslationOverlayBoxScaleVerticalValue();
 
             var translationOverlayBoxScaleVerticalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayBoxScaleVerticalRow.Children.Add(new TextBlock { Text = "번역 바운딩 박스 세로 크기:", VerticalAlignment = VerticalAlignment.Center });
+            translationOverlayBoxScaleVerticalRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayBoxVertical", "번역 바운딩 박스 세로 크기:"), VerticalAlignment = VerticalAlignment.Center });
             translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalSlider);
             translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalValue);
             stack.Children.Add(translationOverlayBoxScaleVerticalRow);
@@ -846,46 +868,46 @@ namespace MangaViewer.Pages
             stack.Children.Add(Row("Thinking:", thinkingLevelCombo));
 
             // Tag section header (separate grouping from OCR settings)
-            stack.Children.Add(new TextBlock { Text = "태그 표시", FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Tag.Header", "태그 표시"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _tagFontSlider = new Slider { Minimum = 8, Maximum = 32, Width = 220, Value = _tagSettings.TagFontSize };
             _tagFontSlider.ValueChanged += TagFontSlider_ValueChanged;
             _tagFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTagFontValue();
             var fontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            fontRow.Children.Add(new TextBlock { Text = "태그 폰트 크기:", VerticalAlignment = VerticalAlignment.Center });
+            fontRow.Children.Add(new TextBlock { Text = L("Settings.Tag.FontSize", "태그 폰트 크기:"), VerticalAlignment = VerticalAlignment.Center });
             fontRow.Children.Add(_tagFontSlider);
             fontRow.Children.Add(_tagFontValue);
             stack.Children.Add(fontRow);
 
             // Thumbnail section header
-            stack.Children.Add(new TextBlock { Text = "썸네일 설정", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.Header", "썸네일 설정"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             var thumbRow1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _thumbWidthSlider = new Slider { Minimum = 64, Maximum = 512, Width = 220, Value = _thumbSettings.DecodeWidth };
             _thumbWidthSlider.ValueChanged += ThumbWidthSlider_ValueChanged;
             _thumbWidthValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateThumbWidthValue();
-            thumbRow1.Children.Add(new TextBlock { Text = "디코드 폭(px):", VerticalAlignment = VerticalAlignment.Center });
+            thumbRow1.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.DecodeWidth", "디코드 폭(px):"), VerticalAlignment = VerticalAlignment.Center });
             thumbRow1.Children.Add(_thumbWidthSlider);
             thumbRow1.Children.Add(_thumbWidthValue);
             stack.Children.Add(thumbRow1);
 
-            stack.Children.Add(new TextBlock { Text = "이미지 캐시", FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Cache.Header", "이미지 캐시"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0,0,0,8) };
             stack.Children.Add(_cacheSummary);
 
             var limitsPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            _cacheMaxCountBox = new NumberBox { Header = "최대 이미지 수", Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
-            _cacheMaxBytesBox = new NumberBox { Header = "최대 용량(GB)", Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
-            var applyBtn = new Button { Content = "적용" }; applyBtn.Click += ApplyCacheLimit_Click;
+            _cacheMaxCountBox = new NumberBox { Header = L("Settings.Cache.MaxImageCount", "최대 이미지 수"), Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
+            _cacheMaxBytesBox = new NumberBox { Header = L("Settings.Cache.MaxSizeGb", "최대 용량(GB)"), Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
+            var applyBtn = new Button { Content = L("Settings.Common.Apply", "적용") }; applyBtn.Click += ApplyCacheLimit_Click;
             limitsPanel.Children.Add(_cacheMaxCountBox);
             limitsPanel.Children.Add(_cacheMaxBytesBox);
             limitsPanel.Children.Add(applyBtn);
             stack.Children.Add(limitsPanel);
 
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var refreshBtn = new Button { Content = "새로고침" }; refreshBtn.Click += (s,e)=> RefreshCacheView();
-            var clearAllBtn = new Button { Content = "캐시 전체 삭제" }; clearAllBtn.Click += (s,e)=> { ImageCacheService.Instance.ClearMemoryImages(); RefreshCacheView(); };
+            var refreshBtn = new Button { Content = L("Settings.Common.Refresh", "새로고침") }; refreshBtn.Click += (s,e)=> RefreshCacheView();
+            var clearAllBtn = new Button { Content = L("Settings.Cache.ClearAll", "캐시 전체 삭제") }; clearAllBtn.Click += (s,e)=> { ImageCacheService.Instance.ClearMemoryImages(); RefreshCacheView(); };
             btnRow.Children.Add(refreshBtn);
             btnRow.Children.Add(clearAllBtn);
             stack.Children.Add(btnRow);
@@ -1108,7 +1130,7 @@ namespace MangaViewer.Pages
             var per = ImageCacheService.Instance.GetPerGalleryCounts().OrderByDescending(k=>k.Value).ToList();
             foreach (var kv in per) _cacheEntries.Add(new CacheEntryView { GalleryId = kv.Key, Count = kv.Value });
             var (cnt, bytes) = ImageCacheService.Instance.GetMemoryUsage();
-            _cacheSummary.Text = $"합계: {cnt} images, {(bytes/1024d/1024d):F1} MB";
+            _cacheSummary.Text = string.Format(L("Settings.Cache.Summary", "합계: {0} images, {1:F1} MB"), cnt, (bytes / 1024d / 1024d));
         }
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
@@ -1242,6 +1264,15 @@ namespace MangaViewer.Pages
 
         private void SettingsPage_Loaded(object sender, RoutedEventArgs e)
         {
+            _isInitializingSettingsUi = true;
+            var appLanguage = SettingsProvider.Get("AppLanguage", "auto");
+            var appLanguageItem = _appLanguageCombo.Items
+                .OfType<ComboBoxItem>()
+                .FirstOrDefault(i => string.Equals(i.Tag as string, appLanguage, StringComparison.OrdinalIgnoreCase))
+                ?? _appLanguageCombo.Items.OfType<ComboBoxItem>().FirstOrDefault();
+            if (appLanguageItem != null)
+                _appLanguageCombo.SelectedItem = appLanguageItem;
+
             // Load library paths
             RefreshLibraryPaths();
             
@@ -1308,6 +1339,7 @@ namespace MangaViewer.Pages
             UpdateOllamaSettingsVisibility();
             UpdateOcrGroupingAvailability();
             RefreshCacheView();
+            _isInitializingSettingsUi = false;
         }
 
         private void OcrBackendCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1326,18 +1358,18 @@ namespace MangaViewer.Pages
                 return;
 
             button.IsEnabled = false;
-            _onnxEpStatusText.Text = "Enumerating...";
+            _onnxEpStatusText.Text = L("Settings.Common.Enumerating", "Enumerating...");
             try
             {
                 var providers = _ocr.GetCompatibleOnnxExecutionProviders();
                 _onnxEpCompatibleListText.Text = providers.Count == 0
-                    ? "(none)"
+                    ? L("Settings.Common.None", "(none)")
                     : string.Join(", ", providers.Select(p => $"{p.Name} ({p.ReadyState})"));
                 _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
             }
             catch (Exception ex)
             {
-                _onnxEpStatusText.Text = "Failed: " + ex.Message;
+                _onnxEpStatusText.Text = L("Settings.Common.FailedPrefix", "Failed: ") + ex.Message;
             }
             finally
             {
@@ -1395,7 +1427,7 @@ namespace MangaViewer.Pages
         private async void DocLayoutModelDownloadButton_Click(object sender, RoutedEventArgs e)
         {
             _docLayoutModelDownloadButton.IsEnabled = false;
-            _docLayoutModelStatusText.Text = "Downloading...";
+            _docLayoutModelStatusText.Text = L("Settings.Common.Downloading", "Downloading...");
 
             try
             {
@@ -1404,7 +1436,7 @@ namespace MangaViewer.Pages
             }
             catch (Exception ex)
             {
-                _docLayoutModelStatusText.Text = "Download failed: " + ex.Message;
+                _docLayoutModelStatusText.Text = L("Settings.Common.DownloadFailedPrefix", "Download failed: ") + ex.Message;
             }
             finally
             {
@@ -1417,8 +1449,10 @@ namespace MangaViewer.Pages
             bool installed = _ocr.IsDocLayoutModelInstalled();
             bool epContextInstalled = _ocr.IsDocLayoutEpContextModelInstalled();
             _docLayoutModelStatusText.Text = installed
-                ? (epContextInstalled ? "Installed + EP context ready" : "Installed")
-                : "Not installed (required for Hybrid OCR).";
+                ? (epContextInstalled
+                    ? L("Settings.Ocr.DocLayout.InstalledWithEp", "Installed + EP context ready")
+                    : L("Settings.Ocr.DocLayout.Installed", "Installed"))
+                : L("Settings.Ocr.DocLayout.NotInstalled", "Not installed (required for Hybrid OCR).");
         }
 
         private void OnnxEpModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1440,7 +1474,7 @@ namespace MangaViewer.Pages
         private async void OnnxEpRegisterNowButton_Click(object sender, RoutedEventArgs e)
         {
             _onnxEpRegisterNowButton.IsEnabled = false;
-            _onnxEpStatusText.Text = "Registering...";
+            _onnxEpStatusText.Text = L("Settings.Common.Registering", "Registering...");
             try
             {
                 await _ocr.EnsureOnnxExecutionProvidersReadyAsync(CancellationToken.None, force: true);
@@ -1448,7 +1482,7 @@ namespace MangaViewer.Pages
             }
             catch (Exception ex)
             {
-                _onnxEpStatusText.Text = "Failed: " + ex.Message;
+                _onnxEpStatusText.Text = L("Settings.Common.FailedPrefix", "Failed: ") + ex.Message;
             }
             finally
             {
@@ -1458,21 +1492,14 @@ namespace MangaViewer.Pages
 
         private void UpdateOcrThinkingComboAvailability()
         {
-            if (_ocr.Backend == OcrService.OcrBackend.Hybrid)
-            {
-                _ocrThinkingLevelCombo.IsEnabled = false;
-                _ocrOllamaModelStatus.Text = "Hybrid mode uses fixed model: glm-ocr:latest";
-                return;
-            }
-
             if (_ocrOllamaModelCombo.SelectedItem is ComboBoxItem item
                 && item.Tag is string model
                 && _ocrModelThinkingSupport.TryGetValue(model, out bool supportsThinking))
             {
                 _ocrThinkingLevelCombo.IsEnabled = supportsThinking;
                 _ocrOllamaModelStatus.Text = supportsThinking
-                    ? "선택 모델: Thinking 지원"
-                    : "선택 모델: Thinking 미지원";
+                    ? L("Settings.Ocr.Thinking.Supported", "선택 모델: Thinking 지원")
+                    : L("Settings.Ocr.Thinking.NotSupported", "선택 모델: Thinking 미지원");
                 return;
             }
 
@@ -1482,7 +1509,7 @@ namespace MangaViewer.Pages
         private async Task RefreshOcrOllamaModelsAsync(Button triggerButton)
         {
             triggerButton.IsEnabled = false;
-            _ocrOllamaModelStatus.Text = "모델 조회 중...";
+            _ocrOllamaModelStatus.Text = L("Settings.Ocr.LoadingModels", "모델 조회 중...");
 
             try
             {
@@ -1512,12 +1539,12 @@ namespace MangaViewer.Pages
                 else if (_ocrOllamaModelCombo.Items.Count > 0)
                     _ocrOllamaModelCombo.SelectedIndex = 0;
 
-                _ocrOllamaModelStatus.Text = $"{models.Count}개 (Vision+Tool)";
+                _ocrOllamaModelStatus.Text = string.Format(L("Settings.Ocr.ModelsCountVisionTool", "{0}개 (Vision+Tool)"), models.Count);
                 UpdateOcrThinkingComboAvailability();
             }
             catch (Exception ex)
             {
-                _ocrOllamaModelStatus.Text = "실패: " + ex.Message;
+                _ocrOllamaModelStatus.Text = L("Settings.Common.FailedPrefix", "Failed: ") + ex.Message;
             }
             finally
             {
@@ -1531,7 +1558,7 @@ namespace MangaViewer.Pages
 
             bool isVlm = _ocr.Backend == OcrService.OcrBackend.Vlm;
             bool isHybrid = _ocr.Backend == OcrService.OcrBackend.Hybrid;
-            _ocrOllamaModelCombo.IsEnabled = isVlm;
+            _ocrOllamaModelCombo.IsEnabled = isVlm || isHybrid;
             _ocrStructuredOutputToggle.IsEnabled = isVlm;
             _ocrOllamaTemperatureBox.IsEnabled = isVlm;
             _hybridTextParallelBox.IsEnabled = isHybrid;
@@ -1543,6 +1570,56 @@ namespace MangaViewer.Pages
             _groupCombo.IsEnabled = false;
             _writingCombo.IsEnabled = false;
             _langCombo.IsEnabled = false;
+        }
+
+        private async void AppLanguageCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isInitializingSettingsUi) return;
+            if (!IsLoaded) return;
+            if (_appLanguageCombo.SelectedItem is not ComboBoxItem item || item.Tag is not string tag) return;
+
+            SettingsProvider.Set("AppLanguage", tag);
+
+            if (string.Equals(tag, "auto", StringComparison.OrdinalIgnoreCase))
+                ApplicationLanguages.PrimaryLanguageOverride = string.Empty;
+            else
+                ApplicationLanguages.PrimaryLanguageOverride = tag;
+
+            var cultureName = string.IsNullOrWhiteSpace(ApplicationLanguages.PrimaryLanguageOverride)
+                ? CultureInfo.CurrentUICulture.Name
+                : ApplicationLanguages.PrimaryLanguageOverride;
+
+            try
+            {
+                var culture = new CultureInfo(cultureName);
+                CultureInfo.DefaultThreadCurrentCulture = culture;
+                CultureInfo.DefaultThreadCurrentUICulture = culture;
+            }
+            catch
+            {
+            }
+
+            if (MainWindow.RootViewModel != null)
+                MainWindow.RootViewModel.RefreshLocalizedTexts();
+
+            if (Application.Current is App app && app.MainWindow != null)
+                app.MainWindow.Title = LocalizationHelper.GetString("FooterBrandText.Text", "Manga Viewer");
+
+            var dialog = new ContentDialog
+            {
+                Title = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Title", "언어 변경"),
+                Content = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Message", "일부 UI는 앱을 다시 시작하면 완전히 적용됩니다."),
+                PrimaryButtonText = L("Settings.Common.Ok", "OK"),
+                XamlRoot = this.XamlRoot
+            };
+
+            try
+            {
+                await dialog.ShowAsync();
+            }
+            catch
+            {
+            }
         }
 
         private void LangCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

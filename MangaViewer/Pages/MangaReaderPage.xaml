@@ -52,7 +52,7 @@
                     <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
                         <Grid>
                             <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
-                            <Button Content="제거" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,5,5,0" Click="RemoveBookmark_Click"/>
+                            <Button x:Name="RemoveBookmarkButton" x:Uid="RemoveBookmarkButton" Content="제거" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,5,5,0" Click="RemoveBookmark_Click"/>
                         </Grid>
                     </DataTemplate>
                 </ListView.ItemTemplate>
@@ -164,7 +164,9 @@
                                                       MaxHeight="200"
                                                       Margin="0,0,4,0"
                                                       VerticalScrollBarVisibility="Auto">
-                                            <TextBox Text="{Binding LeftOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="SingleOcrTextBox"
+                                                     x:Uid="SingleOcrTextBox"
+                                                     Text="{Binding LeftOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -177,7 +179,9 @@
                                                       Margin="4,0,0,0"
                                                       VerticalScrollBarVisibility="Auto"
                                                       Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="SingleTranslationTextBox"
+                                                     x:Uid="SingleTranslationTextBox"
+                                                     Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -198,7 +202,9 @@
                                                       MaxHeight="200"
                                                       Margin="0,0,4,0"
                                                       VerticalScrollBarVisibility="Auto">
-                                            <TextBox Text="{Binding LeftOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="LeftOcrTextBox"
+                                                     x:Uid="LeftOcrTextBox"
+                                                     Text="{Binding LeftOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -211,7 +217,9 @@
                                                       Margin="0,0,8,0"
                                                       VerticalScrollBarVisibility="Auto"
                                                       Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="LeftTranslationTextBox"
+                                                     x:Uid="LeftTranslationTextBox"
+                                                     Text="{Binding TranslatedLeftOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -223,7 +231,9 @@
                                                       MaxHeight="200"
                                                       Margin="8,0,4,0"
                                                       VerticalScrollBarVisibility="Auto">
-                                            <TextBox Text="{Binding RightOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="RightOcrTextBox"
+                                                     x:Uid="RightOcrTextBox"
+                                                     Text="{Binding RightOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -236,7 +246,9 @@
                                                       Margin="4,0,0,0"
                                                       VerticalScrollBarVisibility="Auto"
                                                       Visibility="{Binding IsTranslationVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox Text="{Binding TranslatedRightOcrText, Mode=OneWay}"
+                                            <TextBox x:Name="RightTranslationTextBox"
+                                                     x:Uid="RightTranslationTextBox"
+                                                     Text="{Binding TranslatedRightOcrText, Mode=OneWay}"
                                                      IsReadOnly="True"
                                                      TextWrapping="Wrap"
                                                      AcceptsReturn="True"
@@ -263,5 +275,17 @@
             Margin="0,0,16,16"
             MaxWidth="460"
             Canvas.ZIndex="100" />
+
+        <InfoBar
+            Grid.Column="1"
+            IsOpen="{Binding IsProgressPopupOpen, Mode=TwoWay}"
+            Message="{Binding ProgressPopupMessage}"
+            Severity="Informational"
+            IsClosable="False"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Margin="0,56,0,0"
+            MaxWidth="420"
+            Canvas.ZIndex="101" />
     </Grid>
 </Page>

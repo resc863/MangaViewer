@@ -14,7 +14,7 @@
                 <TextBlock x:Name="TitleBlock" FontSize="26" FontWeight="SemiBold" TextWrapping="WrapWholeWords"/>
                 <StackPanel Orientation="Horizontal" Spacing="16">
                     <TextBlock x:Name="IdBlock" FontSize="13" Opacity="0.7"/>
-                    <HyperlinkButton x:Name="OpenLinkButton" Content="원본 열기" FontSize="13" />
+                    <HyperlinkButton x:Name="OpenLinkButton" x:Uid="OpenLinkButton" Content="원본 열기" FontSize="13" />
                 </StackPanel>
             </StackPanel>
 
@@ -30,7 +30,7 @@
                 <StackPanel Grid.Column="1" Spacing="14">
                     <!-- 언어 -->
                     <StackPanel Spacing="6">
-                        <TextBlock Text="언어" FontSize="16" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="LanguageHeader" x:Uid="LanguageHeader" Text="언어" FontSize="16" FontWeight="SemiBold"/>
                         <ItemsControl x:Name="LangItems">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -48,7 +48,7 @@
                     </StackPanel>
                     <!-- 작가 -->
                     <StackPanel x:Name="ArtistsPanel" Spacing="6" Visibility="Collapsed">
-                        <TextBlock Text="작가" FontSize="16" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="ArtistsHeader" x:Uid="ArtistsHeader" Text="작가" FontSize="16" FontWeight="SemiBold"/>
                         <ItemsControl x:Name="ArtistsItems">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -66,7 +66,7 @@
                     </StackPanel>
                     <!-- 그룹 -->
                     <StackPanel x:Name="GroupsPanel" Spacing="6" Visibility="Collapsed">
-                        <TextBlock Text="그룹" FontSize="16" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="GroupsHeader" x:Uid="GroupsHeader" Text="그룹" FontSize="16" FontWeight="SemiBold"/>
                         <ItemsControl x:Name="GroupsItems">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -84,7 +84,7 @@
                     </StackPanel>
                     <!-- 패러디 -->
                     <StackPanel x:Name="ParodiesPanel" Spacing="6" Visibility="Collapsed">
-                        <TextBlock Text="패러디" FontSize="16" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="ParodiesHeader" x:Uid="ParodiesHeader" Text="패러디" FontSize="16" FontWeight="SemiBold"/>
                         <ItemsControl x:Name="ParodiesItems">
                             <ItemsControl.ItemsPanel>
                                 <ItemsPanelTemplate>
@@ -105,7 +105,7 @@
 
             <!-- Male 태그 -->
             <StackPanel x:Name="MaleTagPanel" Spacing="8" Visibility="Collapsed">
-                <TextBlock Text="Male 태그" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock x:Name="MaleTagHeader" x:Uid="MaleTagHeader" Text="Male 태그" FontSize="18" FontWeight="SemiBold"/>
                 <ItemsControl x:Name="MaleTagItems">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
@@ -123,7 +123,7 @@
             </StackPanel>
             <!-- Female 태그 -->
             <StackPanel x:Name="FemaleTagPanel" Spacing="8" Visibility="Collapsed">
-                <TextBlock Text="Female 태그" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock x:Name="FemaleTagHeader" x:Uid="FemaleTagHeader" Text="Female 태그" FontSize="18" FontWeight="SemiBold"/>
                 <ItemsControl x:Name="FemaleTagItems">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>
@@ -141,7 +141,7 @@
             </StackPanel>
             <!-- 기타 태그 -->
             <StackPanel x:Name="OtherTagPanel" Spacing="8" Visibility="Collapsed">
-                <TextBlock Text="기타 태그" FontSize="18" FontWeight="SemiBold"/>
+                <TextBlock x:Name="OtherTagHeader" x:Uid="OtherTagHeader" Text="기타 태그" FontSize="18" FontWeight="SemiBold"/>
                 <ItemsControl x:Name="OtherTagItems">
                     <ItemsControl.ItemsPanel>
                         <ItemsPanelTemplate>

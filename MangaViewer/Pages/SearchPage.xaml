@@ -24,8 +24,8 @@
             <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
         <StackPanel Orientation="Horizontal" Spacing="8">
-            <AutoSuggestBox x:Name="QueryBox" Width="360" PlaceholderText="검색어 입력" QuerySubmitted="OnQuerySubmitted"/>
-            <Button Content="검색" Click="OnSearchClick"/>
+            <AutoSuggestBox x:Name="QueryBox" x:Uid="QueryBox" Width="360" PlaceholderText="검색어 입력" QuerySubmitted="OnQuerySubmitted"/>
+            <Button x:Name="SearchButton" x:Uid="SearchButton" Content="검색" Click="OnSearchClick"/>
             <ProgressRing x:Name="BusyRing" Width="24" Height="24" IsActive="False"/>
         </StackPanel>
         <ScrollViewer x:Name="ResultsScroll" Grid.Row="1" Background="Transparent">
@@ -40,12 +40,12 @@
                         <Grid Width="{Binding ElementName=SearchPageRoot, Path=TileWidth}" Margin="4" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" Loaded="TileRoot_Loaded" Unloaded="TileRoot_Unloaded">
                             <Grid.ContextFlyout>
                                 <MenuFlyout Opening="MetaFlyout_Opening">
-                                    <MenuFlyoutItem Text="불러오기" Command="{x:Bind OpenCommand}"/>
-                                    <MenuFlyoutItem Text="상세 정보" Click="OnDetailsMenuClick"/>
+                                    <MenuFlyoutItem x:Name="OpenMenuItem" x:Uid="OpenMenuItem" Text="불러오기" Command="{x:Bind OpenCommand}"/>
+                                    <MenuFlyoutItem x:Name="DetailsMenuItem" x:Uid="DetailsMenuItem" Text="상세 정보" Click="OnDetailsMenuClick"/>
                                     <MenuFlyoutSeparator/>
-                                    <MenuFlyoutSubItem Text="작가" x:Name="ArtistItem" />
-                                    <MenuFlyoutSubItem Text="그룹" x:Name="GroupItem" />
-                                    <MenuFlyoutSubItem Text="태그" x:Name="TagsRoot" />
+                                    <MenuFlyoutSubItem x:Name="ArtistItem" x:Uid="ArtistItem" Text="작가" />
+                                    <MenuFlyoutSubItem x:Name="GroupItem" x:Uid="GroupItem" Text="그룹" />
+                                    <MenuFlyoutSubItem x:Name="TagsRoot" x:Uid="TagsRoot" Text="태그" />
                                 </MenuFlyout>
                             </Grid.ContextFlyout>
                             <Button Command="{x:Bind OpenCommand}" Style="{StaticResource GalleryTileButtonStyle}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
