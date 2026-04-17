@@ -11,7 +11,7 @@ using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace MangaViewer.Services
 {
-    public sealed class OllamaChatClient : IChatClient
+    public sealed class OllamaChatClient : ChatClientBase
     {
         private static readonly HttpClient s_httpClient = new();
         private static readonly TimeSpan BaseRequestTimeout = TimeSpan.FromSeconds(180);
@@ -26,10 +26,11 @@ namespace MangaViewer.Services
         private readonly string _thinkingLevel;
 
         public OllamaChatClient(string endpoint, string model, string thinkingLevel = "Off")
+            : base("Ollama")
         {
-            _endpoint = string.IsNullOrWhiteSpace(endpoint) ? "http://localhost:11434" : endpoint.TrimEnd('/');
+            _endpoint = LlmEndpointCompatibility.NormalizeEndpoint(endpoint);
             _model = model;
-            _thinkingLevel = NormalizeThinkingLevel(thinkingLevel);
+            _thinkingLevel = ThinkingLevelHelper.NormalizeOllama(thinkingLevel);
         }
 
         public OllamaChatClient(string endpoint, string model, bool enableThinking)
@@ -37,12 +38,7 @@ namespace MangaViewer.Services
         {
         }
 
-        public void Dispose() { }
-
-        public Task<ChatResponse> GetResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             var messages = new List<object>();
             foreach (var msg in chatMessages)
@@ -54,22 +50,6 @@ namespace MangaViewer.Services
                 });
             }
 
-            var payload = new Dictionary<string, object?>
-            {
-                ["model"] = _model,
-                ["stream"] = false,
-                ["messages"] = messages,
-            };
-
-            payload["think"] = BuildThinkParameter(_thinkingLevel);
-
-            string requestJson = JsonSerializer.Serialize(payload, s_jsonOptions);
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoint + "/api/chat")
-            {
-                Content = new StringContent(requestJson, new UTF8Encoding(false), "application/json")
-            };
-
             bool thinkingEnabled = BuildThinkParameter(_thinkingLevel);
             using var requestLease = OllamaRequestLoadCoordinator.Acquire(
                 thinkingEnabled ? ThinkingRequestTimeout : BaseRequestTimeout,
@@ -77,52 +57,52 @@ namespace MangaViewer.Services
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
 
+            var flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, _endpoint, timeoutCts.Token).ConfigureAwait(false);
+            await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, _endpoint, _model, timeoutCts.Token).ConfigureAwait(false);
+            using var request = BuildRequest(messages, thinkingEnabled, flavor);
+
             using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
 
             string text = string.Empty;
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("message", out var messageElement)
-                && messageElement.ValueKind == JsonValueKind.Object
-                && messageElement.TryGetProperty("content", out var contentElement)
-                && contentElement.ValueKind == JsonValueKind.String)
-            {
-                text = contentElement.GetString() ?? string.Empty;
-            }
-            else if (root.TryGetProperty("response", out var responseElement) && responseElement.ValueKind == JsonValueKind.String)
-            {
-                text = responseElement.GetString() ?? string.Empty;
-            }
+            text = LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement);
 
             return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
         }
 
-        private static string NormalizeThinkingLevel(string? thinkingLevel)
+        private HttpRequestMessage BuildRequest(List<object> messages, bool thinkingEnabled, LlmApiFlavor flavor)
         {
-            if (string.IsNullOrWhiteSpace(thinkingLevel)) return "Off";
-            if (thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase))
-                return "Off";
-            return "On";
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = _model,
+                ["stream"] = false,
+                ["messages"] = messages,
+            };
+
+            string path;
+            if (flavor == LlmApiFlavor.OpenAiCompatible)
+            {
+                path = "/v1/chat/completions";
+                LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkingEnabled);
+            }
+            else
+            {
+                path = "/api/chat";
+                payload["think"] = thinkingEnabled;
+            }
+
+            string requestJson = JsonSerializer.Serialize(payload, s_jsonOptions);
+            return new HttpRequestMessage(HttpMethod.Post, _endpoint + path)
+            {
+                Content = new StringContent(requestJson, new UTF8Encoding(false), "application/json")
+            };
         }
 
         private static bool BuildThinkParameter(string thinkingLevel)
         {
-            return !NormalizeThinkingLevel(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
+            return !ThinkingLevelHelper.NormalizeOllama(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
         }
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetStreamingResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => throw new NotImplementedException();
-
-        public ChatClientMetadata Metadata => new("Ollama");
-
-        public object? GetService(Type serviceType, object? serviceKey = null) => null;
     }
 }

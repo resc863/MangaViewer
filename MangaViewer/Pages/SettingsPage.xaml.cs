@@ -10,6 +10,7 @@ using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
 using MangaViewer.Services.Thumbnails; // moved thumbnail services
 using MangaViewer.Helpers;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -172,6 +173,19 @@ namespace MangaViewer.Pages
         {
             var stack = new StackPanel { Spacing = 18, Padding = new Thickness(24) };
 
+            BuildGeneralSettingsSection(stack);
+            BuildLibrarySettingsSection(stack);
+            BuildOcrSettingsSection(stack);
+            BuildTranslationSettingsSection(stack);
+            BuildTagSettingsSection(stack);
+            BuildThumbnailSettingsSection(stack);
+            BuildCacheSettingsSection(stack);
+
+            Content = new ScrollViewer { Content = stack };
+        }
+
+        private void BuildGeneralSettingsSection(StackPanel stack)
+        {
             stack.Children.Add(new TextBlock
             {
                 Text = LocalizationHelper.GetString("Settings.General.Header", "앱 설정"),
@@ -186,16 +200,18 @@ namespace MangaViewer.Pages
             _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Japanese", "日本語"), Tag = "ja-JP" });
             _appLanguageCombo.SelectionChanged += AppLanguageCombo_SelectionChanged;
             stack.Children.Add(Row(LocalizationHelper.GetString("Settings.AppLanguage.Label", "UI 언어:"), _appLanguageCombo));
-            
-            // Library section
+        }
+
+        private void BuildLibrarySettingsSection(StackPanel stack)
+        {
             stack.Children.Add(new TextBlock { Text = L("Settings.Library.Header", "만화 라이브러리"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-            
+
             var libraryBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var addLibBtn = new Button { Content = L("Settings.Library.AddFolder", "라이브러리 폴더 추가") }; 
+            var addLibBtn = new Button { Content = L("Settings.Library.AddFolder", "라이브러리 폴더 추가") };
             addLibBtn.Click += AddLibraryFolder_Click;
             libraryBtnRow.Children.Add(addLibBtn);
             stack.Children.Add(libraryBtnRow);
-            
+
             _libraryPaths = new ObservableCollection<string>();
             _libraryPathsList = new ListView { Height = 160, SelectionMode = ListViewSelectionMode.Single, ItemsSource = _libraryPaths };
             _libraryPathsList.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
@@ -207,8 +223,11 @@ namespace MangaViewer.Pages
 </Grid></DataTemplate>");
             _libraryPathsList.ContainerContentChanging += LibraryPathsList_ContainerContentChanging;
             stack.Children.Add(_libraryPathsList);
-            
-            stack.Children.Add(new TextBlock { Text = L("Settings.Ocr.Header", "OCR 설정"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        }
+
+        private void BuildOcrSettingsSection(StackPanel stack)
+        {
+            stack.Children.Add(new TextBlock { Text = L("Settings.Ocr.Header", "OCR 설정"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _ocrBackendCombo = new ComboBox { Width = 220 };
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Hybrid (DocLayout + glm-ocr)", Tag = "hybrid" });
@@ -358,8 +377,8 @@ namespace MangaViewer.Pages
                 _onnxEpStatusText.Text = L("Settings.Ocr.Status.CompilingEpContext", "Compiling EP context...");
                 try
                 {
-                    bool ok = await _ocr.CompileDocLayoutEpContextModelAsync(CancellationToken.None);
-                    _onnxEpStatusText.Text = ok ? _ocr.OnnxExecutionProviderStatus : _ocr.OnnxExecutionProviderStatus;
+                    await _ocr.CompileDocLayoutEpContextModelAsync(CancellationToken.None);
+                    _onnxEpStatusText.Text = _ocr.OnnxExecutionProviderStatus;
                 }
                 catch (Exception ex)
                 {
@@ -426,20 +445,17 @@ namespace MangaViewer.Pages
             };
             stack.Children.Add(Row(L("Settings.Ocr.AdjacentCount", "OCR 인접 페이지 수:"), _ocrAdjacentPrefetchCountBox));
 
-            // Paragraph gap control (still part of OCR section)
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
+        }
 
-            // Translation section header
+        private void BuildTranslationSettingsSection(StackPanel stack)
+        {
+            var translationSettings = TranslationSettingsService.Instance;
+
             stack.Children.Add(new TextBlock { Text = L("Settings.Translation.Header", "번역 설정"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
-            var translationProviderCombo = new ComboBox { Width = 160 };
-            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Google", Tag = "Google" });
-            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "OpenAI", Tag = "OpenAI" });
-            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Anthropic", Tag = "Anthropic" });
-            translationProviderCombo.Items.Add(new ComboBoxItem { Content = "Ollama", Tag = "Ollama" });
-
+            var translationProviderCombo = CreateTranslationProviderCombo();
             var translationApiKeyBox = new PasswordBox { Width = 260 };
-            var translationSettings = TranslationSettingsService.Instance;
             var apiKeyRow = Row(L("Settings.Translation.ApiKey", "API 키:"), translationApiKeyBox);
             var translationTargetLanguageBox = new TextBox
             {
@@ -448,10 +464,8 @@ namespace MangaViewer.Pages
             };
             var translationTargetLanguageRow = Row(L("Settings.Translation.TargetLanguage", "타겟 언어:"), translationTargetLanguageBox);
 
-            // OpenAI / Anthropic 용 모델 텍스트 입력
             var translationModelBox = new TextBox { Width = 260 };
 
-            // Google 전용 모델 콤보 + 목록 가져오기 버튼
             var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "모델을 선택하세요") };
             var fetchGoogleModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "목록 가져오기"), Margin = new Thickness(8, 0, 0, 0) };
             var googleModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
@@ -463,7 +477,7 @@ namespace MangaViewer.Pages
             var textModelRow = Row(L("Settings.Translation.Model", "모델:"), translationModelBox);
             var googleModelRow = Row(L("Settings.Translation.Model", "모델:"), googleModelInner);
             var ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
-            var ollamaEndpointRow = Row("Ollama URL:", ollamaEndpointBox);
+            var ollamaEndpointRow = Row("Ollama / llama-server URL:", ollamaEndpointBox);
 
             var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "모델을 선택하세요") };
             var fetchOllamaModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "목록 가져오기"), Margin = new Thickness(8, 0, 0, 0) };
@@ -474,40 +488,21 @@ namespace MangaViewer.Pages
             ollamaModelInner.Children.Add(ollamaModelStatus);
             var ollamaModelRow = Row(L("Settings.Translation.Model", "모델:"), ollamaModelInner);
 
-            // 저장된 Google 모델 초기값 로드
-            if (translationSettings.Provider == "Google" && !string.IsNullOrEmpty(translationSettings.GoogleModel))
-            {
-                var savedId = translationSettings.GoogleModel;
-                googleModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
-                googleModelCombo.SelectedIndex = 0;
-            }
+            AddSavedTranslationModels(translationSettings, googleModelCombo, ollamaModelCombo);
 
-            if (translationSettings.Provider == "Ollama" && !string.IsNullOrEmpty(translationSettings.OllamaModel))
+            Action<TranslationProviderKind> updateModelRowVisibility = (provider) =>
             {
-                var savedId = translationSettings.OllamaModel;
-                ollamaModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
-                ollamaModelCombo.SelectedIndex = 0;
-            }
-
-            Action<string> updateModelRowVisibility = (provider) =>
-            {
-                textModelRow.Visibility = provider is "Google" or "Ollama" ? Visibility.Collapsed : Visibility.Visible;
-                googleModelRow.Visibility = provider == "Google" ? Visibility.Visible : Visibility.Collapsed;
-                ollamaEndpointRow.Visibility = provider == "Ollama" ? Visibility.Visible : Visibility.Collapsed;
-                ollamaModelRow.Visibility = provider == "Ollama" ? Visibility.Visible : Visibility.Collapsed;
+                textModelRow.Visibility = provider is TranslationProviderKind.Google or TranslationProviderKind.Ollama ? Visibility.Collapsed : Visibility.Visible;
+                googleModelRow.Visibility = provider == TranslationProviderKind.Google ? Visibility.Visible : Visibility.Collapsed;
+                ollamaEndpointRow.Visibility = provider == TranslationProviderKind.Ollama ? Visibility.Visible : Visibility.Collapsed;
+                ollamaModelRow.Visibility = provider == TranslationProviderKind.Ollama ? Visibility.Visible : Visibility.Collapsed;
             };
 
             Action updateApiKeyBox = () =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                translationApiKeyBox.Password = provider switch
-                {
-                    "Google" => translationSettings.GoogleApiKey,
-                    "OpenAI" => translationSettings.OpenAIApiKey,
-                    "Anthropic" => translationSettings.AnthropicApiKey,
-                    _ => ""
-                };
-                apiKeyRow.Visibility = provider == "Ollama" ? Visibility.Collapsed : Visibility.Visible;
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                translationApiKeyBox.Password = translationSettings.GetApiKeyForProvider(provider);
+                apiKeyRow.Visibility = provider == TranslationProviderKind.Ollama ? Visibility.Collapsed : Visibility.Visible;
             };
 
             var systemPromptBox = new TextBox
@@ -521,40 +516,19 @@ namespace MangaViewer.Pages
 
             Action updateSystemPromptBox = () =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                systemPromptBox.Text = provider switch
-                {
-                    "OpenAI" => translationSettings.OpenAISystemPrompt,
-                    "Anthropic" => translationSettings.AnthropicSystemPrompt,
-                    "Ollama" => translationSettings.OllamaSystemPrompt,
-                    _ => translationSettings.GoogleSystemPrompt
-                };
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                systemPromptBox.Text = translationSettings.GetSystemPromptForProvider(provider);
             };
 
             systemPromptBox.LostFocus += (s, e) =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                switch (provider)
-                {
-                    case "Google": translationSettings.GoogleSystemPrompt = systemPromptBox.Text; break;
-                    case "OpenAI": translationSettings.OpenAISystemPrompt = systemPromptBox.Text; break;
-                    case "Anthropic": translationSettings.AnthropicSystemPrompt = systemPromptBox.Text; break;
-                    case "Ollama": translationSettings.OllamaSystemPrompt = systemPromptBox.Text; break;
-                }
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                translationSettings.SetSystemPromptForProvider(provider, systemPromptBox.Text);
             };
 
-            // 초기값 설정
-            var currentProvider = translationSettings.Provider;
-            var providerItem = translationProviderCombo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == currentProvider)
-                               ?? (ComboBoxItem)translationProviderCombo.Items[0];
-            translationProviderCombo.SelectedItem = providerItem;
-            translationModelBox.Text = currentProvider switch
-            {
-                "OpenAI" => translationSettings.OpenAIModel,
-                "Anthropic" => translationSettings.AnthropicModel,
-                "Ollama" => translationSettings.OllamaModel,
-                _ => translationSettings.GoogleModel
-            };
+            TranslationProviderKind currentProvider = translationSettings.ProviderKind;
+            SelectTranslationProvider(translationProviderCombo, currentProvider);
+            translationModelBox.Text = translationSettings.GetModelForProvider(currentProvider);
             ollamaEndpointBox.Text = translationSettings.OllamaEndpoint;
             translationTargetLanguageBox.Text = translationSettings.TargetLanguage;
             updateApiKeyBox();
@@ -563,69 +537,22 @@ namespace MangaViewer.Pages
 
             var thinkingLevelCombo = new ComboBox { Width = 160 };
 
-            static string NormalizeOllamaThinkingLevel(string? level)
-            {
-                if (string.IsNullOrWhiteSpace(level)) return "Off";
-                if (level.Equals("Off", StringComparison.OrdinalIgnoreCase)
-                    || level.Equals("False", StringComparison.OrdinalIgnoreCase)
-                    || level.Equals("0", StringComparison.OrdinalIgnoreCase))
-                    return "Off";
-                return "On";
-            }
-
-            void PopulateThinkingLevels(string provider, ComboBox combo)
-            {
-                combo.Items.Clear();
-                if (provider == "Ollama")
-                {
-                    combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
-                    combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "켜짐"), Tag = "On" });
-
-                    string normalized = NormalizeOllamaThinkingLevel(translationSettings.ThinkingLevel);
-                    var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == normalized)
-                        ?? (ComboBoxItem)combo.Items[0];
-                    combo.SelectedItem = selected;
-
-                    if (!string.Equals(translationSettings.ThinkingLevel, normalized, StringComparison.OrdinalIgnoreCase))
-                        translationSettings.ThinkingLevel = normalized;
-                    return;
-                }
-
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Minimal", "최소"), Tag = "Minimal" });
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Low", "낮음"), Tag = "Low" });
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Medium", "보통"), Tag = "Medium" });
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.High", "높음"), Tag = "High" });
-
-                var saved = translationSettings.ThinkingLevel;
-                var selectedNonOllama = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == saved)
-                    ?? (ComboBoxItem)combo.Items[0];
-                combo.SelectedItem = selectedNonOllama;
-            }
-
             translationProviderCombo.SelectionChanged += (s, e) =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                translationSettings.Provider = provider;
-
-                if (provider == "OpenAI")
-                    translationModelBox.Text = translationSettings.OpenAIModel;
-                else if (provider == "Anthropic")
-                    translationModelBox.Text = translationSettings.AnthropicModel;
-                else if (provider == "Ollama")
-                    translationModelBox.Text = translationSettings.OllamaModel;
-
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                translationSettings.ProviderKind = provider;
+                translationModelBox.Text = translationSettings.GetModelForProvider(provider);
                 updateModelRowVisibility(provider);
                 updateApiKeyBox();
                 updateSystemPromptBox();
-                PopulateThinkingLevels(provider, thinkingLevelCombo);
+                PopulateTranslationThinkingLevels(provider, thinkingLevelCombo, translationSettings);
             };
 
             translationModelBox.LostFocus += (s, e) =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                if (provider == "OpenAI") translationSettings.OpenAIModel = translationModelBox.Text;
-                else if (provider == "Anthropic") translationSettings.AnthropicModel = translationModelBox.Text;
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                if (provider is TranslationProviderKind.OpenAI or TranslationProviderKind.Anthropic)
+                    translationSettings.SetModelForProvider(provider, translationModelBox.Text);
             };
 
             googleModelCombo.SelectionChanged += (s, e) =>
@@ -649,7 +576,6 @@ namespace MangaViewer.Pages
 
             fetchGoogleModelsBtn.Click += async (s, e) =>
             {
-                // API 키 우선 저장
                 translationSettings.GoogleApiKey = translationApiKeyBox.Password;
 
                 if (string.IsNullOrWhiteSpace(translationSettings.GoogleApiKey))
@@ -677,13 +603,11 @@ namespace MangaViewer.Pages
                     {
                         if (model.Name is not null)
                         {
-                            // Name 형식: "models/gemini-2.0-flash" → prefix 제거
                             var id = model.Name.StartsWith("models/") ? model.Name[7..] : model.Name;
                             modelIds.Add(id);
                         }
                     }
 
-                    // Gemini 모델 우선, 이후 가나다순
                     modelIds.Sort((a, b) =>
                     {
                         bool aG = a.StartsWith("gemini", StringComparison.OrdinalIgnoreCase);
@@ -695,14 +619,7 @@ namespace MangaViewer.Pages
                     foreach (var id in modelIds)
                         googleModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
 
-                    // 이전 선택 복원
-                    var toSelect = googleModelCombo.Items.OfType<ComboBoxItem>()
-                        .FirstOrDefault(i => (string)i.Tag == savedSelection);
-                    if (toSelect is not null)
-                        googleModelCombo.SelectedItem = toSelect;
-                    else if (googleModelCombo.Items.Count > 0)
-                        googleModelCombo.SelectedIndex = 0;
-
+                    RestoreTranslationModelSelection(googleModelCombo, savedSelection);
                     googleModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}개"), modelIds.Count);
                 }
                 catch (Exception ex)
@@ -737,13 +654,7 @@ namespace MangaViewer.Pages
                     foreach (var id in modelIds)
                         ollamaModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
 
-                    var toSelect = ollamaModelCombo.Items.OfType<ComboBoxItem>()
-                        .FirstOrDefault(i => (string)i.Tag == savedSelection);
-                    if (toSelect is not null)
-                        ollamaModelCombo.SelectedItem = toSelect;
-                    else if (ollamaModelCombo.Items.Count > 0)
-                        ollamaModelCombo.SelectedIndex = 0;
-
+                    RestoreTranslationModelSelection(ollamaModelCombo, savedSelection);
                     ollamaModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}개"), modelIds.Count);
                 }
                 catch (Exception ex)
@@ -758,13 +669,8 @@ namespace MangaViewer.Pages
 
             translationApiKeyBox.LostFocus += (s, e) =>
             {
-                var provider = (string)((ComboBoxItem)translationProviderCombo.SelectedItem).Tag;
-                switch (provider)
-                {
-                    case "Google": translationSettings.GoogleApiKey = translationApiKeyBox.Password; break;
-                    case "OpenAI": translationSettings.OpenAIApiKey = translationApiKeyBox.Password; break;
-                    case "Anthropic": translationSettings.AnthropicApiKey = translationApiKeyBox.Password; break;
-                }
+                var provider = GetSelectedTranslationProvider(translationProviderCombo);
+                translationSettings.SetApiKeyForProvider(provider, translationApiKeyBox.Password);
             };
 
             translationTargetLanguageBox.LostFocus += (s, e) =>
@@ -816,12 +722,7 @@ namespace MangaViewer.Pages
             _translationOverlayFontSlider.ValueChanged += TranslationOverlayFontSlider_ValueChanged;
             _translationOverlayFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayFontValue();
-
-            var translationOverlayFontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayFontRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayFontSize", "번역 바운딩 박스 글자 크기:"), VerticalAlignment = VerticalAlignment.Center });
-            translationOverlayFontRow.Children.Add(_translationOverlayFontSlider);
-            translationOverlayFontRow.Children.Add(_translationOverlayFontValue);
-            stack.Children.Add(translationOverlayFontRow);
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayFontSize", "번역 바운딩 박스 글자 크기:"), _translationOverlayFontSlider, _translationOverlayFontValue));
 
             _translationOverlayBoxScaleHorizontalSlider = new Slider
             {
@@ -834,12 +735,7 @@ namespace MangaViewer.Pages
             _translationOverlayBoxScaleHorizontalSlider.ValueChanged += TranslationOverlayBoxScaleHorizontalSlider_ValueChanged;
             _translationOverlayBoxScaleHorizontalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayBoxScaleHorizontalValue();
-
-            var translationOverlayBoxScaleHorizontalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayBoxScaleHorizontalRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayBoxHorizontal", "번역 바운딩 박스 가로 크기:"), VerticalAlignment = VerticalAlignment.Center });
-            translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalSlider);
-            translationOverlayBoxScaleHorizontalRow.Children.Add(_translationOverlayBoxScaleHorizontalValue);
-            stack.Children.Add(translationOverlayBoxScaleHorizontalRow);
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxHorizontal", "번역 바운딩 박스 가로 크기:"), _translationOverlayBoxScaleHorizontalSlider, _translationOverlayBoxScaleHorizontalValue));
 
             _translationOverlayBoxScaleVerticalSlider = new Slider
             {
@@ -852,22 +748,104 @@ namespace MangaViewer.Pages
             _translationOverlayBoxScaleVerticalSlider.ValueChanged += TranslationOverlayBoxScaleVerticalSlider_ValueChanged;
             _translationOverlayBoxScaleVerticalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayBoxScaleVerticalValue();
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxVertical", "번역 바운딩 박스 세로 크기:"), _translationOverlayBoxScaleVerticalSlider, _translationOverlayBoxScaleVerticalValue));
 
-            var translationOverlayBoxScaleVerticalRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            translationOverlayBoxScaleVerticalRow.Children.Add(new TextBlock { Text = L("Settings.Translation.OverlayBoxVertical", "번역 바운딩 박스 세로 크기:"), VerticalAlignment = VerticalAlignment.Center });
-            translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalSlider);
-            translationOverlayBoxScaleVerticalRow.Children.Add(_translationOverlayBoxScaleVerticalValue);
-            stack.Children.Add(translationOverlayBoxScaleVerticalRow);
-
-            PopulateThinkingLevels(currentProvider, thinkingLevelCombo);
+            PopulateTranslationThinkingLevels(currentProvider, thinkingLevelCombo, translationSettings);
             thinkingLevelCombo.SelectionChanged += (s, e) =>
             {
                 if (thinkingLevelCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
                     translationSettings.ThinkingLevel = tag;
             };
             stack.Children.Add(Row("Thinking:", thinkingLevelCombo));
+        }
 
-            // Tag section header (separate grouping from OCR settings)
+        private static ComboBox CreateTranslationProviderCombo()
+        {
+            var combo = new ComboBox { Width = 160 };
+            combo.Items.Add(new ComboBoxItem { Content = TranslationProviders.Google, Tag = TranslationProviderKind.Google });
+            combo.Items.Add(new ComboBoxItem { Content = TranslationProviders.OpenAI, Tag = TranslationProviderKind.OpenAI });
+            combo.Items.Add(new ComboBoxItem { Content = TranslationProviders.Anthropic, Tag = TranslationProviderKind.Anthropic });
+            combo.Items.Add(new ComboBoxItem { Content = TranslationProviders.Ollama, Tag = TranslationProviderKind.Ollama });
+            return combo;
+        }
+
+        private static TranslationProviderKind GetSelectedTranslationProvider(ComboBox combo)
+            => (TranslationProviderKind)((ComboBoxItem)combo.SelectedItem).Tag;
+
+        private static void SelectTranslationProvider(ComboBox combo, TranslationProviderKind provider)
+        {
+            combo.SelectedItem = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => Equals(i.Tag, provider))
+                ?? (ComboBoxItem)combo.Items[0];
+        }
+
+        private static void AddSavedTranslationModels(TranslationSettingsService settings, ComboBox googleModelCombo, ComboBox ollamaModelCombo)
+        {
+            if (settings.ProviderKind == TranslationProviderKind.Google && !string.IsNullOrEmpty(settings.GoogleModel))
+            {
+                var savedId = settings.GoogleModel;
+                googleModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
+                googleModelCombo.SelectedIndex = 0;
+            }
+
+            if (settings.ProviderKind == TranslationProviderKind.Ollama && !string.IsNullOrEmpty(settings.OllamaModel))
+            {
+                var savedId = settings.OllamaModel;
+                ollamaModelCombo.Items.Add(new ComboBoxItem { Content = savedId, Tag = savedId });
+                ollamaModelCombo.SelectedIndex = 0;
+            }
+        }
+
+        private static void RestoreTranslationModelSelection(ComboBox combo, string savedSelection)
+        {
+            var toSelect = combo.Items.OfType<ComboBoxItem>()
+                .FirstOrDefault(i => (string)i.Tag == savedSelection);
+            if (toSelect is not null)
+                combo.SelectedItem = toSelect;
+            else if (combo.Items.Count > 0)
+                combo.SelectedIndex = 0;
+        }
+
+        private static void PopulateTranslationThinkingLevels(TranslationProviderKind provider, ComboBox combo, TranslationSettingsService translationSettings)
+        {
+            combo.Items.Clear();
+            if (provider == TranslationProviderKind.Ollama)
+            {
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "켜짐"), Tag = "On" });
+
+                string normalized = ThinkingLevelHelper.NormalizeOllama(translationSettings.ThinkingLevel);
+                var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == normalized)
+                    ?? (ComboBoxItem)combo.Items[0];
+                combo.SelectedItem = selected;
+
+                if (!string.Equals(translationSettings.ThinkingLevel, normalized, StringComparison.OrdinalIgnoreCase))
+                    translationSettings.ThinkingLevel = normalized;
+                return;
+            }
+
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "꺼짐"), Tag = "Off" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Minimal", "최소"), Tag = "Minimal" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Low", "낮음"), Tag = "Low" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Medium", "보통"), Tag = "Medium" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.High", "높음"), Tag = "High" });
+
+            var saved = translationSettings.ThinkingLevel;
+            var selectedNonOllama = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == saved)
+                ?? (ComboBoxItem)combo.Items[0];
+            combo.SelectedItem = selectedNonOllama;
+        }
+
+        private static UIElement CreateTranslationSliderRow(string label, Slider slider, TextBlock valueText)
+        {
+            var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+            row.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center });
+            row.Children.Add(slider);
+            row.Children.Add(valueText);
+            return row;
+        }
+
+        private void BuildTagSettingsSection(StackPanel stack)
+        {
             stack.Children.Add(new TextBlock { Text = L("Settings.Tag.Header", "태그 표시"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _tagFontSlider = new Slider { Minimum = 8, Maximum = 32, Width = 220, Value = _tagSettings.TagFontSize };
@@ -879,35 +857,43 @@ namespace MangaViewer.Pages
             fontRow.Children.Add(_tagFontSlider);
             fontRow.Children.Add(_tagFontValue);
             stack.Children.Add(fontRow);
+        }
 
-            // Thumbnail section header
-            stack.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.Header", "썸네일 설정"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-            var thumbRow1 = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
+        private void BuildThumbnailSettingsSection(StackPanel stack)
+        {
+            stack.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.Header", "썸네일 설정"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            var thumbRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _thumbWidthSlider = new Slider { Minimum = 64, Maximum = 512, Width = 220, Value = _thumbSettings.DecodeWidth };
             _thumbWidthSlider.ValueChanged += ThumbWidthSlider_ValueChanged;
             _thumbWidthValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateThumbWidthValue();
-            thumbRow1.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.DecodeWidth", "디코드 폭(px):"), VerticalAlignment = VerticalAlignment.Center });
-            thumbRow1.Children.Add(_thumbWidthSlider);
-            thumbRow1.Children.Add(_thumbWidthValue);
-            stack.Children.Add(thumbRow1);
+            thumbRow.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.DecodeWidth", "디코드 폭(px):"), VerticalAlignment = VerticalAlignment.Center });
+            thumbRow.Children.Add(_thumbWidthSlider);
+            thumbRow.Children.Add(_thumbWidthValue);
+            stack.Children.Add(thumbRow);
+        }
 
-            stack.Children.Add(new TextBlock { Text = L("Settings.Cache.Header", "이미지 캐시"), FontSize = 20, Margin = new Thickness(0,24,0,0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-            _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0,0,0,8) };
+        private void BuildCacheSettingsSection(StackPanel stack)
+        {
+            stack.Children.Add(new TextBlock { Text = L("Settings.Cache.Header", "이미지 캐시"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0, 0, 0, 8) };
             stack.Children.Add(_cacheSummary);
 
             var limitsPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _cacheMaxCountBox = new NumberBox { Header = L("Settings.Cache.MaxImageCount", "최대 이미지 수"), Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
             _cacheMaxBytesBox = new NumberBox { Header = L("Settings.Cache.MaxSizeGb", "최대 용량(GB)"), Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
-            var applyBtn = new Button { Content = L("Settings.Common.Apply", "적용") }; applyBtn.Click += ApplyCacheLimit_Click;
+            var applyBtn = new Button { Content = L("Settings.Common.Apply", "적용") };
+            applyBtn.Click += ApplyCacheLimit_Click;
             limitsPanel.Children.Add(_cacheMaxCountBox);
             limitsPanel.Children.Add(_cacheMaxBytesBox);
             limitsPanel.Children.Add(applyBtn);
             stack.Children.Add(limitsPanel);
 
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var refreshBtn = new Button { Content = L("Settings.Common.Refresh", "새로고침") }; refreshBtn.Click += (s,e)=> RefreshCacheView();
-            var clearAllBtn = new Button { Content = L("Settings.Cache.ClearAll", "캐시 전체 삭제") }; clearAllBtn.Click += (s,e)=> { ImageCacheService.Instance.ClearMemoryImages(); RefreshCacheView(); };
+            var refreshBtn = new Button { Content = L("Settings.Common.Refresh", "새로고침") };
+            refreshBtn.Click += (s, e) => RefreshCacheView();
+            var clearAllBtn = new Button { Content = L("Settings.Cache.ClearAll", "캐시 전체 삭제") };
+            clearAllBtn.Click += (s, e) => { ImageCacheService.Instance.ClearMemoryImages(); RefreshCacheView(); };
             btnRow.Children.Add(refreshBtn);
             btnRow.Children.Add(clearAllBtn);
             stack.Children.Add(btnRow);
@@ -922,8 +908,6 @@ namespace MangaViewer.Pages
 </Grid></DataTemplate>");
             _cacheList.ContainerContentChanging += CacheList_ContainerContentChanging;
             stack.Children.Add(_cacheList);
-
-            Content = new ScrollViewer { Content = stack };
         }
 
         private void RefreshLibraryPaths()
@@ -1144,28 +1128,24 @@ namespace MangaViewer.Pages
         private static async Task<List<OllamaModelInfo>> GetOllamaOcrModelInfosAsync(string endpoint)
         {
             using var http = new HttpClient();
-            using var response = await http.GetAsync(endpoint.TrimEnd('/') + "/api/tags").ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
+            endpoint = LlmEndpointCompatibility.NormalizeEndpoint(endpoint);
+            var flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(http, endpoint, CancellationToken.None).ConfigureAwait(false);
+            var modelIds = await LlmEndpointCompatibility.GetModelIdsAsync(http, endpoint, CancellationToken.None).ConfigureAwait(false);
 
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(json);
+            Debug.WriteLine($"[SettingsPage] OCR model discovery start: endpoint={endpoint}, flavor={flavor}, modelCount={modelIds.Count}");
+            Debug.WriteLine($"[SettingsPage] OCR model ids: [{string.Join(", ", modelIds)}]");
 
             var result = new List<OllamaModelInfo>();
-            if (!doc.RootElement.TryGetProperty("models", out var modelsElement) || modelsElement.ValueKind != JsonValueKind.Array)
-                return result;
-
-            foreach (var model in modelsElement.EnumerateArray())
+            foreach (var id in modelIds)
             {
-                if (!model.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
+                var capabilities = await GetOllamaModelCapabilitiesAsync(http, endpoint, id, flavor).ConfigureAwait(false);
+                Debug.WriteLine($"[SettingsPage] OCR model candidate: id={id}, vision={capabilities.Vision}, tools={capabilities.Tools}, thinking={capabilities.Thinking}");
+                if (!capabilities.Vision || (flavor == LlmApiFlavor.Ollama && !capabilities.Tools))
+                {
+                    string filterReason = !capabilities.Vision ? "Vision=false" : "Tools=false";
+                    Debug.WriteLine($"[SettingsPage] OCR model filtered out: id={id}, reason={filterReason}");
                     continue;
-
-                var id = nameElement.GetString();
-                if (string.IsNullOrWhiteSpace(id))
-                    continue;
-
-                var capabilities = await GetOllamaModelCapabilitiesAsync(http, endpoint, id).ConfigureAwait(false);
-                if (!capabilities.Vision || !capabilities.Tools)
-                    continue;
+                }
 
                 result.Add(new OllamaModelInfo
                 {
@@ -1175,13 +1155,26 @@ namespace MangaViewer.Pages
             }
 
             result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            Debug.WriteLine($"[SettingsPage] OCR model discovery result: count={result.Count}, ids=[{string.Join(", ", result.Select(m => m.Name))}]");
             return result;
         }
 
         private static async Task<(bool Vision, bool Tools, bool Thinking)> GetOllamaModelCapabilitiesAsync(HttpClient http, string endpoint, string model)
         {
+            return await GetOllamaModelCapabilitiesAsync(http, endpoint, model, await LlmEndpointCompatibility.DetectApiFlavorAsync(http, endpoint, CancellationToken.None).ConfigureAwait(false)).ConfigureAwait(false);
+        }
+
+        private static async Task<(bool Vision, bool Tools, bool Thinking)> GetOllamaModelCapabilitiesAsync(HttpClient http, string endpoint, string model, LlmApiFlavor flavor)
+        {
+            endpoint = LlmEndpointCompatibility.NormalizeEndpoint(endpoint);
+            if (flavor == LlmApiFlavor.OpenAiCompatible)
+            {
+                var capabilities = await LlmEndpointCompatibility.GetOpenAiCompatibleModelCapabilitiesAsync(http, endpoint, model, CancellationToken.None).ConfigureAwait(false);
+                return (capabilities.Vision, true, capabilities.Thinking);
+            }
+
             var payload = new { model };
-            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint.TrimEnd('/') + "/api/show")
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/show")
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json")
             };
@@ -1230,28 +1223,7 @@ namespace MangaViewer.Pages
         private static async Task<List<string>> GetOllamaModelIdsAsync(string endpoint)
         {
             using var http = new HttpClient();
-            using var response = await http.GetAsync(endpoint.TrimEnd('/') + "/api/tags").ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-
-            var json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
-            using var doc = JsonDocument.Parse(json);
-
-            var modelIds = new List<string>();
-            if (doc.RootElement.TryGetProperty("models", out var modelsElement) && modelsElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var model in modelsElement.EnumerateArray())
-                {
-                    if (model.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
-                    {
-                        var id = nameElement.GetString();
-                        if (!string.IsNullOrWhiteSpace(id))
-                            modelIds.Add(id);
-                    }
-                }
-            }
-
-            modelIds.Sort(StringComparer.OrdinalIgnoreCase);
-            return modelIds;
+            return await LlmEndpointCompatibility.GetModelIdsAsync(http, endpoint, CancellationToken.None).ConfigureAwait(false);
         }
 
         private static UIElement Row(string label, UIElement inner)

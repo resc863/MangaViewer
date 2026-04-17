@@ -10,7 +10,7 @@ using SystemType = System.Type;
 
 namespace MangaViewer.Services
 {
-    public class AnthropicChatClient : IChatClient
+    public class AnthropicChatClient : ChatClientBase
     {
         private readonly AnthropicClient _client;
         private readonly IChatClient _innerClient;
@@ -18,6 +18,7 @@ namespace MangaViewer.Services
         private readonly string _thinkingLevel;
 
         public AnthropicChatClient(string apiKey, string model, string thinkingLevel = "Off")
+            : base("Anthropic")
         {
             _client = new AnthropicClient() { ApiKey = apiKey };
             _innerClient = _client.AsIChatClient(model);
@@ -25,12 +26,9 @@ namespace MangaViewer.Services
             _thinkingLevel = thinkingLevel;
         }
 
-        public void Dispose() => _innerClient.Dispose();
+        public override void Dispose() => _innerClient.Dispose();
 
-        public Task<ChatResponse> GetResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             if (_thinkingLevel is not "Off")
             {
@@ -67,15 +65,10 @@ namespace MangaViewer.Services
             return await _innerClient.GetResponseAsync(chatMessages, options, cancellationToken);
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetStreamingResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
             => _innerClient.GetStreamingResponseAsync(chatMessages, options, cancellationToken);
 
-        public ChatClientMetadata Metadata => new ChatClientMetadata("Anthropic");
-
-        public object? GetService(SystemType serviceType, object? serviceKey = null)
+        public override object? GetService(SystemType serviceType, object? serviceKey = null)
             => _innerClient.GetService(serviceType, serviceKey);
     }
 }

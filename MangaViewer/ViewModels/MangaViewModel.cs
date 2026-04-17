@@ -129,8 +129,8 @@ namespace MangaViewer.ViewModels
                     OnPropertyChanged(nameof(IsTranslationVisible));
                     if (_isTranslationActive && _isOcrActive)
                     {
-                        _ = RunTranslationAsync();
-                        StartAdjacentPagePrefetch();
+                        if (!IsOcrRunning)
+                            _ = RunTranslationAsync();
                     }
                     else
                     {
@@ -794,9 +794,10 @@ namespace MangaViewer.ViewModels
 
                 await EnsureVisiblePageOcrCachedAsync(paths, token, localVersion, forceRefresh).ConfigureAwait(true);
 
-                StartAdjacentPagePrefetch();
                 if (IsTranslationActive)
-                    _ = RunTranslationAsync();
+                    _ = RunTranslationThenPrefetchAsync(localVersion);
+                else
+                    StartAdjacentPagePrefetch();
             }
             catch (OperationCanceledException)
             {
@@ -1167,6 +1168,26 @@ namespace MangaViewer.ViewModels
             }
         }
 
+        private async Task RunTranslationThenPrefetchAsync(int expectedOcrVersion)
+        {
+            try
+            {
+                await RunTranslationAsync().ConfigureAwait(true);
+
+                if (!IsTranslationActive || !IsOcrActive)
+                    return;
+
+                if (expectedOcrVersion != Volatile.Read(ref _ocrVersion))
+                    return;
+
+                StartAdjacentPagePrefetch();
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "RunTranslationThenPrefetchAsync failed");
+            }
+        }
+
         private async Task TranslateBoxSideAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, bool isLeft)
         {
             if (boxes.Count == 0)
@@ -1180,9 +1201,9 @@ namespace MangaViewer.ViewModels
             {
                 TimeSpan timeout = TranslationPerSideTimeout;
                 var settings = TranslationSettingsService.Instance;
-                if (string.Equals(settings.Provider, "Ollama", StringComparison.OrdinalIgnoreCase))
+                if (TranslationSettingsService.IsOllamaProvider(settings.ProviderKind))
                 {
-                    bool thinkingEnabled = !NormalizeOllamaThinkingLevel(settings.ThinkingLevel)
+                    bool thinkingEnabled = !ThinkingLevelHelper.NormalizeOllama(settings.ThinkingLevel)
                         .Equals("Off", StringComparison.OrdinalIgnoreCase);
                     timeout = OllamaRequestLoadCoordinator.GetSuggestedTimeout(timeout, thinkingEnabled);
                 }
@@ -1228,15 +1249,17 @@ namespace MangaViewer.ViewModels
 
             string fullText = string.Join(Environment.NewLine, merged.Select(x => x.Text));
             string pageText = string.IsNullOrWhiteSpace(pageOcrText) ? fullText : pageOcrText.Trim();
-            if (!TryBuildTranslationClient(out var settings, out string model, out string systemPrompt, out IChatClient? client))
+            var settings = TranslationSettingsService.Instance;
+            var providerSettings = settings.GetCurrentProviderSettings();
+            if (!TranslationClientFactory.TryCreate(settings, out var translationClient))
                 return;
 
             string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
 
             string boxInputKey = string.Join("\u241E", merged.Select(x => x.Text));
-            string cacheKey = settings.Provider == "Ollama"
-                ? $"box|{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={settings.ThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}"
-                : $"box|{settings.Provider}|{model}|{settings.ThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}";
+            string cacheKey = providerSettings.UsesEndpoint
+                ? $"box|{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}"
+                : $"box|{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}";
 
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
             {
@@ -1251,9 +1274,9 @@ namespace MangaViewer.ViewModels
             };
 
             string jsonPayload = JsonSerializer.Serialize(boxPayload, PromptJsonSerializerOptions);
-            string boxSystemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+            string boxSystemPrompt = string.IsNullOrWhiteSpace(translationClient.SystemPrompt)
                 ? "You are a professional manga translator."
-                : systemPrompt;
+                : translationClient.SystemPrompt;
             boxSystemPrompt += $" Translate into {targetLanguage}. Return only strict JSON.";
 
             var messages = new List<ChatMessage>
@@ -1268,13 +1291,13 @@ namespace MangaViewer.ViewModels
                     "Do not add markdown, comments, or extra keys.\nInput JSON:\n" + jsonPayload)
             };
 
-            Log.Info($"[Translation][Request] provider={settings.Provider}, model={model}, thinking={settings.ThinkingLevel}, targetLanguage={targetLanguage}, mode=box");
+            Log.Info($"[Translation][Request] provider={providerSettings.ProviderName}, model={translationClient.Model}, thinking={translationClient.EffectiveThinkingLevel}, targetLanguage={targetLanguage}, mode=box");
             Log.Info($"[Translation][Request][System] {boxSystemPrompt}");
             Log.Info($"[Translation][Request][User] {messages[1].Text}");
 
-            using (client)
+            using (translationClient.Client)
             {
-                var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(true);
+                var response = await translationClient.Client.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(true);
                 string content = response.Messages.Count > 0 ? (response.Messages[0].Text ?? string.Empty) : string.Empty;
                 string normalizedJson = NormalizeJsonText(content);
                 _translationCache[cacheKey] = normalizedJson;
@@ -1458,92 +1481,40 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private bool TryBuildTranslationClient(out TranslationSettingsService settings, out string model, out string systemPrompt, out IChatClient? client)
-        {
-            settings = TranslationSettingsService.Instance;
-            var thinkingLevel = settings.ThinkingLevel;
-            model = string.Empty;
-            systemPrompt = string.Empty;
-            client = null;
-
-            if (settings.Provider == "Google")
-            {
-                model = settings.GoogleModel;
-                systemPrompt = settings.GoogleSystemPrompt;
-                client = new MangaViewer.Services.GoogleGenAIChatClient(settings.GoogleApiKey, model, thinkingLevel);
-            }
-            else if (settings.Provider == "OpenAI")
-            {
-                model = settings.OpenAIModel;
-                systemPrompt = settings.OpenAISystemPrompt;
-                client = new MangaViewer.Services.OpenAIChatClient(settings.OpenAIApiKey, model, thinkingLevel: thinkingLevel);
-            }
-            else if (settings.Provider == "Anthropic")
-            {
-                model = settings.AnthropicModel;
-                systemPrompt = settings.AnthropicSystemPrompt;
-                client = new AnthropicChatClient(settings.AnthropicApiKey, model, thinkingLevel);
-            }
-            else if (settings.Provider == "Ollama")
-            {
-                model = settings.OllamaModel;
-                systemPrompt = settings.OllamaSystemPrompt;
-                client = new OllamaChatClient(settings.OllamaEndpoint, model, NormalizeOllamaThinkingLevel(thinkingLevel));
-            }
-            else
-            {
-                return false;
-            }
-
-            return true;
-        }
-
         private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
         {
-            if (!TryBuildTranslationClient(out var settings, out string model, out string systemPrompt, out IChatClient? client))
+            var settings = TranslationSettingsService.Instance;
+            var providerSettings = settings.GetCurrentProviderSettings();
+            if (!TranslationClientFactory.TryCreate(settings, out var translationClient))
             {
                 return "번역 공급자를 설정해주세요.";
             }
 
             string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
-            string effectiveThinkingLevel = settings.Provider == "Ollama"
-                ? NormalizeOllamaThinkingLevel(settings.ThinkingLevel)
-                : settings.ThinkingLevel;
-
-            string cacheKey = settings.Provider == "Ollama"
-                ? $"{settings.Provider}|{settings.OllamaEndpoint}|{model}|think={effectiveThinkingLevel}|lang={targetLanguage}|{text}"
-                : $"{settings.Provider}|{model}|{effectiveThinkingLevel}|lang={targetLanguage}|{text}";
+            string cacheKey = providerSettings.UsesEndpoint
+                ? $"{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}"
+                : $"{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}";
             if (_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
             var messages = new List<ChatMessage>();
-            string effectiveSystemPrompt = string.IsNullOrWhiteSpace(systemPrompt)
+            string effectiveSystemPrompt = string.IsNullOrWhiteSpace(translationClient.SystemPrompt)
                 ? $"You are a professional translator. Translate the user text into {targetLanguage}. Return only the translated text."
-                : systemPrompt + $" Translate the output into {targetLanguage} and return only the translated text.";
+                : translationClient.SystemPrompt + $" Translate the output into {targetLanguage} and return only the translated text.";
             messages.Add(new ChatMessage(ChatRole.System, effectiveSystemPrompt));
             messages.Add(new ChatMessage(ChatRole.User, text));
 
-            Log.Info($"[Translation][Request] provider={settings.Provider}, model={model}, thinking={effectiveThinkingLevel}, targetLanguage={targetLanguage}");
+            Log.Info($"[Translation][Request] provider={providerSettings.ProviderName}, model={translationClient.Model}, thinking={translationClient.EffectiveThinkingLevel}, targetLanguage={targetLanguage}");
             Log.Info($"[Translation][Request][System] {effectiveSystemPrompt}");
             Log.Info($"[Translation][Request][User] {text}");
 
-            using (client)
+            using (translationClient.Client)
             {
-                var response = await client.GetResponseAsync(messages, cancellationToken: cancellationToken);
+                var response = await translationClient.Client.GetResponseAsync(messages, cancellationToken: cancellationToken);
                 string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
                 _translationCache[cacheKey] = result;
                 return result;
             }
-        }
-
-        private static string NormalizeOllamaThinkingLevel(string? thinkingLevel)
-        {
-            if (string.IsNullOrWhiteSpace(thinkingLevel)) return "Off";
-            if (thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase))
-                return "Off";
-            return "On";
         }
 
         private void StartAdjacentPagePrefetch()
@@ -1569,21 +1540,18 @@ namespace MangaViewer.ViewModels
                 try
                 {
                     var translationPathSet = new HashSet<string>(translationPaths, StringComparer.OrdinalIgnoreCase);
+                    var prefetchedTexts = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
                     foreach (var path in ocrPaths)
                     {
                         token.ThrowIfCancellationRequested();
 
                         var ocrResult = await GetBackendOcrForAdjacentPrefetchAsync(path, token).ConfigureAwait(false);
-                        if (!translationPathSet.Remove(path))
-                            continue;
+                        if (!string.IsNullOrWhiteSpace(ocrResult.Text) && translationPathSet.Contains(path))
+                            prefetchedTexts[path] = ocrResult.Text;
 
-                        if (!string.IsNullOrWhiteSpace(ocrResult.Text))
-                            await TranslateTextAsync(ocrResult.Text, token).ConfigureAwait(false);
+                        translationPathSet.Remove(path);
                     }
-
-                    if (translationPathSet.Count == 0)
-                        return;
 
                     foreach (var path in translationPathSet)
                     {
@@ -1591,7 +1559,13 @@ namespace MangaViewer.ViewModels
 
                         var ocrResult = await GetBackendOcrForAdjacentPrefetchAsync(path, token).ConfigureAwait(false);
                         if (!string.IsNullOrWhiteSpace(ocrResult.Text))
-                            await TranslateTextAsync(ocrResult.Text, token).ConfigureAwait(false);
+                            prefetchedTexts[path] = ocrResult.Text;
+                    }
+
+                    foreach (var pair in prefetchedTexts)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        await TranslateTextAsync(pair.Value, token).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException) { }
@@ -1653,15 +1627,7 @@ namespace MangaViewer.ViewModels
 
         private void RestorePageOcrTranslationState(int pageIndex)
         {
-            bool ocrState = _pageOcrStates.TryGetValue(pageIndex, out bool o) && o;
             bool transState = _pageTranslationStates.TryGetValue(pageIndex, out bool t) && t;
-
-            if (_isOcrActive != ocrState)
-            {
-                _isOcrActive = ocrState;
-                OnPropertyChanged(nameof(IsOcrActive));
-                OnPropertyChanged(nameof(IsTranslationToggleEnabled));
-            }
 
             if (_isTranslationActive != transState)
             {

@@ -5,26 +5,24 @@ using System.Threading.Tasks;
 using Google.GenAI;
 using Google.GenAI.Types;
 using Microsoft.Extensions.AI;
-using SystemType = System.Type;
 
 namespace MangaViewer.Services
 {
-    public class GoogleGenAIChatClient : IChatClient
+    public class GoogleGenAIChatClient : ChatClientBase
     {
         private readonly Client _client;
         private readonly string _model;
         private readonly string _thinkingLevel;
 
         public GoogleGenAIChatClient(string apiKey, string model, string thinkingLevel = "Off")
+            : base("Google")
         {
             _client = new Client(apiKey: apiKey);
             _model = model;
             _thinkingLevel = thinkingLevel;
         }
 
-        public void Dispose() { }
-
-        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             string prompt = BuildPrompt(chatMessages);
 
@@ -50,19 +48,6 @@ namespace MangaViewer.Services
             var text = response?.Candidates?[0]?.Content?.Parts?[0]?.Text ?? string.Empty;
             return new ChatResponse(new Microsoft.Extensions.AI.ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, text));
         }
-
-        public Task<ChatResponse> GetResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => throw new NotImplementedException();
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetStreamingResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public ChatClientMetadata Metadata => new ChatClientMetadata("Google");
-
-        public object? GetService(SystemType serviceType, object? serviceKey = null) => null;
 
         private static string BuildPrompt(IEnumerable<ChatMessage> messages)
         {

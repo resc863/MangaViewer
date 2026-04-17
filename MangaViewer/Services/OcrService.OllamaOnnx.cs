@@ -1128,6 +1128,9 @@ namespace MangaViewer.Services
 
         private async Task<string> SendOllamaCropOcrRequestAsync(byte[] imageBytes, CancellationToken cancellationToken)
         {
+            string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
+            LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, cancellationToken).ConfigureAwait(false);
+            await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, endpoint, OllamaModel, cancellationToken).ConfigureAwait(false);
             bool thinkEnabled = false;
             object? think = null;
             try
@@ -1144,6 +1147,17 @@ namespace MangaViewer.Services
             }
 
             string cropPrompt = BuildHybridCropOcrPrompt(OllamaModel);
+
+            if (flavor == LlmApiFlavor.OpenAiCompatible)
+            {
+                Debug.WriteLine($"[OcrService][HybridCrop] Using llama-server OpenAI-compatible route. Model={OllamaModel}");
+                return await SendOpenAiCompatibleCropOcrRequestAsync(
+                    endpoint,
+                    cropPrompt,
+                    imageBytes,
+                    thinkEnabled,
+                    cancellationToken).ConfigureAwait(false);
+            }
 
             var message = new Dictionary<string, object?>
             {
@@ -1167,7 +1181,7 @@ namespace MangaViewer.Services
             if (think != null)
                 payload["think"] = think;
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/chat")
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
@@ -1183,22 +1197,7 @@ namespace MangaViewer.Services
             string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
 
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.TryGetProperty("message", out var messageElement)
-                && messageElement.ValueKind == JsonValueKind.Object
-                && messageElement.TryGetProperty("content", out var contentElement)
-                && contentElement.ValueKind == JsonValueKind.String)
-            {
-                return StripThinkingContent(contentElement.GetString());
-            }
-
-            if (root.TryGetProperty("response", out var responseElement)
-                && responseElement.ValueKind == JsonValueKind.String)
-            {
-                return StripThinkingContent(responseElement.GetString());
-            }
-
-            return string.Empty;
+            return NormalizeHybridCropOcrText(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
         }
 
         private static string BuildHybridCropOcrPrompt(string? modelName)
@@ -1355,6 +1354,21 @@ If no readable text exists, return an empty string.";
             return text.Trim();
         }
 
+        private static string NormalizeHybridCropOcrText(string? content)
+        {
+            string text = StripThinkingContent(content);
+            text = TrimMarkdownCodeFence(text);
+
+            if (string.Equals(text, "markdown", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "md", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "text", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "plaintext", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "plain text", StringComparison.OrdinalIgnoreCase))
+                return string.Empty;
+
+            return text;
+        }
+
         private static string TruncateForDebug(string text, int maxLength = 8000)
         {
             if (string.IsNullOrEmpty(text) || text.Length <= maxLength)
@@ -1365,6 +1379,9 @@ If no readable text exists, return an empty string.";
 
         private async Task<string> SendOllamaVisionOcrRequestAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
         {
+            string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
+            LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, cancellationToken).ConfigureAwait(false);
+            await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, endpoint, OllamaModel, cancellationToken).ConfigureAwait(false);
             OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(OllamaModel);
             bool isQwenFamilyModel = modelFamily == OllamaVisionModelFamily.Qwen;
             bool isGemmaFamilyModel = modelFamily == OllamaVisionModelFamily.Gemma;
@@ -1415,6 +1432,17 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
 {speechBubbleInstruction}
 {thinkInstruction}";
 
+            if (flavor == LlmApiFlavor.OpenAiCompatible)
+            {
+                return await SendOpenAiCompatibleVisionOcrRequestAsync(
+                    endpoint,
+                    prompt,
+                    imageBytes,
+                    thinkEnabled,
+                    isQwenFamilyModel || isGemmaFamilyModel,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var message = new Dictionary<string, object?>
             {
                 ["role"] = "user",
@@ -1449,7 +1477,7 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             string payloadJson = JsonSerializer.Serialize(payload);
             Debug.WriteLine($"[OcrService][Ollama] Request JSON: {TruncateForDebug(payloadJson)}");
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/chat")
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
             {
                 Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
             };
@@ -1467,28 +1495,9 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             Debug.WriteLine("[OcrService][Ollama] Response JSON received.");
 
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("message", out var messageElement)
-                && messageElement.ValueKind == JsonValueKind.Object
-                && messageElement.TryGetProperty("content", out var contentElement)
-                && contentElement.ValueKind == JsonValueKind.String)
-            {
-                string finalContent = StripThinkingContent(contentElement.GetString());
-                Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalContent)}");
-                return finalContent;
-            }
-
-            if (root.ValueKind == JsonValueKind.Object
-                && root.TryGetProperty("response", out var responseElement)
-                && responseElement.ValueKind == JsonValueKind.String)
-            {
-                string finalContent = StripThinkingContent(responseElement.GetString());
-                Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalContent)}");
-                return finalContent;
-            }
-
-            return string.Empty;
+            string finalResponse = StripThinkingContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
+            Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalResponse)}");
+            return finalResponse;
         }
 
         private async Task<OllamaModelCapabilities> GetOllamaModelCapabilitiesAsync(string model, CancellationToken cancellationToken)
@@ -1499,8 +1508,34 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                     return cached;
             }
 
+            string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
+            LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, cancellationToken).ConfigureAwait(false);
+
+            if (flavor == LlmApiFlavor.OpenAiCompatible)
+            {
+                var openAiCapabilities = await LlmEndpointCompatibility.GetOpenAiCompatibleModelCapabilitiesAsync(
+                    s_httpClient,
+                    endpoint,
+                    model,
+                    cancellationToken).ConfigureAwait(false);
+
+                var endpointCapabilities = new OllamaModelCapabilities
+                {
+                    Vision = openAiCapabilities.Vision,
+                    Tools = true,
+                    Thinking = openAiCapabilities.Thinking
+                };
+
+                lock (_cacheGate)
+                {
+                    _ollamaCapabilities[model] = endpointCapabilities;
+                }
+
+                return endpointCapabilities;
+            }
+
             var payload = new { model };
-            using var request = new HttpRequestMessage(HttpMethod.Post, OllamaEndpoint.TrimEnd('/') + "/api/show")
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/show")
             {
                 Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
             };
@@ -1567,6 +1602,141 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
         private static bool BuildThinkParameter(string thinkingLevel)
         {
             return !NormalizeOllamaThinkingLevel(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private async Task<string> SendOpenAiCompatibleCropOcrRequestAsync(
+            string endpoint,
+            string prompt,
+            byte[] imageBytes,
+            bool thinkEnabled,
+            CancellationToken cancellationToken)
+        {
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = OllamaModel,
+                ["stream"] = false,
+                ["temperature"] = 0.0,
+                ["messages"] = new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = prompt
+                            },
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "image_url",
+                                ["image_url"] = new Dictionary<string, object?>
+                                {
+                                    ["url"] = $"data:image/png;base64,{Convert.ToBase64String(imageBytes)}"
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkEnabled);
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
+            {
+                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+            };
+
+            Debug.WriteLine($"[OcrService][HybridCrop] OpenAI-compatible crop request. Model={OllamaModel}, Prompt={prompt}");
+
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
+
+            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            string finalText = NormalizeHybridCropOcrText(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
+            Debug.WriteLine($"[OcrService][HybridCrop] OpenAI-compatible crop response. Text={TruncateForDebug(finalText)}");
+            return finalText;
+        }
+
+        private async Task<string> SendOpenAiCompatibleVisionOcrRequestAsync(
+            string endpoint,
+            string prompt,
+            byte[] imageBytes,
+            bool thinkEnabled,
+            bool useSchemaResponse,
+            CancellationToken cancellationToken)
+        {
+            var payload = new Dictionary<string, object?>
+            {
+                ["model"] = OllamaModel,
+                ["stream"] = false,
+                ["temperature"] = OllamaTemperature,
+                ["messages"] = new object[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = new object[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "text",
+                                ["text"] = prompt
+                            },
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "image_url",
+                                ["image_url"] = new Dictionary<string, object?>
+                                {
+                                    ["url"] = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}"
+                                }
+                            }
+                        }
+                    }
+                }
+            };
+
+            payload["response_format"] = useSchemaResponse
+                ? new Dictionary<string, object?>
+                {
+                    ["type"] = "json_schema",
+                    ["schema"] = BuildOcrJsonSchema()
+                }
+                : new Dictionary<string, object?>
+                {
+                    ["type"] = "json_object"
+                };
+
+            LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkEnabled);
+
+            string payloadJson = JsonSerializer.Serialize(payload);
+            Debug.WriteLine($"[OcrService][llama-server] Request JSON: {TruncateForDebug(payloadJson)}");
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
+            {
+                Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
+            };
+
+            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
+
+            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            string finalContent = StripThinkingContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
+            Debug.WriteLine($"[OcrService][llama-server] Final content: {TruncateForDebug(finalContent)}");
+            return finalContent;
         }
 
         private static object BuildOcrJsonSchema()

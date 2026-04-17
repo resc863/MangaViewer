@@ -13,13 +13,14 @@ using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace MangaViewer.Services
 {
-    public class OpenAIChatClient : IChatClient
+    public class OpenAIChatClient : ChatClientBase
     {
         private readonly IChatClient _innerClient;
         private readonly OpenAI.Chat.ChatClient _chatClient;
         private readonly string _thinkingLevel;
 
         public OpenAIChatClient(string apiKey, string model, string endpoint = "https://api.openai.com/v1/", string thinkingLevel = "Off")
+            : base("OpenAI")
         {
             var credential = new ApiKeyCredential(apiKey);
             var openAIClient = endpoint.TrimEnd('/') == "https://api.openai.com/v1"
@@ -31,12 +32,9 @@ namespace MangaViewer.Services
             _thinkingLevel = thinkingLevel;
         }
 
-        public void Dispose() => _innerClient.Dispose();
+        public override void Dispose() => _innerClient.Dispose();
 
-        public Task<ChatResponse> GetResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
             if (_thinkingLevel is not "Off")
             {
@@ -66,15 +64,10 @@ namespace MangaViewer.Services
             return await _innerClient.GetResponseAsync(chatMessages, options, cancellationToken);
         }
 
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IList<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => GetStreamingResponseAsync((IEnumerable<ChatMessage>)chatMessages, options, cancellationToken);
-
-        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
             => _innerClient.GetStreamingResponseAsync(chatMessages, options, cancellationToken);
 
-        public ChatClientMetadata Metadata => new ChatClientMetadata("OpenAI");
-
-        public object? GetService(Type serviceType, object? serviceKey = null)
+        public override object? GetService(Type serviceType, object? serviceKey = null)
             => _innerClient.GetService(serviceType, serviceKey);
     }
 }
