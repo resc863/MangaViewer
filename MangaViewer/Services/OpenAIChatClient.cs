@@ -36,7 +36,7 @@ namespace MangaViewer.Services
 
         public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
-            if (_thinkingLevel is not "Off")
+            if (!ThinkingLevelHelper.IsOff(_thinkingLevel))
             {
                 var msgs = chatMessages.Select(m =>
                 {
@@ -47,13 +47,9 @@ namespace MangaViewer.Services
                     return new UserChatMessage(m.Text ?? "");
                 }).ToList();
 
-                var chatOptions = new ChatCompletionOptions();
-                chatOptions.ReasoningEffortLevel = _thinkingLevel switch
+                var chatOptions = new ChatCompletionOptions
                 {
-                    "Minimal" or "Low" => ChatReasoningEffortLevel.Low,
-                    "Medium" => ChatReasoningEffortLevel.Medium,
-                    "High" => ChatReasoningEffortLevel.High,
-                    _ => null
+                    ReasoningEffortLevel = GetReasoningEffortLevel()
                 };
 
                 var result = await _chatClient.CompleteChatAsync(msgs, chatOptions, cancellationToken);
@@ -66,6 +62,17 @@ namespace MangaViewer.Services
 
         public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
             => _innerClient.GetStreamingResponseAsync(chatMessages, options, cancellationToken);
+
+        private ChatReasoningEffortLevel? GetReasoningEffortLevel()
+        {
+            return _thinkingLevel switch
+            {
+                "Minimal" or "Low" => ChatReasoningEffortLevel.Low,
+                "Medium" => ChatReasoningEffortLevel.Medium,
+                "High" => ChatReasoningEffortLevel.High,
+                _ => null
+            };
+        }
 
         public override object? GetService(Type serviceType, object? serviceKey = null)
             => _innerClient.GetService(serviceType, serviceKey);

@@ -1,7 +1,6 @@
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml.Media.Imaging;
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -113,28 +112,8 @@ namespace MangaViewer.Services
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
 
-            _lruLock.EnterUpgradeableReadLock();
-            try
-            {
-                if (_map.TryGetValue(path, out var node))
-                {
-                    _lruLock.EnterWriteLock();
-                    try
-                    {
-                        _lru.Remove(node);
-                        _lru.AddFirst(node);
-                    }
-                    finally
-                    {
-                        _lruLock.ExitWriteLock();
-                    }
-                    return node.Value.Image;
-                }
-            }
-            finally
-            {
-                _lruLock.ExitUpgradeableReadLock();
-            }
+            var cached = TryGetDecodedCached(path);
+            if (cached != null) return cached;
 
             // Cache miss - create new image
             BitmapImage? bmp = null;
@@ -170,51 +149,16 @@ namespace MangaViewer.Services
         {
             if (string.IsNullOrWhiteSpace(path)) return null;
 
-            // 1. Check LRU (Fast path)
-            _lruLock.EnterUpgradeableReadLock();
-            try
-            {
-                if (_map.TryGetValue(path, out var node))
-                {
-                    _lruLock.EnterWriteLock();
-                    try
-                    {
-                        _lru.Remove(node);
-                        _lru.AddFirst(node);
-                    }
-                    finally
-                    {
-                        _lruLock.ExitWriteLock();
-                    }
-                    return node.Value.Image;
-                }
-            }
-            finally
-            {
-                _lruLock.ExitUpgradeableReadLock();
-            }
+            var cached = TryGetDecodedCached(path);
+            if (cached != null) return cached;
 
-            // 2. Load bytes (Async/Background)
-            byte[]? memBytes = null;
-            if (_memoryCache.TryGet(path, out var b))
-            {
-                memBytes = b;
-            }
-            else if (File.Exists(path))
-            {
-                try
-                {
-                    memBytes = await File.ReadAllBytesAsync(path);
-                    // Optionally populate memory cache to speed up subsequent accesses
-                    _memoryCache.Add(path, memBytes);
-                }
-                catch { return null; }
-            }
+            // 2. Create BitmapImage on UI Thread without buffering disk files in memory.
+            if (_memoryCache.TryGet(path, out var memBytes) && memBytes != null)
+                return await CreateBitmapOnUiAsync(memBytes, path).ConfigureAwait(false);
 
-            if (memBytes == null) return null;
+            if (!File.Exists(path)) return null;
 
-            // 3. Create BitmapImage on UI Thread
-            return await CreateBitmapOnUiAsync(memBytes, path);
+            return await CreateBitmapFromPathOnUiAsync(path).ConfigureAwait(false);
         }
 
         private void AddToCache(string path, BitmapImage bmp)
@@ -234,11 +178,32 @@ namespace MangaViewer.Services
                 _lruLock.ExitWriteLock();
             }
         }
+
+        private BitmapImage? TryGetDecodedCached(string path)
+        {
+            _lruLock.EnterUpgradeableReadLock();
+            try
+            {
+                if (_map.TryGetValue(path, out var node))
+                {
+                    TouchNode(_lru, node);
+                    return node.Value.Image;
+                }
+            }
+            finally
+            {
+                _lruLock.ExitUpgradeableReadLock();
+            }
+
+            return null;
+        }
         #endregion
 
         #region Prefetch
         public void Prefetch(IEnumerable<string> paths)
         {
+            bool queuedAny = false;
+
             _lruLock.EnterReadLock();
             try
             {
@@ -246,7 +211,7 @@ namespace MangaViewer.Services
                 {
                     if (string.IsNullOrWhiteSpace(p)) continue;
                     if (_map.ContainsKey(p)) continue;
-                    _prefetchChannel.Writer.TryWrite(p);
+                    if (_prefetchChannel.Writer.TryWrite(p)) queuedAny = true;
                 }
             }
             finally
@@ -254,7 +219,7 @@ namespace MangaViewer.Services
                 _lruLock.ExitReadLock();
             }
 
-            if (Interlocked.CompareExchange(ref _isPrefetching, 1, 0) == 0)
+            if (queuedAny && Interlocked.CompareExchange(ref _isPrefetching, 1, 0) == 0)
             {
                 _prefetchCts?.Cancel();
                 _prefetchCts?.Dispose();
@@ -272,23 +237,22 @@ namespace MangaViewer.Services
                     await _prefetchGate.WaitAsync(ct).ConfigureAwait(false);
                     try
                     {
-                        if (path.StartsWith("mem:", StringComparison.OrdinalIgnoreCase))
+                        if (IsDecodedCached(path))
                         {
-                            _memoryCache.TryGet(path, out _);
+                            continue;
+                        }
+
+                        if (_memoryCache.TryGet(path, out var memBytes) && memBytes != null)
+                        {
+                            await CreateBitmapOnUiAsync(memBytes, path).ConfigureAwait(false);
                         }
                         else if (File.Exists(path))
                         {
-                            // Load full file into memory cache
-                            if (!_memoryCache.Contains(path))
-                            {
-                                var bytes = await File.ReadAllBytesAsync(path, ct).ConfigureAwait(false);
-                                _memoryCache.Add(path, bytes);
-                            }
+                            await CreateBitmapFromPathOnUiAsync(path).ConfigureAwait(false);
                         }
                     }
                     catch (OperationCanceledException)
                     {
-                        _prefetchGate.Release();
                         break;
                     }
                     catch { }
@@ -334,13 +298,7 @@ namespace MangaViewer.Services
             {
                 if (_displayMap.TryGetValue(key, out var node))
                 {
-                    _lruLock.EnterWriteLock();
-                    try
-                    {
-                        _displayLru.Remove(node);
-                        _displayLru.AddFirst(node);
-                    }
-                    finally { _lruLock.ExitWriteLock(); }
+                    TouchNode(_displayLru, node);
                     return node.Value.Image;
                 }
             }
@@ -393,42 +351,25 @@ namespace MangaViewer.Services
             var cached = TryGetDisplayCached(path, longSide);
             if (cached != null) return cached;
 
-            // 2) Load bytes
-            byte[]? memBytes = null;
-            if (_memoryCache.TryGet(path, out var b))
-            {
-                memBytes = b;
-            }
-            else if (File.Exists(path))
-            {
-                try
-                {
-                    memBytes = await File.ReadAllBytesAsync(path).ConfigureAwait(false);
-                    _memoryCache.Add(path, memBytes);
-                }
-                catch { return null; }
-            }
+            // 2) Create BitmapImage on UI thread with DecodePixelWidth only.
+            if (_memoryCache.TryGet(path, out var memBytes) && memBytes != null)
+                return await CreateViewportBitmapOnUiAsync(memBytes, path, longSide).ConfigureAwait(false);
 
-            if (memBytes == null) return null;
+            if (!File.Exists(path)) return null;
 
-            // 3) Create BitmapImage on UI thread with DecodePixelWidth only
-            return await CreateViewportBitmapOnUiAsync(memBytes, path, longSide).ConfigureAwait(false);
+            return await CreateViewportBitmapFromPathOnUiAsync(path, longSide).ConfigureAwait(false);
         }
 
         private async Task<BitmapImage?> CreateViewportBitmapOnUiAsync(byte[] data, string path, int decodeLongSide)
         {
-            if (_dispatcher == null) return null;
-
-            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
-            bool enqueued = _dispatcher.TryEnqueue(async () =>
+            return await EnqueueBitmapCreationAsync(async () =>
             {
                 try
                 {
                     var cached = TryGetDisplayCached(path, decodeLongSide);
                     if (cached != null)
                     {
-                        tcs.TrySetResult(cached);
-                        return;
+                        return cached;
                     }
 
                     var img = new BitmapImage
@@ -442,16 +383,45 @@ namespace MangaViewer.Services
                     await img.SetSourceAsync(ras);
 
                     AddDisplayCache(path, decodeLongSide, img);
-                    tcs.TrySetResult(img);
+                    return img;
                 }
                 catch
                 {
-                    tcs.TrySetResult(null);
+                    return null;
                 }
-            });
+            }).ConfigureAwait(false);
+        }
 
-            if (!enqueued) return null;
-            return await tcs.Task.ConfigureAwait(false);
+        private async Task<BitmapImage?> CreateViewportBitmapFromPathOnUiAsync(string path, int decodeLongSide)
+        {
+            return await EnqueueBitmapCreationAsync(async () =>
+            {
+                try
+                {
+                    var cached = TryGetDisplayCached(path, decodeLongSide);
+                    if (cached != null)
+                    {
+                        return cached;
+                    }
+
+                    await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    using var ras = fs.AsRandomAccessStream();
+
+                    var img = new BitmapImage
+                    {
+                        DecodePixelWidth = decodeLongSide
+                    };
+
+                    await img.SetSourceAsync(ras);
+
+                    AddDisplayCache(path, decodeLongSide, img);
+                    return img;
+                }
+                catch
+                {
+                    return null;
+                }
+            }).ConfigureAwait(false);
         }
 
         private BitmapImage? CreateBitmapOnUi(Func<BitmapImage> factory)
@@ -480,11 +450,7 @@ namespace MangaViewer.Services
 
         private async Task<BitmapImage?> CreateBitmapOnUiAsync(byte[] data, string path)
         {
-            if (_dispatcher == null) return null;
-
-            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
-
-            bool enqueued = _dispatcher.TryEnqueue(async () =>
+            return await EnqueueBitmapCreationAsync(async () =>
             {
                 try
                 {
@@ -495,7 +461,47 @@ namespace MangaViewer.Services
                     await img.SetSourceAsync(ras);
 
                     AddToCache(path, img);
-                    tcs.TrySetResult(img);
+                    return img;
+                }
+                catch
+                {
+                    return null;
+                }
+            }).ConfigureAwait(false);
+        }
+
+        private async Task<BitmapImage?> CreateBitmapFromPathOnUiAsync(string path)
+        {
+            return await EnqueueBitmapCreationAsync(async () =>
+            {
+                try
+                {
+                    await using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    using var ras = fs.AsRandomAccessStream();
+
+                    var img = new BitmapImage();
+                    await img.SetSourceAsync(ras);
+
+                    AddToCache(path, img);
+                    return img;
+                }
+                catch
+                {
+                    return null;
+                }
+            }).ConfigureAwait(false);
+        }
+
+        private async Task<BitmapImage?> EnqueueBitmapCreationAsync(Func<Task<BitmapImage?>> factory)
+        {
+            if (_dispatcher == null) return null;
+
+            var tcs = new TaskCompletionSource<BitmapImage?>(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool enqueued = _dispatcher.TryEnqueue(async () =>
+            {
+                try
+                {
+                    tcs.TrySetResult(await factory().ConfigureAwait(false));
                 }
                 catch
                 {
@@ -505,6 +511,33 @@ namespace MangaViewer.Services
 
             if (!enqueued) return null;
             return await tcs.Task.ConfigureAwait(false);
+        }
+
+        private void TouchNode<T>(LinkedList<T> lru, LinkedListNode<T> node)
+        {
+            _lruLock.EnterWriteLock();
+            try
+            {
+                lru.Remove(node);
+                lru.AddFirst(node);
+            }
+            finally
+            {
+                _lruLock.ExitWriteLock();
+            }
+        }
+
+        private bool IsDecodedCached(string path)
+        {
+            _lruLock.EnterReadLock();
+            try
+            {
+                return _map.ContainsKey(path);
+            }
+            finally
+            {
+                _lruLock.ExitReadLock();
+            }
         }
 
         private void Trim()

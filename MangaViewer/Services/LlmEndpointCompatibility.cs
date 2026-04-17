@@ -21,8 +21,11 @@ namespace MangaViewer.Services
     internal static class LlmEndpointCompatibility
     {
         private static readonly ConcurrentDictionary<string, LlmApiFlavor> s_flavorCache = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, bool> s_slotManagementSupport = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly string[] s_openAiModelPaths = ["/models", "/v1/models"];
         private static readonly TimeSpan ModelLoadPollInterval = TimeSpan.FromMilliseconds(500);
         private static readonly TimeSpan ModelLoadMaxWait = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan SlotEraseTimeout = TimeSpan.FromSeconds(5);
 
         private sealed class ModelEntry
         {
@@ -47,8 +50,8 @@ namespace MangaViewer.Services
             if (await HasOllamaTagsEndpointAsync(http, endpoint, cancellationToken).ConfigureAwait(false))
                 return RememberFlavor(endpoint, LlmApiFlavor.Ollama);
 
-            if (await HasOpenAiModelsEndpointAsync(http, endpoint + "/models", cancellationToken).ConfigureAwait(false)
-                || await HasOpenAiModelsEndpointAsync(http, endpoint + "/v1/models", cancellationToken).ConfigureAwait(false))
+            var (_, modelEntries) = await GetOpenAiModelEntriesAsync(http, endpoint, cancellationToken).ConfigureAwait(false);
+            if (modelEntries.Count > 0)
                 return RememberFlavor(endpoint, LlmApiFlavor.OpenAiCompatible);
 
             DebugLog($"DetectApiFlavor failed: endpoint={endpoint}, flavor=Unknown");
@@ -63,18 +66,10 @@ namespace MangaViewer.Services
             if (flavor == LlmApiFlavor.Ollama)
                 return await GetOllamaModelIdsAsync(http, endpoint, cancellationToken).ConfigureAwait(false);
 
-            var modelEntries = await GetOpenAiModelEntriesAsync(http, endpoint + "/models", cancellationToken).ConfigureAwait(false);
-            if (modelEntries.Count > 0)
-            {
-                DebugLog($"GetModelIds /models success: count={modelEntries.Count}, ids=[{string.Join(", ", modelEntries.Select(static m => m.Id))}]");
-                return modelEntries.Select(static m => m.Id).ToList();
-            }
-
-            var fallbackIds = (await GetOpenAiModelEntriesAsync(http, endpoint + "/v1/models", cancellationToken).ConfigureAwait(false))
-                .Select(static model => model.Id)
-                .ToList();
-            DebugLog($"GetModelIds /v1/models fallback: count={fallbackIds.Count}, ids=[{string.Join(", ", fallbackIds)}]");
-            return fallbackIds;
+            var (url, modelEntries) = await GetOpenAiModelEntriesAsync(http, endpoint, cancellationToken).ConfigureAwait(false);
+            var modelIds = modelEntries.Select(static model => model.Id).ToList();
+            DebugLog($"GetModelIds {url} result: count={modelIds.Count}, ids=[{string.Join(", ", modelIds)}]");
+            return modelIds;
         }
 
         public static async Task EnsureModelLoadedAsync(HttpClient http, string endpoint, string model, CancellationToken cancellationToken)
@@ -87,17 +82,17 @@ namespace MangaViewer.Services
             if (flavor != LlmApiFlavor.OpenAiCompatible)
                 return;
 
-            var modelEntries = await GetOpenAiModelEntriesAsync(http, endpoint + "/models", cancellationToken).ConfigureAwait(false);
+            var (url, modelEntries) = await GetOpenAiModelEntriesAsync(http, endpoint, cancellationToken).ConfigureAwait(false);
             if (modelEntries.Count == 0)
             {
-                DebugLog($"EnsureModelLoaded skipped: endpoint={endpoint}, model={model}, no /models entries returned");
+                DebugLog($"EnsureModelLoaded skipped: endpoint={endpoint}, model={model}, no model entries returned");
                 return;
             }
 
             var modelEntry = modelEntries.FirstOrDefault(m => string.Equals(m.Id, model, StringComparison.OrdinalIgnoreCase));
             if (modelEntry == null)
             {
-                DebugLog($"EnsureModelLoaded skipped: endpoint={endpoint}, model={model}, model not found in /models");
+                DebugLog($"EnsureModelLoaded skipped: endpoint={endpoint}, model={model}, model not found in {url}");
                 return;
             }
 
@@ -146,6 +141,73 @@ namespace MangaViewer.Services
             };
         }
 
+        public static bool SupportsManagedSlots(string endpoint, string? model)
+        {
+            string key = BuildSlotManagementKey(endpoint, model);
+            return !s_slotManagementSupport.TryGetValue(key, out bool supported) || supported;
+        }
+
+        public static async Task<int?> GetOpenAiCompatibleTotalSlotsAsync(HttpClient http, string endpoint, string? model, CancellationToken cancellationToken)
+        {
+            endpoint = NormalizeEndpoint(endpoint);
+            var flavor = await DetectApiFlavorAsync(http, endpoint, cancellationToken).ConfigureAwait(false);
+            if (flavor != LlmApiFlavor.OpenAiCompatible)
+                return null;
+
+            if (!string.IsNullOrWhiteSpace(model))
+            {
+                int? modelSpecific = await TryGetTotalSlotsAsync(
+                    http,
+                    endpoint + "/props?model=" + Uri.EscapeDataString(model) + "&autoload=false",
+                    cancellationToken).ConfigureAwait(false);
+                if (modelSpecific.HasValue)
+                    return modelSpecific.Value;
+            }
+
+            return await TryGetTotalSlotsAsync(http, endpoint + "/props", cancellationToken).ConfigureAwait(false);
+        }
+
+        public static async Task<bool> TryEraseSlotAsync(HttpClient http, string endpoint, int slotId, string? model = null)
+        {
+            if (slotId < 0)
+                return false;
+
+            endpoint = NormalizeEndpoint(endpoint);
+            string key = BuildSlotManagementKey(endpoint, model);
+
+            try
+            {
+                using var timeoutCts = new CancellationTokenSource(SlotEraseTimeout);
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/slots/" + slotId + "?action=erase");
+                string body = string.IsNullOrWhiteSpace(model)
+                    ? "{}"
+                    : JsonSerializer.Serialize(new { model });
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+                using var response = await http.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    s_slotManagementSupport[key] = true;
+                    DebugLog($"TryEraseSlotAsync success: endpoint={endpoint}, slot={slotId}, model={model ?? "<none>"}");
+                    return true;
+                }
+
+                if ((int)response.StatusCode is 400 or 404 or 405 or 501)
+                {
+                    s_slotManagementSupport[key] = false;
+                    DebugLog($"TryEraseSlotAsync disabling managed slots: endpoint={endpoint}, slot={slotId}, model={model ?? "<none>"}, status={(int)response.StatusCode} {response.ReasonPhrase}");
+                    return false;
+                }
+
+                DebugLog($"TryEraseSlotAsync failed: endpoint={endpoint}, slot={slotId}, model={model ?? "<none>"}, status={(int)response.StatusCode} {response.ReasonPhrase}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                DebugLog($"TryEraseSlotAsync exception: endpoint={endpoint}, slot={slotId}, model={model ?? "<none>"}, error={ex.Message}");
+                return false;
+            }
+        }
+
         public static string ExtractAssistantText(JsonElement root)
         {
             if (root.ValueKind != JsonValueKind.Object)
@@ -191,15 +253,6 @@ namespace MangaViewer.Services
                 && modelsElement.ValueKind == JsonValueKind.Array;
         }
 
-        private static async Task<bool> HasOpenAiModelsEndpointAsync(HttpClient http, string url, CancellationToken cancellationToken)
-        {
-            using var doc = await TryGetJsonAsync(http, url, cancellationToken).ConfigureAwait(false);
-            return doc != null
-                && doc.RootElement.ValueKind == JsonValueKind.Object
-                && doc.RootElement.TryGetProperty("data", out var dataElement)
-                && dataElement.ValueKind == JsonValueKind.Array;
-        }
-
         private static async Task<List<string>> GetOllamaModelIdsAsync(HttpClient http, string endpoint, CancellationToken cancellationToken)
         {
             using var doc = await TryGetJsonAsync(http, endpoint + "/api/tags", cancellationToken).ConfigureAwait(false)
@@ -227,7 +280,25 @@ namespace MangaViewer.Services
             return modelIds;
         }
 
-        private static async Task<List<ModelEntry>> GetOpenAiModelEntriesAsync(HttpClient http, string url, CancellationToken cancellationToken)
+        private static async Task<(string Url, List<ModelEntry> Entries)> GetOpenAiModelEntriesAsync(HttpClient http, string endpoint, CancellationToken cancellationToken)
+        {
+            foreach (var url in GetOpenAiModelUrls(endpoint))
+            {
+                var entries = await GetOpenAiModelEntriesFromUrlAsync(http, url, cancellationToken).ConfigureAwait(false);
+                if (entries.Count > 0)
+                    return (url, entries);
+            }
+
+            return (endpoint + s_openAiModelPaths[0], []);
+        }
+
+        private static IEnumerable<string> GetOpenAiModelUrls(string endpoint)
+        {
+            foreach (var path in s_openAiModelPaths)
+                yield return endpoint + path;
+        }
+
+        private static async Task<List<ModelEntry>> GetOpenAiModelEntriesFromUrlAsync(HttpClient http, string url, CancellationToken cancellationToken)
         {
             using var doc = await TryGetJsonAsync(http, url, cancellationToken).ConfigureAwait(false);
             if (doc == null || !doc.RootElement.TryGetProperty("data", out var dataElement) || dataElement.ValueKind != JsonValueKind.Array)
@@ -287,11 +358,11 @@ namespace MangaViewer.Services
             {
                 waitCts.Token.ThrowIfCancellationRequested();
 
-                var modelEntries = await GetOpenAiModelEntriesAsync(http, endpoint + "/models", waitCts.Token).ConfigureAwait(false);
+                var (url, modelEntries) = await GetOpenAiModelEntriesAsync(http, endpoint, waitCts.Token).ConfigureAwait(false);
                 var modelEntry = modelEntries.FirstOrDefault(m => string.Equals(m.Id, model, StringComparison.OrdinalIgnoreCase));
                 if (modelEntry == null)
                 {
-                    DebugLog($"WaitForModelLoaded stop: model={model} disappeared from /models");
+                    DebugLog($"WaitForModelLoaded stop: model={model} disappeared from {url}");
                     return;
                 }
 
@@ -382,6 +453,28 @@ namespace MangaViewer.Services
             return (vision, thinking);
         }
 
+        private static async Task<int?> TryGetTotalSlotsAsync(HttpClient http, string url, CancellationToken cancellationToken)
+        {
+            using var doc = await TryGetJsonAsync(http, url, cancellationToken).ConfigureAwait(false);
+            if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                DebugLog($"TryGetTotalSlots: url={url}, no object response");
+                return null;
+            }
+
+            if (!doc.RootElement.TryGetProperty("total_slots", out var totalSlotsElement)
+                || totalSlotsElement.ValueKind != JsonValueKind.Number
+                || !totalSlotsElement.TryGetInt32(out int totalSlots)
+                || totalSlots <= 0)
+            {
+                DebugLog($"TryGetTotalSlots: url={url}, total_slots missing or invalid");
+                return null;
+            }
+
+            DebugLog($"TryGetTotalSlots: url={url}, total_slots={totalSlots}");
+            return totalSlots;
+        }
+
         private static bool? TryReadThinkingSupport(JsonElement capsElement)
         {
             if (capsElement.ValueKind != JsonValueKind.Object)
@@ -460,6 +553,9 @@ namespace MangaViewer.Services
             DebugLog($"DetectApiFlavor resolved: endpoint={endpoint}, flavor={flavor}");
             return flavor;
         }
+
+        private static string BuildSlotManagementKey(string endpoint, string? model)
+            => NormalizeEndpoint(endpoint) + "|model=" + (model?.Trim() ?? string.Empty);
 
         private static void DebugLog(string message)
             => Debug.WriteLine($"[LlmEndpointCompatibility] {message}");

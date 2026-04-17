@@ -6,7 +6,6 @@ using MangaViewer.Helpers;
 using MangaViewer.Services;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
-using System.Windows.Input;
 
 namespace MangaViewer.ViewModels
 {
@@ -21,7 +20,11 @@ namespace MangaViewer.ViewModels
         public bool IsLoading
         {
             get => _isLoading;
-            set => SetProperty(ref _isLoading, value);
+            set
+            {
+                if (SetProperty(ref _isLoading, value))
+                    RefreshCommand.RaiseCanExecuteChanged();
+            }
         }
 
         public bool IsLoaded
@@ -30,12 +33,12 @@ namespace MangaViewer.ViewModels
             private set => SetProperty(ref _isLoaded, value);
         }
 
-        public ICommand RefreshCommand { get; }
+        public AsyncRelayCommand RefreshCommand { get; }
 
         public LibraryViewModel(LibraryService libraryService)
         {
             _libraryService = libraryService;
-            RefreshCommand = new RelayCommand(async _ => await RefreshLibraryAsync());
+            RefreshCommand = new AsyncRelayCommand(_ => RefreshLibraryAsync(), _ => !IsLoading);
         }
 
         /// <summary>
@@ -59,25 +62,29 @@ namespace MangaViewer.ViewModels
         private async Task LoadLibraryAsync()
         {
             IsLoading = true;
-            MangaFolders.Clear();
-            OnPropertyChanged(nameof(MangaFolders));
-
-            var folders = await _libraryService.ScanLibraryAsync();
-
-            foreach (var folder in folders)
+            try
             {
-                var vm = new MangaFolderViewModel
-                {
-                    FolderPath = folder.FolderPath,
-                    FolderName = folder.FolderName,
-                    ThumbnailPath = folder.FirstImagePath
-                };
-                MangaFolders.Add(vm);
-            }
+                MangaFolders.Clear();
 
-            IsLoading = false;
-            IsLoaded = true;
-            OnPropertyChanged(nameof(MangaFolders));
+                var folders = await _libraryService.ScanLibraryAsync();
+
+                foreach (var folder in folders)
+                {
+                    var vm = new MangaFolderViewModel
+                    {
+                        FolderPath = folder.FolderPath,
+                        FolderName = folder.FolderName,
+                        ThumbnailPath = folder.FirstImagePath
+                    };
+                    MangaFolders.Add(vm);
+                }
+
+                IsLoaded = true;
+            }
+            finally
+            {
+                IsLoading = false;
+            }
         }
     }
 }

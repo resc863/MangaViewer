@@ -51,28 +51,49 @@ namespace MangaViewer.Services
             }
 
             bool thinkingEnabled = BuildThinkParameter(_thinkingLevel);
-            using var requestLease = OllamaRequestLoadCoordinator.Acquire(
+            var flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, _endpoint, cancellationToken).ConfigureAwait(false);
+            using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
                 thinkingEnabled ? ThinkingRequestTimeout : BaseRequestTimeout,
-                thinkingEnabled);
+                thinkingEnabled,
+                cancellationToken).ConfigureAwait(false);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
 
-            var flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, _endpoint, timeoutCts.Token).ConfigureAwait(false);
-            await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, _endpoint, _model, timeoutCts.Token).ConfigureAwait(false);
-            using var request = BuildRequest(messages, thinkingEnabled, flavor);
+            try
+            {
+                bool useManagedSlots = flavor == LlmApiFlavor.OpenAiCompatible
+                    && requestLease.SlotId >= 0
+                    && LlmEndpointCompatibility.SupportsManagedSlots(_endpoint, _model);
 
-            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-            var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+                if (useManagedSlots && requestLease.SlotEraseEnabled)
+                    useManagedSlots = await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, _endpoint, requestLease.SlotId, _model).ConfigureAwait(false);
 
-            string text = string.Empty;
-            using var doc = JsonDocument.Parse(json);
-            text = LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement);
+                await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, _endpoint, _model, timeoutCts.Token).ConfigureAwait(false);
+                using var request = BuildRequest(messages, thinkingEnabled, flavor, useManagedSlots ? requestLease.SlotId : -1);
 
-            return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
+                using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                var json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+
+                string text = string.Empty;
+                using var doc = JsonDocument.Parse(json);
+                text = LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement);
+
+                return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
+            }
+            catch
+            {
+                if (flavor == LlmApiFlavor.OpenAiCompatible
+                    && requestLease.SlotEraseEnabled
+                    && requestLease.SlotId >= 0
+                    && LlmEndpointCompatibility.SupportsManagedSlots(_endpoint, _model))
+                    await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, _endpoint, requestLease.SlotId, _model).ConfigureAwait(false);
+
+                throw;
+            }
         }
 
-        private HttpRequestMessage BuildRequest(List<object> messages, bool thinkingEnabled, LlmApiFlavor flavor)
+        private HttpRequestMessage BuildRequest(List<object> messages, bool thinkingEnabled, LlmApiFlavor flavor, int slotId)
         {
             var payload = new Dictionary<string, object?>
             {
@@ -86,6 +107,9 @@ namespace MangaViewer.Services
             {
                 path = "/v1/chat/completions";
                 LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkingEnabled);
+                payload["cache_prompt"] = false;
+                if (slotId >= 0)
+                    payload["id_slot"] = slotId;
             }
             else
             {
@@ -102,7 +126,7 @@ namespace MangaViewer.Services
 
         private static bool BuildThinkParameter(string thinkingLevel)
         {
-            return !ThinkingLevelHelper.NormalizeOllama(thinkingLevel).Equals("Off", StringComparison.OrdinalIgnoreCase);
+            return !ThinkingLevelHelper.IsOff(ThinkingLevelHelper.NormalizeOllama(thinkingLevel));
         }
     }
 }

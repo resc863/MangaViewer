@@ -53,6 +53,7 @@ namespace MangaViewer.Pages
         private SolidColorBrush? _ocrTranslatedTextBrush;
 
         private readonly record struct OverlayPlacement(Rect Rect, double FontSize);
+        private readonly record struct OcrBoxHitContext(BoundingBoxViewModel Box, bool IsLeft);
 
         public MangaReaderPage()
         {
@@ -792,7 +793,7 @@ namespace MangaViewer.Pages
                     {
                         Width = constrainedRect.Width,
                         Height = constrainedRect.Height,
-                        Tag = group.TagBox,
+                        Tag = new OcrBoxHitContext(group.TagBox, isLeft),
                         Background = _ocrTranslatedFillBrush,
                         BorderBrush = strokeBrush,
                         BorderThickness = new Thickness(1),
@@ -830,7 +831,7 @@ namespace MangaViewer.Pages
                 var rect = _rectPool.Count > 0 ? _rectPool.Dequeue() : CreatePooledRectangle();
                 rect.Width = sourceRect.Width;
                 rect.Height = sourceRect.Height;
-                rect.Tag = b;
+                rect.Tag = new OcrBoxHitContext(b, isLeft);
                 rect.Stroke = strokeBrush;
                 rect.Fill = fillBrush;
                 Canvas.SetLeft(rect, sourceRect.X);
@@ -1222,44 +1223,69 @@ namespace MangaViewer.Pages
             return rect;
         }
 
-        private void OnOcrRectTapped(object sender, TappedRoutedEventArgs e)
+        private async void OnOcrRectTapped(object sender, TappedRoutedEventArgs e)
         {
-            if (sender is Rectangle r && r.Tag is BoundingBoxViewModel vm && !string.IsNullOrWhiteSpace(vm.Text))
+            if (sender is Rectangle r && r.Tag is OcrBoxHitContext hit)
             {
                 try
                 {
-                    _clipboard.SetText(vm.Text);
-                    Debug.WriteLine($"[OCR][Copy] Original text: {vm.Text}");
-                    r.StrokeThickness = 2;
-                    _ = DispatcherQueue.TryEnqueue(async () =>
-                    {
-                        await System.Threading.Tasks.Task.Delay(300);
-                        r.StrokeThickness = 1;
-                    });
+                    string textToCopy = await EnsureBoxTextAvailableAsync(hit).ConfigureAwait(true);
+                    if (string.IsNullOrWhiteSpace(textToCopy))
+                        return;
+
+                    _clipboard.SetText(textToCopy);
+                    Debug.WriteLine($"[OCR][Copy] Original text: {hit.Box.Text}");
+                    FlashRectangleSelection(r);
                 }
                 catch { }
             }
         }
 
-        private void OnOcrOverlayTapped(object sender, TappedRoutedEventArgs e)
+        private async void OnOcrOverlayTapped(object sender, TappedRoutedEventArgs e)
         {
-            if (sender is not Border border || border.Tag is not BoundingBoxViewModel vm) return;
+            if (sender is not Border border || border.Tag is not OcrBoxHitContext hit) return;
 
-            string textToCopy = !string.IsNullOrWhiteSpace(vm.TranslatedText) ? vm.TranslatedText : vm.Text;
+            await EnsureBoxTextAvailableAsync(hit).ConfigureAwait(true);
+
+            string textToCopy = !string.IsNullOrWhiteSpace(hit.Box.TranslatedText) ? hit.Box.TranslatedText : hit.Box.Text;
             if (string.IsNullOrWhiteSpace(textToCopy)) return;
 
             try
             {
                 _clipboard.SetText(textToCopy);
-                Debug.WriteLine($"[OCR][Copy] Original text: {vm.Text}");
-                border.BorderThickness = new Thickness(2);
-                _ = DispatcherQueue.TryEnqueue(async () =>
-                {
-                    await System.Threading.Tasks.Task.Delay(300);
-                    border.BorderThickness = new Thickness(1);
-                });
+                Debug.WriteLine($"[OCR][Copy] Original text: {hit.Box.Text}");
+                FlashBorderSelection(border);
             }
             catch { }
+        }
+
+        private async System.Threading.Tasks.Task<string> EnsureBoxTextAvailableAsync(OcrBoxHitContext hit)
+        {
+            ViewModel.SelectedOcrBox = hit.Box;
+            if (string.IsNullOrWhiteSpace(hit.Box.Text) && ViewModel != null)
+                await ViewModel.EnsureOcrBoxTextAsync(hit.Box, hit.IsLeft).ConfigureAwait(true);
+
+            return hit.Box.Text;
+        }
+
+        private void FlashRectangleSelection(Rectangle rectangle)
+        {
+            rectangle.StrokeThickness = 2;
+            _ = DispatcherQueue.TryEnqueue(async () =>
+            {
+                await System.Threading.Tasks.Task.Delay(300);
+                rectangle.StrokeThickness = 1;
+            });
+        }
+
+        private void FlashBorderSelection(Border border)
+        {
+            border.BorderThickness = new Thickness(2);
+            _ = DispatcherQueue.TryEnqueue(async () =>
+            {
+                await System.Threading.Tasks.Task.Delay(300);
+                border.BorderThickness = new Thickness(1);
+            });
         }
 
         private void OnPageSlideRequested(object? sender, int delta)

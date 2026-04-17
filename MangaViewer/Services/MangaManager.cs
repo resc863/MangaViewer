@@ -197,6 +197,9 @@ namespace MangaViewer.Services
 
         public void Clear()
         {
+            _loadCts?.Cancel();
+            _loadCts?.Dispose();
+            _loadCts = null;
             _pages.Clear();
             CurrentPageIndex = 0;
             CurrentFolderPath = null;
@@ -431,23 +434,22 @@ namespace MangaViewer.Services
             RaisePageChanged();
         }
 
-        private void RaiseMangaLoaded()
+        private void RaiseMangaLoaded() => RaiseOnDispatcher(MangaLoaded);
+
+        private void RaisePageChanged() => RaiseOnDispatcher(PageChanged);
+
+        private void RaiseOnDispatcher(Action? handler)
         {
+            if (handler == null)
+                return;
+
             if (_dispatcher != null)
             {
-                _dispatcher.TryEnqueue(() => MangaLoaded?.Invoke());
+                _dispatcher.TryEnqueue(() => handler());
                 return;
             }
-            MangaLoaded?.Invoke();
-        }
-        private void RaisePageChanged()
-        {
-            if (_dispatcher != null)
-            {
-                _dispatcher.TryEnqueue(() => PageChanged?.Invoke());
-                return;
-            }
-            PageChanged?.Invoke();
+
+            handler();
         }
     }
 }

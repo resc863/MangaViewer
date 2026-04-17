@@ -30,13 +30,9 @@ namespace MangaViewer.Services
             if (options?.MaxOutputTokens.HasValue == true)
                 config.MaxOutputTokens = options.MaxOutputTokens.Value;
 
-            config.ThinkingConfig = _thinkingLevel switch
+            config.ThinkingConfig = new ThinkingConfig
             {
-                "Minimal" => new ThinkingConfig { ThinkingBudget = 128 },
-                "Low" => new ThinkingConfig { ThinkingBudget = 1024 },
-                "Medium" => new ThinkingConfig { ThinkingBudget = 8192 },
-                "High" => new ThinkingConfig { ThinkingBudget = 24576 },
-                _ => new ThinkingConfig { ThinkingBudget = 0 },
+                ThinkingBudget = ThinkingLevelHelper.GetGoogleThinkingBudget(_thinkingLevel)
             };
 
             var response = await _client.Models.GenerateContentAsync(

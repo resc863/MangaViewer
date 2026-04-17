@@ -88,21 +88,13 @@ namespace MangaViewer.Services
 
         internal void SetModelForProvider(TranslationProviderKind provider, string value)
         {
-            switch (provider)
-            {
-                case TranslationProviderKind.OpenAI:
-                    OpenAIModel = value;
-                    break;
-                case TranslationProviderKind.Anthropic:
-                    AnthropicModel = value;
-                    break;
-                case TranslationProviderKind.Ollama:
-                    OllamaModel = value;
-                    break;
-                default:
-                    GoogleModel = value;
-                    break;
-            }
+            SetProviderValue(
+                provider,
+                value,
+                googleSetter: static (service, newValue) => service.GoogleModel = newValue,
+                openAiSetter: static (service, newValue) => service.OpenAIModel = newValue,
+                anthropicSetter: static (service, newValue) => service.AnthropicModel = newValue,
+                ollamaSetter: static (service, newValue) => service.OllamaModel = newValue);
         }
 
         public string GetSystemPromptForProvider(string? provider)
@@ -116,21 +108,13 @@ namespace MangaViewer.Services
 
         internal void SetSystemPromptForProvider(TranslationProviderKind provider, string value)
         {
-            switch (provider)
-            {
-                case TranslationProviderKind.OpenAI:
-                    OpenAISystemPrompt = value;
-                    break;
-                case TranslationProviderKind.Anthropic:
-                    AnthropicSystemPrompt = value;
-                    break;
-                case TranslationProviderKind.Ollama:
-                    OllamaSystemPrompt = value;
-                    break;
-                default:
-                    GoogleSystemPrompt = value;
-                    break;
-            }
+            SetProviderValue(
+                provider,
+                value,
+                googleSetter: static (service, newValue) => service.GoogleSystemPrompt = newValue,
+                openAiSetter: static (service, newValue) => service.OpenAISystemPrompt = newValue,
+                anthropicSetter: static (service, newValue) => service.AnthropicSystemPrompt = newValue,
+                ollamaSetter: static (service, newValue) => service.OllamaSystemPrompt = newValue);
         }
 
         public string GetApiKeyForProvider(string? provider)
@@ -144,16 +128,35 @@ namespace MangaViewer.Services
 
         internal void SetApiKeyForProvider(TranslationProviderKind provider, string value)
         {
+            SetProviderValue(
+                provider,
+                value,
+                googleSetter: static (service, newValue) => service.GoogleApiKey = newValue,
+                openAiSetter: static (service, newValue) => service.OpenAIApiKey = newValue,
+                anthropicSetter: static (service, newValue) => service.AnthropicApiKey = newValue);
+        }
+
+        private void SetProviderValue(
+            TranslationProviderKind provider,
+            string value,
+            Action<TranslationSettingsService, string> googleSetter,
+            Action<TranslationSettingsService, string> openAiSetter,
+            Action<TranslationSettingsService, string> anthropicSetter,
+            Action<TranslationSettingsService, string>? ollamaSetter = null)
+        {
             switch (provider)
             {
-                case TranslationProviderKind.Google:
-                    GoogleApiKey = value;
-                    break;
                 case TranslationProviderKind.OpenAI:
-                    OpenAIApiKey = value;
+                    openAiSetter(this, value);
                     break;
                 case TranslationProviderKind.Anthropic:
-                    AnthropicApiKey = value;
+                    anthropicSetter(this, value);
+                    break;
+                case TranslationProviderKind.Ollama when ollamaSetter != null:
+                    ollamaSetter(this, value);
+                    break;
+                default:
+                    googleSetter(this, value);
                     break;
             }
         }

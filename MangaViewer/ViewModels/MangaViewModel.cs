@@ -52,6 +52,7 @@ namespace MangaViewer.ViewModels
 
         private CancellationTokenSource? _ocrCts;
         private int _ocrVersion;
+        private readonly SemaphoreSlim _ocrRunGate = new(1, 1);
         private CancellationTokenSource? _pageLoadCts;
         private int _pageLoadVersion;
 
@@ -134,10 +135,7 @@ namespace MangaViewer.ViewModels
                     }
                     else
                     {
-                        TranslatedLeftOcrText = string.Empty;
-                        TranslatedRightOcrText = string.Empty;
-                        ClearBoxTranslations();
-                        PageViewChanged?.Invoke(this, EventArgs.Empty);
+                        ClearTranslationState(notifyPageView: true);
                     }
                 }
             }
@@ -536,7 +534,18 @@ namespace MangaViewer.ViewModels
 
             if (IsOcrActive)
             {
-                _ = RunOcrAsync();
+                if (TryRestoreCurrentPageOcrFromCache())
+                {
+                    if (IsTranslationActive)
+                    {
+                            ClearTranslationState(notifyPageView: false);
+                        _ = RunTranslationAsync();
+                    }
+                }
+                else
+                {
+                    _ = RunOcrAsync();
+                }
             }
         }
 
@@ -586,21 +595,24 @@ namespace MangaViewer.ViewModels
         {
             if (!string.IsNullOrEmpty(leftPath))
             {
-                token.ThrowIfCancellationRequested();
                 double w = IsTwoPageMode ? _leftWrapperWidth : _singleWrapperWidth;
                 double h = IsTwoPageMode ? _leftWrapperHeight : _singleWrapperHeight;
-                var img = await _imageCache.GetForViewportAsync(leftPath, Math.Max(1, w), Math.Max(1, h), _rasterizationScale).ConfigureAwait(true);
-                if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && LeftImageFilePath == leftPath)
-                    LeftImageSource = img;
+                await LoadPageImageAsync(leftPath, w, h, token, localVersion, () => LeftImageFilePath, img => LeftImageSource = img).ConfigureAwait(true);
             }
 
             if (!string.IsNullOrEmpty(rightPath))
             {
-                token.ThrowIfCancellationRequested();
-                var img = await _imageCache.GetForViewportAsync(rightPath, Math.Max(1, _rightWrapperWidth), Math.Max(1, _rightWrapperHeight), _rasterizationScale).ConfigureAwait(true);
-                if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && RightImageFilePath == rightPath)
-                    RightImageSource = img;
+                await LoadPageImageAsync(rightPath, _rightWrapperWidth, _rightWrapperHeight, token, localVersion, () => RightImageFilePath, img => RightImageSource = img).ConfigureAwait(true);
             }
+        }
+
+        private async Task LoadPageImageAsync(string path, double width, double height, CancellationToken token, int localVersion, Func<string?> currentPathAccessor, Action<BitmapImage?> applyImage)
+        {
+            token.ThrowIfCancellationRequested();
+
+            var img = await _imageCache.GetForViewportAsync(path, Math.Max(1, width), Math.Max(1, height), _rasterizationScale).ConfigureAwait(true);
+            if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && string.Equals(currentPathAccessor(), path, StringComparison.Ordinal))
+                applyImage(img);
         }
 
         private void ScheduleViewportRefreshIfNeeded()
@@ -734,21 +746,13 @@ namespace MangaViewer.ViewModels
                     double w = IsTwoPageMode ? _leftWrapperWidth : _singleWrapperWidth;
                     double h = IsTwoPageMode ? _leftWrapperHeight : _singleWrapperHeight;
                     if (w > 0 && h > 0)
-                    {
-                        var img = await _imageCache.GetForViewportAsync(LeftImageFilePath, w, h, _rasterizationScale).ConfigureAwait(true);
-                        if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && LeftImageFilePath != null)
-                            LeftImageSource = img;
-                    }
+                        await LoadPageImageAsync(LeftImageFilePath, w, h, token, localVersion, () => LeftImageFilePath, img => LeftImageSource = img).ConfigureAwait(true);
                 }
 
                 if (!string.IsNullOrEmpty(RightImageFilePath))
                 {
                     if (_rightWrapperWidth > 0 && _rightWrapperHeight > 0)
-                    {
-                        var img = await _imageCache.GetForViewportAsync(RightImageFilePath, _rightWrapperWidth, _rightWrapperHeight, _rasterizationScale).ConfigureAwait(true);
-                        if (!token.IsCancellationRequested && localVersion == _pageLoadVersion && RightImageFilePath != null)
-                            RightImageSource = img;
-                    }
+                        await LoadPageImageAsync(RightImageFilePath, _rightWrapperWidth, _rightWrapperHeight, token, localVersion, () => RightImageFilePath, img => RightImageSource = img).ConfigureAwait(true);
                 }
             }
             catch { }
@@ -756,66 +760,106 @@ namespace MangaViewer.ViewModels
 
         private async Task RunOcrAsync()
         {
-            CancelOcr();
-            int localVersion = Interlocked.Increment(ref _ocrVersion);
-            while (IsOcrRunning)
-            {
-                await Task.Delay(10);
-                if (localVersion != _ocrVersion) return;
-            }
-            if (localVersion != _ocrVersion) return;
+            Interlocked.Increment(ref _ocrVersion);
 
-            var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
-            if (originalPaths.Count == 0) return;
-
-            var paths = new List<string>(originalPaths);
-            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+            if (!await _ocrRunGate.WaitAsync(0).ConfigureAwait(true))
             {
-                (paths[0], paths[1]) = (paths[1], paths[0]);
+                CancelOcr();
+                return;
             }
 
-            IsOcrRunning = true;
-            OnPropertyChanged(nameof(IsControlEnabled));
-            _ocrCts = new CancellationTokenSource();
-            var token = _ocrCts.Token;
             try
             {
-                ClearOcr();
-                bool forceRefresh = _forceRefreshOllamaOcrOnNextRun;
-                _forceRefreshOllamaOcrOnNextRun = false;
-                if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
-                {
-                    await RunHybridOcrAsync(paths, token, localVersion, forceRefresh);
-                }
-                else
-                {
-                    await RunOllamaOcrAsync(paths, token, localVersion, forceRefresh);
-                }
+                int retryVersion = -1;
+                int retryCountForVersion = 0;
 
-                await EnsureVisiblePageOcrCachedAsync(paths, token, localVersion, forceRefresh).ConfigureAwait(true);
+                while (IsOcrActive)
+                {
+                    int localVersion = Volatile.Read(ref _ocrVersion);
+                    if (retryVersion != localVersion)
+                    {
+                        retryVersion = localVersion;
+                        retryCountForVersion = 0;
+                    }
 
-                if (IsTranslationActive)
-                    _ = RunTranslationThenPrefetchAsync(localVersion);
-                else
-                    StartAdjacentPagePrefetch();
-            }
-            catch (OperationCanceledException)
-            {
-                SetOcrStatus("OCR 취소됨", InfoBarSeverity.Informational, true);
-                ClearOcr();
-            }
-            catch (Exception ex)
-            {
-                SetOcrStatus("OCR 오류: " + ex.Message, InfoBarSeverity.Error, true);
-                Log.Error(ex, "RunOcrAsync failed");
+                    var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
+                    if (originalPaths.Count == 0)
+                        break;
+
+                    var paths = new List<string>(originalPaths);
+                    if (_mangaManager.IsRightToLeft && paths.Count == 2)
+                    {
+                        (paths[0], paths[1]) = (paths[1], paths[0]);
+                    }
+
+                    IsOcrRunning = true;
+                    OnPropertyChanged(nameof(IsControlEnabled));
+                    _ocrCts = new CancellationTokenSource();
+                    var token = _ocrCts.Token;
+                    bool shouldRetryCurrentVersion = false;
+
+                    try
+                    {
+                        ClearOcr();
+                        bool forceRefresh = _forceRefreshOllamaOcrOnNextRun;
+                        _forceRefreshOllamaOcrOnNextRun = false;
+                        if (_ocrService.Backend == OcrService.OcrBackend.Hybrid)
+                        {
+                            await RunHybridOcrAsync(paths, token, localVersion, forceRefresh);
+                        }
+                        else
+                        {
+                            await RunOllamaOcrAsync(paths, token, localVersion, forceRefresh);
+                        }
+
+                        await EnsureVisiblePageOcrCachedAsync(paths, token, localVersion, forceRefresh).ConfigureAwait(true);
+
+                        if (IsTranslationActive)
+                            _ = RunTranslationThenPrefetchAsync(localVersion);
+                        else
+                            StartAdjacentPagePrefetch();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        SetOcrStatus("OCR 취소됨", InfoBarSeverity.Informational, true);
+                        ClearOcr();
+                    }
+                    catch (Exception ex)
+                    {
+                        SetOcrStatus("OCR 오류: " + ex.Message, InfoBarSeverity.Error, true);
+                        Log.Error(ex, "RunOcrAsync failed");
+
+                        if (localVersion == Volatile.Read(ref _ocrVersion)
+                            && IsOcrActive
+                            && retryCountForVersion < 1)
+                        {
+                            retryCountForVersion++;
+                            shouldRetryCurrentVersion = true;
+                            SetOcrStatus("OCR 재시도 중...", InfoBarSeverity.Warning, true);
+                        }
+                    }
+                    finally
+                    {
+                        IsOcrRunning = false;
+                        OnPropertyChanged(nameof(IsControlEnabled));
+                        OcrCompleted?.Invoke(this, EventArgs.Empty);
+                        _ocrCts?.Dispose();
+                        _ocrCts = null;
+                    }
+
+                    if (shouldRetryCurrentVersion)
+                    {
+                        await Task.Delay(200).ConfigureAwait(true);
+                        continue;
+                    }
+
+                    if (localVersion == Volatile.Read(ref _ocrVersion))
+                        break;
+                }
             }
             finally
             {
-                IsOcrRunning = false;
-                OnPropertyChanged(nameof(IsControlEnabled));
-                OcrCompleted?.Invoke(this, EventArgs.Empty);
-                _ocrCts?.Dispose();
-                _ocrCts = null;
+                _ocrRunGate.Release();
             }
         }
 
@@ -866,6 +910,9 @@ namespace MangaViewer.ViewModels
 
                 var result = await task.ConfigureAwait(true);
                 ThrowIfOcrRunStale(localVersion, token);
+                if (!result.IsSuccessful)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.StatusMessage) ? "OCR request did not complete." : result.StatusMessage);
+
                 if (pageIndex == 0)
                 {
                     LeftOcrText = result.Text;
@@ -963,6 +1010,8 @@ namespace MangaViewer.ViewModels
 
                 var result = await task.ConfigureAwait(true);
                 ThrowIfOcrRunStale(localVersion, token);
+                if (!result.IsSuccessful)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.StatusMessage) ? "OCR request did not complete." : result.StatusMessage);
 
                 if (pageIndex == 0)
                 {
@@ -1013,6 +1062,61 @@ namespace MangaViewer.ViewModels
                 throw new OperationCanceledException();
         }
 
+        public Task EnsureOcrBoxTextAsync(BoundingBoxViewModel box)
+            => EnsureOcrBoxTextAsync(box, isLeft: _leftOcrBoxes.Contains(box));
+
+        public async Task EnsureOcrBoxTextAsync(BoundingBoxViewModel box, bool isLeft)
+        {
+            if (box == null || !string.IsNullOrWhiteSpace(box.Text) || _ocrService.Backend != OcrService.OcrBackend.Hybrid)
+                return;
+
+            var targetBoxes = isLeft ? _leftOcrBoxes : _rightOcrBoxes;
+            if (!targetBoxes.Contains(box))
+                return;
+
+            string? imagePath = isLeft ? LeftImageFilePath : RightImageFilePath;
+            if (string.IsNullOrWhiteSpace(imagePath))
+                return;
+
+            SelectedOcrBox = box;
+            SetOcrStatus("선택한 OCR 박스 재요청 중...", InfoBarSeverity.Informational, false);
+
+            try
+            {
+                string resolvedText = await _ocrService.GetHybridBoxTextAsync(imagePath, box, CancellationToken.None).ConfigureAwait(true);
+                if (string.IsNullOrWhiteSpace(resolvedText))
+                {
+                    SetOcrStatus("선택한 OCR 박스에서 텍스트를 확인하지 못했습니다.", InfoBarSeverity.Warning, true);
+                    return;
+                }
+
+                box.Text = resolvedText;
+                if (isLeft)
+                {
+                    LeftOcrText = BuildOcrTextFromBoxes(targetBoxes);
+                    if (IsTranslationActive)
+                        TranslatedLeftOcrText = BuildTranslatedTextFromBoxes(targetBoxes);
+                }
+                else
+                {
+                    RightOcrText = BuildOcrTextFromBoxes(targetBoxes);
+                    if (IsTranslationActive)
+                        TranslatedRightOcrText = BuildTranslatedTextFromBoxes(targetBoxes);
+                }
+
+                PageViewChanged?.Invoke(this, EventArgs.Empty);
+                SetOcrStatus("선택한 OCR 박스 갱신 완료", InfoBarSeverity.Success, false);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                SetOcrStatus("선택한 OCR 박스 재요청 오류: " + ex.Message, InfoBarSeverity.Error, true);
+                Log.Error(ex, "EnsureOcrBoxTextAsync failed");
+            }
+        }
+
         private async Task EnsureVisiblePageOcrCachedAsync(IReadOnlyList<string> visiblePaths, CancellationToken token, int localVersion, bool forceRefresh)
         {
             for (int i = 0; i < visiblePaths.Count; i++)
@@ -1053,6 +1157,51 @@ namespace MangaViewer.ViewModels
 
             RaiseOllamaOcrTextVisibilityChanged();
             PageViewChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private bool TryRestoreCurrentPageOcrFromCache()
+        {
+            var originalPaths = _mangaManager.GetImagePathsForCurrentPage();
+            if (originalPaths.Count == 0)
+                return false;
+
+            var paths = new List<string>(originalPaths);
+            if (_mangaManager.IsRightToLeft && paths.Count == 2)
+                (paths[0], paths[1]) = (paths[1], paths[0]);
+
+            var cachedResults = new OcrService.OllamaOcrResponse[paths.Count];
+            for (int i = 0; i < paths.Count; i++)
+            {
+                string path = paths[i];
+                if (string.IsNullOrWhiteSpace(path))
+                {
+                    cachedResults[i] = new OcrService.OllamaOcrResponse();
+                    continue;
+                }
+
+                if (!_ocrService.TryGetCachedCurrentBackendOcr(path, out var cached))
+                    return false;
+
+                cachedResults[i] = cached;
+            }
+
+            if (cachedResults.Length > 0)
+            {
+                LeftOcrText = cachedResults[0].Text;
+                foreach (var box in cachedResults[0].Boxes)
+                    _leftOcrBoxes.Add(box);
+            }
+
+            if (cachedResults.Length > 1)
+            {
+                RightOcrText = cachedResults[1].Text;
+                foreach (var box in cachedResults[1].Boxes)
+                    _rightOcrBoxes.Add(box);
+            }
+
+            RaiseOllamaOcrTextVisibilityChanged();
+            PageViewChanged?.Invoke(this, EventArgs.Empty);
+            return true;
         }
 
         private async Task RunTranslationAsync()
@@ -1222,6 +1371,16 @@ namespace MangaViewer.ViewModels
             if (isLeft) TranslatedLeftOcrText = translated;
             else TranslatedRightOcrText = translated;
             PageViewChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private static string BuildOcrTextFromBoxes(IReadOnlyList<BoundingBoxViewModel> boxes)
+        {
+            var lines = boxes
+                .Select(box => box.Text)
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .ToList();
+
+            return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
         }
 
         private static string BuildTranslatedTextFromBoxes(IReadOnlyList<BoundingBoxViewModel> boxes)
@@ -1637,11 +1796,17 @@ namespace MangaViewer.ViewModels
             }
 
             if (!_isTranslationActive)
-            {
-                TranslatedLeftOcrText = string.Empty;
-                TranslatedRightOcrText = string.Empty;
-                ClearBoxTranslations();
-            }
+                ClearTranslationState(notifyPageView: false);
+        }
+
+        private void ClearTranslationState(bool notifyPageView)
+        {
+            TranslatedLeftOcrText = string.Empty;
+            TranslatedRightOcrText = string.Empty;
+            ClearBoxTranslations();
+
+            if (notifyPageView)
+                PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private void ClearBoxTranslations()
@@ -1662,6 +1827,8 @@ namespace MangaViewer.ViewModels
 
             if (_adjacentPrefetchCts != null && !_adjacentPrefetchCts.IsCancellationRequested)
                 _adjacentPrefetchCts.Cancel();
+
+            _ocrService.CancelActiveOcrRequests();
         }
 
         private void ClearOcr()
@@ -1768,6 +1935,7 @@ namespace MangaViewer.ViewModels
         public void Dispose()
         {
             CancelOcr();
+            _ocrRunGate.Dispose();
             _adjacentPrefetchCts?.Dispose();
             _adjacentPrefetchCts = null;
             _ocrCts?.Dispose();

@@ -57,11 +57,13 @@ namespace MangaViewer.Services
         private const string DocLayoutModelRelativePath = "onnx/PP-DocLayoutV3.onnx";
         private static readonly TimeSpan OllamaRequestTimeout = TimeSpan.FromSeconds(180);
         private static readonly TimeSpan OllamaThinkingRequestTimeout = TimeSpan.FromMinutes(10);
+        private static readonly TimeSpan HybridCropRequestTimeout = TimeSpan.FromSeconds(45);
 
         public sealed class OllamaOcrResponse
         {
             public string Text { get; init; } = string.Empty;
             public List<BoundingBoxViewModel> Boxes { get; init; } = new();
+            public bool IsSuccessful { get; init; }
             public bool UsedFallback { get; init; }
             public string StatusMessage { get; init; } = string.Empty;
         }
@@ -149,6 +151,11 @@ namespace MangaViewer.Services
         public string OllamaThinkingLevel { get; private set; } = "Off";
         public bool OllamaStructuredOutputEnabled { get; private set; } = true;
         public double OllamaTemperature { get; private set; } = 1.0;
+        public int LlamaServerMaxConcurrentRequests { get; private set; } = 1;
+        public bool LlamaServerSlotEraseEnabled { get; private set; } = true;
+        public int LlamaServerReportedTotalSlots { get; private set; }
+        public int LlamaServerMaxConcurrentRequestsUpperBound => LlamaServerReportedTotalSlots > 0 ? Math.Clamp(LlamaServerReportedTotalSlots, 1, 32) : 32;
+        public int EffectiveLlamaServerMaxConcurrentRequests => Math.Min(LlamaServerMaxConcurrentRequests, LlamaServerMaxConcurrentRequestsUpperBound);
         public int HybridTextExtractionParallelism { get; private set; } = 2;
         public bool HybridOnnxFallbackEnabled { get; private set; } = false;
         public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
@@ -164,7 +171,11 @@ namespace MangaViewer.Services
         private readonly Dictionary<string, OcrEngine?> _engineCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, List<BoundingBoxViewModel>> _ocrCache = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, OllamaOcrResponse> _ollamaCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, string> _hybridBoxTextCache = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, Task<string>> _hybridBoxTextRequests = new(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, OllamaModelCapabilities> _ollamaCapabilities = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _activeOcrRequestGate = new();
+        private readonly Dictionary<Guid, ActiveOcrRequest> _activeOcrRequests = new();
         private readonly object _docLayoutSessionGate = new();
         private InferenceSession? _docLayoutSession;
         private string? _docLayoutModelPath;
@@ -179,6 +190,13 @@ namespace MangaViewer.Services
 
         private readonly IImageDecoder _decoder = new WinRtImageDecoder();
 
+        private sealed class ActiveOcrRequest
+        {
+            public required Guid Id { get; init; }
+            public required CancellationTokenSource CancellationSource { get; init; }
+            public Func<Task>? SlotClearAsync { get; set; }
+        }
+
         private OcrService()
         {
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
@@ -187,9 +205,11 @@ namespace MangaViewer.Services
             Backend = (OcrBackend)SettingsProvider.Get("OcrBackend", 0);
             OllamaEndpoint = SettingsProvider.Get("OllamaEndpoint", "http://localhost:11434");
             OllamaModel = SettingsProvider.Get("OllamaModel", "glm-ocr:latest");
-            OllamaThinkingLevel = NormalizeOllamaThinkingLevel(SettingsProvider.Get("OcrOllamaThinkingLevel", "Off"));
+            OllamaThinkingLevel = ThinkingLevelHelper.NormalizeOllama(SettingsProvider.Get("OcrOllamaThinkingLevel", "Off"));
             OllamaStructuredOutputEnabled = SettingsProvider.Get("OcrOllamaStructuredOutputEnabled", true);
             OllamaTemperature = Math.Clamp(SettingsProvider.Get("OcrOllamaTemperature", 1.0), 0.0, 2.0);
+            LlamaServerMaxConcurrentRequests = Math.Clamp(SettingsProvider.Get("LlamaServerMaxConcurrentRequests", OllamaRequestLoadCoordinator.MaxConcurrentRequests), 1, 32);
+            LlamaServerSlotEraseEnabled = SettingsProvider.Get("LlamaServerSlotEraseEnabled", OllamaRequestLoadCoordinator.SlotEraseEnabled);
             HybridTextExtractionParallelism = Math.Clamp(SettingsProvider.Get("OcrHybridTextExtractionParallelism", 2), 1, 8);
             HybridOnnxFallbackEnabled = SettingsProvider.Get("OcrHybridOnnxFallbackEnabled", false);
             PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
@@ -201,6 +221,9 @@ namespace MangaViewer.Services
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer", "onnx", "trt_rtx_cache"));
             OnnxUseEpContextModel = SettingsProvider.Get("OcrOnnxUseEpContextModel", true);
             OnnxAutoCompileEpContextModel = SettingsProvider.Get("OcrOnnxAutoCompileEpContextModel", true);
+
+            OllamaRequestLoadCoordinator.SetMaxConcurrentRequests(EffectiveLlamaServerMaxConcurrentRequests);
+            OllamaRequestLoadCoordinator.SetSlotEraseEnabled(LlamaServerSlotEraseEnabled);
         }
 
         public void SetLanguage(string languageTag)
@@ -266,7 +289,7 @@ namespace MangaViewer.Services
         public void SetOllamaEndpoint(string endpoint)
         {
             if (string.IsNullOrWhiteSpace(endpoint)) return;
-            endpoint = endpoint.TrimEnd('/');
+            endpoint = LlmEndpointCompatibility.NormalizeEndpoint(endpoint);
             if (!string.Equals(OllamaEndpoint, endpoint, StringComparison.OrdinalIgnoreCase))
             {
                 OllamaEndpoint = endpoint;
@@ -288,7 +311,7 @@ namespace MangaViewer.Services
 
         public void SetOllamaThinkingLevel(string level)
         {
-            level = NormalizeOllamaThinkingLevel(level);
+            level = ThinkingLevelHelper.NormalizeOllama(level);
             if (!string.Equals(OllamaThinkingLevel, level, StringComparison.OrdinalIgnoreCase))
             {
                 OllamaThinkingLevel = level;
@@ -296,17 +319,6 @@ namespace MangaViewer.Services
                 OnSettingsChanged();
             }
         }
-
-        private static string NormalizeOllamaThinkingLevel(string? level)
-        {
-            if (string.IsNullOrWhiteSpace(level)) return "Off";
-            if (level.Equals("Off", StringComparison.OrdinalIgnoreCase)
-                || level.Equals("False", StringComparison.OrdinalIgnoreCase)
-                || level.Equals("0", StringComparison.OrdinalIgnoreCase))
-                return "Off";
-            return "On";
-        }
-
         public void SetOllamaStructuredOutputEnabled(bool enabled)
         {
             if (OllamaStructuredOutputEnabled == enabled) return;
@@ -322,6 +334,52 @@ namespace MangaViewer.Services
             OllamaTemperature = value;
             SettingsProvider.Set("OcrOllamaTemperature", value);
             OnSettingsChanged();
+        }
+
+        public void SetLlamaServerMaxConcurrentRequests(int value)
+        {
+            int clamped = Math.Clamp(value, 1, 32);
+            if (LlamaServerMaxConcurrentRequests == clamped) return;
+            LlamaServerMaxConcurrentRequests = clamped;
+            SettingsProvider.Set("LlamaServerMaxConcurrentRequests", clamped);
+            OllamaRequestLoadCoordinator.SetMaxConcurrentRequests(EffectiveLlamaServerMaxConcurrentRequests);
+        }
+
+        public void SetLlamaServerSlotEraseEnabled(bool enabled)
+        {
+            if (LlamaServerSlotEraseEnabled == enabled) return;
+            LlamaServerSlotEraseEnabled = enabled;
+            SettingsProvider.Set("LlamaServerSlotEraseEnabled", enabled);
+            OllamaRequestLoadCoordinator.SetSlotEraseEnabled(enabled);
+        }
+
+        public async Task RefreshLlamaServerSlotLimitAsync(CancellationToken cancellationToken = default)
+        {
+            string endpoint = OllamaEndpoint;
+            string model = OllamaModel;
+
+            int reportedTotalSlots = 0;
+            try
+            {
+                int? totalSlots = await LlmEndpointCompatibility.GetOpenAiCompatibleTotalSlotsAsync(
+                    s_httpClient,
+                    endpoint,
+                    model,
+                    cancellationToken).ConfigureAwait(false);
+
+                reportedTotalSlots = totalSlots.GetValueOrDefault();
+            }
+            catch
+            {
+                reportedTotalSlots = 0;
+            }
+
+            if (!string.Equals(endpoint, OllamaEndpoint, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(model, OllamaModel, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            LlamaServerReportedTotalSlots = reportedTotalSlots > 0 ? Math.Clamp(reportedTotalSlots, 1, 32) : 0;
+            OllamaRequestLoadCoordinator.SetMaxConcurrentRequests(EffectiveLlamaServerMaxConcurrentRequests);
         }
 
         public void SetHybridTextExtractionParallelism(int value)
@@ -585,8 +643,78 @@ namespace MangaViewer.Services
             {
                 _ocrCache.Clear();
                 _ollamaCache.Clear();
+                _hybridBoxTextCache.Clear();
+                _hybridBoxTextRequests.Clear();
                 _ollamaCapabilities.Clear();
             }
+        }
+
+        public void CancelActiveOcrRequests()
+        {
+            List<ActiveOcrRequest> activeRequests;
+            lock (_activeOcrRequestGate)
+                activeRequests = _activeOcrRequests.Values.ToList();
+
+            foreach (var request in activeRequests)
+            {
+                try
+                {
+                    request.CancellationSource.Cancel();
+                }
+                catch
+                {
+                }
+
+                if (request.SlotClearAsync == null)
+                    continue;
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await request.SlotClearAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Error(ex, "CancelActiveOcrRequests slot clear failed");
+                    }
+                });
+            }
+        }
+
+        private ActiveOcrRequest RegisterActiveOcrRequest(CancellationTokenSource cancellationSource)
+        {
+            var request = new ActiveOcrRequest
+            {
+                Id = Guid.NewGuid(),
+                CancellationSource = cancellationSource
+            };
+
+            lock (_activeOcrRequestGate)
+                _activeOcrRequests[request.Id] = request;
+
+            return request;
+        }
+
+        private void SetActiveOcrRequestSlotClearCallback(ActiveOcrRequest request, Func<Task>? slotClearAsync)
+        {
+            if (request == null)
+                return;
+
+            lock (_activeOcrRequestGate)
+            {
+                if (_activeOcrRequests.ContainsKey(request.Id))
+                    request.SlotClearAsync = slotClearAsync;
+            }
+        }
+
+        private void UnregisterActiveOcrRequest(ActiveOcrRequest? request)
+        {
+            if (request == null)
+                return;
+
+            lock (_activeOcrRequestGate)
+                _activeOcrRequests.Remove(request.Id);
         }
 
         private void OnSettingsChanged()

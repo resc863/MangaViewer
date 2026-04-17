@@ -1,6 +1,6 @@
 # MangaViewer (WinUI 3)
 
-A WinUI 3-based manga (image) reader for Windows that supports local folders, single/two-page view, reading direction toggle, cover separation, a right-side thumbnail pane, OCR overlays/copy, OCR-based translation (Google Gemini / OpenAI / Anthropic), and e-hentai search with streaming read.
+A WinUI 3 manga/image reader for Windows with local folder reading, library management, e-hentai streaming, AI-assisted OCR, OCR translation overlays, and configurable multi-provider LLM integration. The current codebase targets **.NET 10** and uses a hybrid OCR pipeline built around **PP-DocLayoutV3 ONNX + Ollama-compatible vision models**.
 
 ## Features
 
@@ -13,46 +13,47 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
   - Mica titlebar and translucent UI
 
 - OCR
-  - Backends: Windows Built-in (Windows.Media.Ocr) / Ollama (e.g., `glm-ocr:latest`)
-  - Windows Built-in:
-    - Languages: Auto/JA/KO/EN
-    - Grouping: Word/Line/Paragraph (vertical/horizontal, gap heuristics)
-    - Tap overlay boxes to copy recognized text to clipboard
-  - Ollama:
-    - Full page text recognition via `OllamaSharp.OllamaApiClient` (used as `IChatClient`)
-    - Message payload: `TextContent("Text Recognition")` + `DataContent(imageBytes, mimeType)`
-    - Configurable endpoint and model
-    - Translation toggle: run translation immediately after Ollama OCR completes
-  - Hybrid OCR (ONNX + Ollama crop OCR)
-    - Layout detection: ONNX `PP-DocLayoutV3` detects reading regions (`DocLayoutBox`)
-    - Recognition: each detected region is losslessly cropped and recognized with Ollama (`HybridOllamaModel`)
-    - Parallelism: crop OCR runs with throttled concurrency (`HybridTextExtractionParallelism`)
-    - Result: read-order-preserving `BoundingBoxViewModel` list + joined OCR text
-    - Cache mode is separated by key suffix (`mode=hybrid` vs `mode=vlm`)
-    - Progressive UX: per-page OCR progress popup and staged box preview updates while OCR is still running
-    - Prompting note: in Hybrid OCR, prompt-injected general VLMs (e.g., `gemma`) currently produce better practical quality than `GLM-OCR` in many pages
+  - Backends
+    - **Hybrid**: `PP-DocLayoutV3.onnx` detects layout regions, then each crop is recognized by an Ollama/OpenAI-compatible vision model
+    - **VLM**: a full-image OCR request is sent directly to the configured Ollama-compatible endpoint
+  - Hybrid OCR behavior
+    - Layout detection uses ONNX Runtime with configurable execution-provider registration
+    - If the primary ONNX EP fails, the app retries with **CPU EP** before considering VLM fallback
+    - Optional fallback from Hybrid OCR to VLM OCR is available, and is **off by default**
+    - Detected boxes are published early so the reader can show staged OCR previews while crop OCR is still running
+    - Crop OCR concurrency is throttled by `HybridTextExtractionParallelism`
+    - Results are cached independently for `mode=hybrid` and `mode=vlm`
+  - Ollama / llama-server integration
+    - Endpoint is normalized through `LlmEndpointCompatibility`
+    - Supports native Ollama APIs and OpenAI-compatible llama-server style endpoints
+    - Thinking controls are applied for models/endpoints that support them, including Hybrid OCR mode
+    - Structured JSON OCR output can be enabled for box-aware parsing
+  - Reader integration
+    - `RunOcrAsync` keeps left/right pages aligned with reading direction
+    - OCR status and per-page progress popups are updated while requests complete
+    - Hybrid mode supports re-requesting text for a selected OCR box when a box was previewed before text arrived
+    - Adjacent page OCR prefetch is configurable
   - Overlay rendering structure (`MangaReaderPage`)
-    - `RedrawAllOcr` → `RedrawOcr` → `DrawBoxes` pipeline
-    - Normal mode: draw original OCR boxes (`Rectangle`) with object-pool reuse
-    - Translation mode: build overlay groups and render text `Border` overlays
-    - Grouping strategy:
-      - Non-hybrid backend: merge adjacent/overlapping boxes for readability
-      - Hybrid backend: keep box-by-box overlays (no merge)
-    - Hybrid font sizing rule:
-      - Prioritizes translated text length + overlay box size
-      - Does not depend on line count as a primary factor
+    - `RedrawAllOcr` → `RedrawOcr` → `DrawBoxes`
+    - OCR mode renders original box overlays; translation mode renders translated `Border` overlays
+    - Non-hybrid OCR can merge adjacent/overlapping boxes for readability
+    - Hybrid overlays stay box-by-box for layout fidelity
+    - Hybrid font sizing is based on **overlay box size + translated text length**, not line count
 
 - Translation (OCR result translation)
-  - Translates Ollama OCR output to Korean via LLM API
+  - Translates OCR text or OCR boxes through LLM APIs
   - Providers: **Google Gemini** / **OpenAI** / **Anthropic (Claude)** / **Ollama**
-  - Per-provider API key and model configuration
-    - Google: fetch model list button (available after entering API key)
-    - OpenAI: manual model name input, custom endpoint supported (OpenAI-compatible APIs, default: `https://api.openai.com/v1/`)
-    - Anthropic: manual model name input
-    - Ollama: endpoint/model configurable, thinking on/off normalization supported
-  - Target translation language is configurable (default: Korean)
-  - Per-page OCR/translation state preserved independently (state restored on page revisit)
-  - Translation result cache (prevents redundant requests for identical text/provider/model combinations)
+  - Provider settings
+    - Google: API key, system prompt, selectable model list fetch
+    - OpenAI: API key, manual model entry, provider-specific thinking level
+    - Anthropic: API key, manual model entry, provider-specific thinking level
+    - Ollama: endpoint, selectable model list fetch, thinking on/off normalization
+  - Translation target language is configurable (default: Korean)
+  - Box translation uses full-page OCR text as context and requests strict JSON mapped back to merged OCR box indices
+  - Plain-text translation and box-translation results are cached by provider/model/thinking/language/input
+  - Adjacent page translation prefetch is configurable
+  - Translation overlay tuning includes font size plus independent horizontal/vertical overlay box scale controls
+  - Per-page OCR/translation state is preserved and restored when revisiting pages
 
 - Search + Streaming
   - e-hentai search results grid (infinite scroll, delayed thumbnail decoding)
@@ -65,10 +66,10 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
   - Tap tags to run a new search with that condition
 
 - Settings
-  - OCR backend (Windows/Ollama), language/grouping/writing mode/paragraph gap, Ollama endpoint/model
-  - Translation: provider (Google/OpenAI/Anthropic), API key (공급자별 별도 저장), model
-  - Tag font size, thumbnail decode width
-  - Image memory cache stats/limits (count/size), clear all/per gallery
+  - OCR: backend, endpoint/model, thinking, structured output, temperature, llama-server slot/concurrency controls, Hybrid text parallelism, Hybrid→VLM fallback, ONNX EP mode/manual list, TensorRT/EP-context options, adjacent page prefetch
+  - Translation: provider, provider-specific API key, model, system prompt, target language, thinking level, adjacent page prefetch, overlay font size, overlay box horizontal/vertical scale
+  - Library folders, tag font size, thumbnail decode width
+  - Image memory cache stats/limits, clear all/per gallery
 
 ## UI Overview
 
@@ -87,7 +88,7 @@ A WinUI 3-based manga (image) reader for Windows that supports local folders, si
 
 - OS: Windows 11 recommended
   - TargetFramework: `net10.0-windows10.0.26100.0` (Windows SDK 26100)
-  - SupportedOSPlatformVersion: `10.0.22621.0`
+  - SupportedOSPlatformVersion: `10.0.26100.0`
 - SDK/Tooling
   - .NET SDK 10.0+
   - Windows 11 SDK 10.0.26100.x
@@ -114,9 +115,74 @@ dotnet run --project .\MangaViewer\MangaViewer.csproj -c Debug -p:Platform=x64
 
 ## Usage
 
-- Reader: open a folder → navigate via thumbnails/pages; run OCR (tap boxes to copy text or view full page text via Ollama); enable Translation toggle to translate Ollama OCR result via LLM
+- Reader: open a folder → navigate via thumbnails/pages → enable OCR to run Hybrid or VLM OCR → optionally enable Translation to translate OCR text/boxes and render translated overlays
 - Search: run a query → click an item to start streaming (memory cache only, no disk save)
-- Settings: adjust OCR/thumbnail/cache/tag options; configure translation provider, API key and model
+- Settings: configure OCR endpoint/model/ONNX options and translation provider/API key/model/system prompt/thinking/overlay options
+
+## AI Model Flows
+
+### 1) OCR pipeline used by the reader
+
+```mermaid
+flowchart TD
+    A[Reader page / MangaViewModel.RunOcrAsync] --> B{Selected OCR backend}
+    B -->|Hybrid| C[OcrService.GetHybridOcrAsync]
+    B -->|VLM| D[OcrService.GetOllamaOcrAsync]
+
+    C --> E[Load original image bytes]
+    E --> F[Run PP-DocLayoutV3 ONNX layout detection]
+    F --> G{Primary EP success?}
+    G -->|No| H[Retry ONNX with CPU EP]
+    H --> I{Layout available?}
+    G -->|Yes| I
+    I -->|Yes| J[Publish preview BoundingBoxViewModel list]
+    J --> K[Crop each region losslessly]
+    K --> L[Send crop OCR requests to Ollama / llama-server vision model]
+    L --> M[Compose ordered OCR boxes + page text]
+    I -->|No| N{Hybrid fallback enabled?}
+    N -->|Yes| D
+    N -->|No| O[Return Hybrid OCR failure status]
+
+    D --> P[Send full-image OCR request to Ollama-compatible endpoint]
+    P --> Q[Parse structured/plain response]
+    Q --> R[Build OCR boxes + text]
+
+    M --> S[Cache by mode=hybrid]
+    R --> T[Cache by mode=vlm]
+    S --> U[Update reader overlays / text / progress]
+    T --> U
+```
+
+### 2) Translation pipeline used by OCR translation overlays
+
+```mermaid
+flowchart TD
+    A[OCR text and/or OCR boxes ready] --> B{Has OCR boxes?}
+    B -->|Yes| C[Merge overlapping OCR boxes by index group]
+    B -->|No| D[Use page OCR text directly]
+
+    C --> E[Build JSON payload with page_text + boxes[]]
+    D --> F[Build plain translation prompt]
+
+    E --> G[TranslationClientFactory.TryCreate]
+    F --> G
+
+    G --> H{Selected provider}
+    H -->|Google| I[GoogleGenAIChatClient]
+    H -->|OpenAI| J[OpenAIChatClient]
+    H -->|Anthropic| K[AnthropicChatClient]
+    H -->|Ollama| L[OllamaChatClient]
+
+    I --> M[Provider API call]
+    J --> M
+    K --> M
+    L --> M
+
+    M --> N[Normalize result / extract JSON if needed]
+    N --> O[Cache by provider + model + thinking + target language + input]
+    O --> P[Map translations back to boxes or page text]
+    P --> Q[Render translated overlay in MangaReaderPage]
+```
 
 ## Project Structure (short)
 
@@ -139,8 +205,8 @@ MangaViewer/
     BoundingBoxViewModel.cs       # OCR box overlay
   Services/
     MangaManager.cs               # local folder/page mapping
-    OcrService.cs                 # Windows.Media.Ocr + grouping/writing + Ollama OCR
-    TranslationSettingsService.cs # translation provider/model/API key settings
+    OcrService.cs                 # Hybrid/VLM OCR, ONNX layout detection, Ollama-compatible OCR
+    TranslationSettingsService.cs # translation provider/model/API key/overlay/prefetch settings
     GoogleGenAIChatClient.cs      # Google Gemini API (IChatClient)
     OpenAIChatClient.cs           # OpenAI API (IChatClient)
     AnthropicChatClient.cs        # Anthropic Claude API (IChatClient)
@@ -165,7 +231,7 @@ MangaViewer/
 ## Notes
 
 - Streaming images are kept in memory only (not saved to disk).
-- Windows OCR language packs are required for better recognition.
+- Hybrid OCR requires the `PP-DocLayoutV3` ONNX model, and OCR/translation features that use Ollama-compatible models require a reachable endpoint.
 - Large galleries may consume more memory; adjust cache limits or clear cache in Settings.
 - This app is a client example for browsing external websites (e-hentai). Follow the site's ToS and local laws. Trademarks and copyrights belong to their owners.
 
@@ -213,26 +279,32 @@ SettingsProvider (static)
 └── Thread-safe with ReaderWriterLockSlim
 ```
 
-**ChatClient Layer (Translation Providers)**
+**AI Client Layer**
 ```
 GoogleGenAIChatClient (IChatClient)
-├── Uses Google.GenAI.Client directly (NOT via .AsIChatClient() adapter)
-├── BuildPrompt(): flattens ChatMessage list to plain text string
-├── GetStreamingResponseAsync: not supported (throws NotImplementedException)
-└── Passes MaxOutputTokens from ChatOptions via GenerateContentConfig
+├── Uses Google.GenAI.Client directly
+├── Flattens ChatMessage history into a prompt string
+└── Applies Google thinking budget via GenerateContentConfig
 
 OpenAIChatClient (IChatClient)
 ├── Uses OpenAI.OpenAIClient → .GetChatClient(model).AsIChatClient()
-├── Supports custom endpoint for OpenAI-compatible APIs
-└── Falls back to standard client when endpoint matches default
+├── Supports reasoning effort mapping for thinking levels
+└── Uses the standard OpenAI endpoint in the current translation flow
 
 AnthropicChatClient (IChatClient)
-├── Uses new AnthropicClient() { ApiKey = apiKey }.AsIChatClient(model)
-└── Full IChatClient delegation (both streaming and non-streaming)
+├── Uses AnthropicClient + .AsIChatClient(model)
+├── Enables Anthropic thinking budgets when configured
+└── Delegates streaming/non-thinking calls to the inner client
 
-OllamaApiClient (OllamaSharp, used in OcrService — not a translation client)
-├── Instantiated as IChatClient in OcrService.GetOllamaTextAsync
-└── Sends TextContent("Text Recognition") + DataContent(imageBytes, mimeType)
+OllamaChatClient (IChatClient)
+├── Talks to native Ollama `/api/chat` or OpenAI-compatible `/v1/chat/completions`
+├── Normalizes thinking support for Ollama-style backends
+└── Coordinates timeouts and managed llama-server slot usage
+
+OcrService
+├── Hybrid OCR: ONNX DocLayout + crop OCR through Ollama-compatible vision models
+├── VLM OCR: full-image OCR through Ollama-compatible vision models
+└── Retries ONNX with CPU EP before optional VLM fallback
 ```
 
 ## Modernization notes
@@ -346,7 +418,7 @@ Keyboard/buttons → `MangaViewModel` commands → `MangaManager.GoToNext/Prev/T
 Search/download → `BeginStreamingGallery` → `SetExpectedTotalPages` (placeholders) → `AddDownloadedFiles(mem:/path)` sequential feed → `MemoryImageCache` stores bytes → display progressively.
 
 ### 4) OCR
-`RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetOcrAsync` (Windows) or `OcrService.GetOllamaTextAsync` (Ollama) → update `BoundingBoxViewModel` collections or text properties.
+`RunOcrCommand` → align left/right paths (consider RTL) → `OcrService.GetHybridOcrAsync` or `OcrService.GetOllamaOcrAsync` → update `BoundingBoxViewModel` collections, OCR text, progress popup, and overlay state.
 
 ### 4-1) OCR overlay render pipeline (new)
 `RedrawAllOcr` triggers all active OCR canvases (single/left/right). For each canvas:
@@ -371,19 +443,21 @@ Placement/sizing helpers:
 - Pipeline:
   1. Load original bytes (`TryGetHybridSourceImageAsync`)
   2. Detect layout regions (`RunDocLayoutDetectionAsync`)
-  3. Build ordered UI boxes (`BuildLayoutBoundingBoxes`)
-  4. Crop and OCR each region in parallel (hybrid crop OCR workers)
-  5. Compose final response (`BuildOllamaOcrResponse`)
+  3. Retry with CPU EP if the primary EP fails (`RunDocLayoutDetectionWithCpuFallbackAsync`)
+  4. Build ordered UI boxes (`BuildLayoutBoundingBoxes`)
+  5. Crop and OCR each region in parallel (hybrid crop OCR workers)
+  6. Compose final response (`BuildOllamaOcrResponse`)
 - Coordinate handling:
   - Structured VLM JSON is parsed by `ParseStructuredOllamaResponse`
   - `bbox_2d` is normalized to original image coordinates via `ScaleFromOllamaSpace`
   - Smart-resize heuristic (`TryComputeSmartResizeDimensions`) is used when coordinate space inference selects `AssumedSmartResize`
 - UX behavior:
   - If the model is missing, a warning popup/status message is shown with download guidance.
+  - If ONNX layout detection fails after CPU retry, the app either falls back to VLM OCR or returns an error, depending on `HybridOnnxFallbackEnabled`.
   - If the model is already installed, Hybrid OCR progress/completion does not open the popup.
 
 ### 5) Translation
-`IsTranslationActive = true` (or Ollama OCR completes with translation toggle enabled) → `MangaViewModel.RunTranslationAsync` → `TranslateTextAsync(text)` → instantiates `IChatClient` per `TranslationSettingsService.Provider` (`GoogleGenAIChatClient` / `OpenAIChatClient` / `AnthropicChatClient`) → `GetResponseAsync(messages)` with Korean translation prompt → result cached by `"{provider}|{model}|{text}"` key → `TranslatedLeftOcrText` / `TranslatedRightOcrText` updated.
+`IsTranslationActive = true` → `MangaViewModel.RunTranslationAsync` → plain-text translation or box-aware translation with page context → `TranslationClientFactory.TryCreate(...)` builds the provider client (`GoogleGenAIChatClient` / `OpenAIChatClient` / `AnthropicChatClient` / `OllamaChatClient`) → `GetResponseAsync(messages)` → result cached by provider/model/thinking/target/input key → translated text is mapped back to overlays and page text.
 
 ## Change checklist
 - **UI thread**: XAML objects (`BitmapImage`, `ObservableCollection`) must be created/modified on the UI thread. Use `DispatcherQueue` from services.

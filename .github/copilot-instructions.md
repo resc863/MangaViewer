@@ -3,6 +3,7 @@
 ## General Guidelines
 - Use English for prompts sent to Ollama in this project.
 - Expect complete localization coverage when asking for multilingual support, not partial translation of only a few screens.
+- When reporting a fix as complete, verify the requested end-to-end behavior actually triggers in the workspace before concluding.
 
 ## Project-Specific Rules
 - For hybrid translation overlay font sizing, ignore line count and calculate using box size and translated text length.

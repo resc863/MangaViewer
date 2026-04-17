@@ -30,15 +30,9 @@ namespace MangaViewer.Services
 
         public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
-            if (_thinkingLevel is not "Off")
+            if (!ThinkingLevelHelper.IsOff(_thinkingLevel))
             {
-                int budgetTokens = _thinkingLevel switch
-                {
-                    "Minimal" or "Low" => 1024,
-                    "Medium" => 5000,
-                    "High" => 10000,
-                    _ => 1024
-                };
+                int budgetTokens = ThinkingLevelHelper.GetAnthropicBudgetTokens(_thinkingLevel);
 
                 var msgs = chatMessages.Select(m => new MessageParam
                 {

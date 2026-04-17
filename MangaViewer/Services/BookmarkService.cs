@@ -178,10 +178,6 @@ namespace MangaViewer.Services
             if (string.IsNullOrWhiteSpace(storedPath)) return null;
             if (string.IsNullOrWhiteSpace(_currentFolderPath)) return null;
 
-            // Back-compat: allow previously-saved absolute paths.
-            if (Path.IsPathRooted(storedPath))
-                return TryNormalizeToFullPath(storedPath);
-
             return TryNormalizeToFullPath(storedPath);
         }
 

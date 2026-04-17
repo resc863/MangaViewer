@@ -4,19 +4,38 @@ namespace MangaViewer.Services
 {
     internal static class ThinkingLevelHelper
     {
+        public static bool IsOff(string? thinkingLevel)
+            => string.IsNullOrWhiteSpace(thinkingLevel)
+                || thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
+                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase);
+
         public static string NormalizeOllama(string? thinkingLevel)
         {
-            if (string.IsNullOrWhiteSpace(thinkingLevel))
-                return "Off";
+            return IsOff(thinkingLevel) ? "Off" : "On";
+        }
 
-            if (thinkingLevel.Equals("Off", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("False", StringComparison.OrdinalIgnoreCase)
-                || thinkingLevel.Equals("0", StringComparison.OrdinalIgnoreCase))
+        public static int GetAnthropicBudgetTokens(string? thinkingLevel)
+        {
+            return thinkingLevel switch
             {
-                return "Off";
-            }
+                "Minimal" or "Low" => 1024,
+                "Medium" => 5000,
+                "High" => 10000,
+                _ => 1024
+            };
+        }
 
-            return "On";
+        public static int GetGoogleThinkingBudget(string? thinkingLevel)
+        {
+            return thinkingLevel switch
+            {
+                "Minimal" => 128,
+                "Low" => 1024,
+                "Medium" => 8192,
+                "High" => 24576,
+                _ => 0
+            };
         }
     }
 }

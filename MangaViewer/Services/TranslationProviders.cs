@@ -20,24 +20,16 @@ namespace MangaViewer.Services
 
         public static bool TryParse(string? provider, out TranslationProviderKind kind)
         {
-            switch (provider)
+            kind = provider switch
             {
-                case Google:
-                    kind = TranslationProviderKind.Google;
-                    return true;
-                case OpenAI:
-                    kind = TranslationProviderKind.OpenAI;
-                    return true;
-                case Anthropic:
-                    kind = TranslationProviderKind.Anthropic;
-                    return true;
-                case Ollama:
-                    kind = TranslationProviderKind.Ollama;
-                    return true;
-                default:
-                    kind = default;
-                    return false;
-            }
+                Google => TranslationProviderKind.Google,
+                OpenAI => TranslationProviderKind.OpenAI,
+                Anthropic => TranslationProviderKind.Anthropic,
+                Ollama => TranslationProviderKind.Ollama,
+                _ => default
+            };
+
+            return provider is Google or OpenAI or Anthropic or Ollama;
         }
 
         public static string ToName(TranslationProviderKind provider)

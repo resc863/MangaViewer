@@ -40,6 +40,8 @@ namespace MangaViewer.Pages
         private ComboBox _ocrThinkingLevelCombo = null!;
         private ToggleSwitch _ocrStructuredOutputToggle = null!;
         private NumberBox _ocrOllamaTemperatureBox = null!;
+        private NumberBox _llamaServerMaxConcurrentBox = null!;
+        private ToggleSwitch _llamaServerSlotEraseToggle = null!;
         private NumberBox _hybridTextParallelBox = null!;
         private ToggleSwitch _hybridOnnxFallbackToggle = null!;
         private Button _docLayoutModelDownloadButton = null!;
@@ -126,6 +128,10 @@ namespace MangaViewer.Pages
                 _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
             if (Math.Abs(_ocrOllamaTemperatureBox.Value - _ocr.OllamaTemperature) > 0.0001)
                 _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+            if (Math.Abs(_llamaServerMaxConcurrentBox.Value - _ocr.LlamaServerMaxConcurrentRequests) > 0.001)
+                _llamaServerMaxConcurrentBox.Value = _ocr.LlamaServerMaxConcurrentRequests;
+            if (_llamaServerSlotEraseToggle.IsOn != _ocr.LlamaServerSlotEraseEnabled)
+                _llamaServerSlotEraseToggle.IsOn = _ocr.LlamaServerSlotEraseEnabled;
             if (Math.Abs(_hybridTextParallelBox.Value - _ocr.HybridTextExtractionParallelism) > 0.001)
                 _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
             if (_hybridOnnxFallbackToggle.IsOn != _ocr.HybridOnnxFallbackEnabled)
@@ -270,6 +276,41 @@ namespace MangaViewer.Pages
             };
             _ocrOllamaTemperatureBox.ValueChanged += OcrOllamaTemperatureBox_ValueChanged;
             _ollamaSettingsPanel.Children.Add(Row("Temperature:", _ocrOllamaTemperatureBox));
+
+            _llamaServerMaxConcurrentBox = new NumberBox
+            {
+                Width = 140,
+                Minimum = 1,
+                Maximum = 32,
+                SmallChange = 1,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _llamaServerMaxConcurrentBox.ValueChanged += (s, e) =>
+            {
+                if (_isInitializingSettingsUi || double.IsNaN(_llamaServerMaxConcurrentBox.Value))
+                    return;
+
+                int count = (int)Math.Clamp(Math.Round(_llamaServerMaxConcurrentBox.Value), 1, 32);
+                if (Math.Abs(_llamaServerMaxConcurrentBox.Value - count) > 0.001)
+                    _llamaServerMaxConcurrentBox.Value = count;
+
+                _ocr.SetLlamaServerMaxConcurrentRequests(count);
+            };
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.LlamaServerParallel", "llama-server request parallelism:"), _llamaServerMaxConcurrentBox));
+
+            _llamaServerSlotEraseToggle = new ToggleSwitch
+            {
+                OnContent = L("Settings.Common.Enabled", "Enabled"),
+                OffContent = L("Settings.Common.Disabled", "Disabled")
+            };
+            _llamaServerSlotEraseToggle.Toggled += (s, e) =>
+            {
+                if (_isInitializingSettingsUi)
+                    return;
+
+                _ocr.SetLlamaServerSlotEraseEnabled(_llamaServerSlotEraseToggle.IsOn);
+            };
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.LlamaServerSlotErase", "Erase llama-server slot on cancel/failure:"), _llamaServerSlotEraseToggle));
 
             _hybridTextParallelBox = new NumberBox
             {
@@ -1234,7 +1275,7 @@ namespace MangaViewer.Pages
             return p;
         }
 
-        private void SettingsPage_Loaded(object sender, RoutedEventArgs e)
+        private async void SettingsPage_Loaded(object sender, RoutedEventArgs e)
         {
             _isInitializingSettingsUi = true;
             var appLanguage = SettingsProvider.Get("AppLanguage", "auto");
@@ -1261,6 +1302,8 @@ namespace MangaViewer.Pages
             _ollamaEndpointBox.Text = _ocr.OllamaEndpoint;
             _ocrStructuredOutputToggle.IsOn = _ocr.OllamaStructuredOutputEnabled;
             _ocrOllamaTemperatureBox.Value = _ocr.OllamaTemperature;
+            _llamaServerMaxConcurrentBox.Value = _ocr.LlamaServerMaxConcurrentRequests;
+            _llamaServerSlotEraseToggle.IsOn = _ocr.LlamaServerSlotEraseEnabled;
             _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
             _hybridOnnxFallbackToggle.IsOn = _ocr.HybridOnnxFallbackEnabled;
             _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
@@ -1311,6 +1354,7 @@ namespace MangaViewer.Pages
             UpdateOllamaSettingsVisibility();
             UpdateOcrGroupingAvailability();
             RefreshCacheView();
+            await RefreshLlamaServerParallelismBoundsAsync().ConfigureAwait(true);
             _isInitializingSettingsUi = false;
         }
 
@@ -1349,19 +1393,22 @@ namespace MangaViewer.Pages
             }
         }
 
-        private void OllamaEndpointBox_LostFocus(object sender, RoutedEventArgs e)
+        private async void OllamaEndpointBox_LostFocus(object sender, RoutedEventArgs e)
         {
             var text = _ollamaEndpointBox.Text?.Trim();
             if (!string.IsNullOrWhiteSpace(text))
                 _ocr.SetOllamaEndpoint(text);
+
+            await RefreshLlamaServerParallelismBoundsAsync().ConfigureAwait(true);
         }
 
-        private void OcrOllamaModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private async void OcrOllamaModelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_ocrOllamaModelCombo.SelectedItem is ComboBoxItem item && item.Tag is string model)
                 _ocr.SetOllamaModel(model);
 
             UpdateOcrThinkingComboAvailability();
+            await RefreshLlamaServerParallelismBoundsAsync().ConfigureAwait(true);
         }
 
         private void OcrThinkingLevelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1513,6 +1560,7 @@ namespace MangaViewer.Pages
 
                 _ocrOllamaModelStatus.Text = string.Format(L("Settings.Ocr.ModelsCountVisionTool", "{0}°³ (Vision+Tool)"), models.Count);
                 UpdateOcrThinkingComboAvailability();
+                await RefreshLlamaServerParallelismBoundsAsync().ConfigureAwait(true);
             }
             catch (Exception ex)
             {
@@ -1522,6 +1570,20 @@ namespace MangaViewer.Pages
             {
                 triggerButton.IsEnabled = true;
             }
+        }
+
+        private async Task RefreshLlamaServerParallelismBoundsAsync()
+        {
+            double previousMaximum = _llamaServerMaxConcurrentBox.Maximum;
+
+            await _ocr.RefreshLlamaServerSlotLimitAsync().ConfigureAwait(true);
+
+            int maximum = _ocr.LlamaServerMaxConcurrentRequestsUpperBound;
+            _llamaServerMaxConcurrentBox.Maximum = maximum;
+
+            double desiredValue = Math.Clamp(_ocr.LlamaServerMaxConcurrentRequests, 1, maximum);
+            if (Math.Abs(_llamaServerMaxConcurrentBox.Value - desiredValue) > 0.001 || Math.Abs(previousMaximum - maximum) > 0.001)
+                _llamaServerMaxConcurrentBox.Value = desiredValue;
         }
 
         private void UpdateOllamaSettingsVisibility()
