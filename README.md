@@ -161,7 +161,7 @@ flowchart TD
     B -->|Yes| C[Merge overlapping OCR boxes by index group]
     B -->|No| D[Use page OCR text directly]
 
-    C --> E[Build JSON payload with page_text + boxes[]]
+    C --> E[Build JSON payload with page_text and box list]
     D --> F[Build plain translation prompt]
 
     E --> G[TranslationClientFactory.TryCreate]
