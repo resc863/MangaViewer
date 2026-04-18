@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using Microsoft.Extensions.AI;
 
 namespace MangaViewer.Services
@@ -17,28 +16,11 @@ namespace MangaViewer.Services
         public static bool TryCreate(TranslationSettingsService settings, out TranslationClientConfiguration? configuration)
         {
             var providerSettings = settings.GetCurrentProviderSettings();
-            configuration = providerSettings.Provider switch
-            {
-                TranslationProviderKind.Google => CreateConfiguration(
-                    providerSettings,
-                    settings.ThinkingLevel,
-                    static (snapshot, thinkingLevel) => new GoogleGenAIChatClient(snapshot.ApiKey, snapshot.Model, thinkingLevel)),
-                TranslationProviderKind.OpenAI => CreateConfiguration(
-                    providerSettings,
-                    settings.ThinkingLevel,
-                    static (snapshot, thinkingLevel) => new OpenAIChatClient(snapshot.ApiKey, snapshot.Model, thinkingLevel: thinkingLevel)),
-                TranslationProviderKind.Anthropic => CreateConfiguration(
-                    providerSettings,
-                    settings.ThinkingLevel,
-                    static (snapshot, thinkingLevel) => new AnthropicChatClient(snapshot.ApiKey, snapshot.Model, thinkingLevel)),
-                TranslationProviderKind.Ollama => CreateConfiguration(
-                    providerSettings,
-                    ThinkingLevelHelper.NormalizeOllama(settings.ThinkingLevel),
-                    static (snapshot, thinkingLevel) => new OllamaChatClient(snapshot.Endpoint, snapshot.Model, thinkingLevel)),
-                _ => null
-            };
+            var descriptor = providerSettings.Descriptor;
+            string effectiveThinkingLevel = descriptor.NormalizeThinkingLevel(settings.ThinkingLevel);
+            configuration = CreateConfiguration(providerSettings, effectiveThinkingLevel, descriptor.CreateClient);
 
-            return configuration is not null;
+            return true;
         }
 
         private static TranslationClientConfiguration CreateConfiguration(

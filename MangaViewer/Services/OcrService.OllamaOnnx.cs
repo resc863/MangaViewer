@@ -228,229 +228,584 @@ namespace MangaViewer.Services
             return normalizedText;
         }
 
-        public async Task<OllamaOcrResponse> GetOllamaOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh = false)
+        private sealed class OllamaVlmOcrBackend
         {
-            if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
+            private readonly OcrService _owner;
 
-            // VLM-only OCR cache key path.
-            // Hybrid pipeline uses a separate mode key in `GetHybridOcrAsync`.
-            string cacheKey = BuildOllamaCacheKey(imagePath, "vlm");
-            if (!forceRefresh)
+            public OllamaVlmOcrBackend(OcrService owner)
             {
-                if (TryGetCachedOcr(imagePath, "vlm", out var cached, requireCompleteHybrid: false))
-                    return cached;
+                _owner = owner;
             }
 
-            try
+            public async Task<OllamaOcrResponse> GetOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh)
             {
-                int sourceImageWidth = 0;
-                int sourceImageHeight = 0;
-                int originalImageWidth = 0;
-                int originalImageHeight = 0;
+                if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
 
-                byte[]? imageBytes = await TryGetOriginalImageBytesAndSizeAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                if (imageBytes != null && imageBytes.Length > 0)
+                string cacheKey = _owner.BuildOllamaCacheKey(imagePath, "vlm");
+                if (!forceRefresh && _owner.TryGetCachedOcr(imagePath, "vlm", out var cached, requireCompleteHybrid: false))
+                    return cached;
+
+                try
                 {
-                    var originalSize = await TryGetImageSizeAsync(imageBytes, cancellationToken).ConfigureAwait(false);
-                    sourceImageWidth = originalSize.Width;
-                    sourceImageHeight = originalSize.Height;
-                    originalImageWidth = originalSize.Width;
-                    originalImageHeight = originalSize.Height;
-                }
+                    int sourceImageWidth = 0;
+                    int sourceImageHeight = 0;
+                    int originalImageWidth = 0;
+                    int originalImageHeight = 0;
 
-                if (imageBytes == null || imageBytes.Length == 0 || sourceImageWidth <= 0 || sourceImageHeight <= 0)
-                {
-                    var bitmap = await _decoder.DecodeForOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                    if (bitmap == null) return new OllamaOcrResponse();
-
-                    sourceImageWidth = bitmap.PixelWidth;
-                    sourceImageHeight = bitmap.PixelHeight;
-
-                    var originalSize = await TryGetOriginalImageSizeFromPathAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                    if (originalSize.Width > 0 && originalSize.Height > 0)
+                    var sourceImage = await TryLoadSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                    byte[]? imageBytes = sourceImage.Bytes;
+                    sourceImageWidth = sourceImage.Width;
+                    sourceImageHeight = sourceImage.Height;
+                    originalImageWidth = sourceImage.Width;
+                    originalImageHeight = sourceImage.Height;
+                    if (imageBytes == null || imageBytes.Length == 0 || sourceImageWidth <= 0 || sourceImageHeight <= 0)
                     {
-                        originalImageWidth = originalSize.Width;
-                        originalImageHeight = originalSize.Height;
+                        var bitmap = await _owner._decoder.DecodeForOcrAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                        if (bitmap == null) return new OllamaOcrResponse();
+
+                        sourceImageWidth = bitmap.PixelWidth;
+                        sourceImageHeight = bitmap.PixelHeight;
+
+                        var originalSize = await TryGetOriginalImageSizeFromPathAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                        if (originalSize.Width > 0 && originalSize.Height > 0)
+                        {
+                            originalImageWidth = originalSize.Width;
+                            originalImageHeight = originalSize.Height;
+                        }
+                        else
+                        {
+                            originalImageWidth = sourceImageWidth;
+                            originalImageHeight = sourceImageHeight;
+                        }
+
+                        imageBytes = await EncodeSoftwareBitmapToJpegAsync(bitmap).ConfigureAwait(false);
+                        if (imageBytes == null || imageBytes.Length == 0)
+                            return new OllamaOcrResponse();
                     }
-                    else
+
+                    if (originalImageWidth <= 0 || originalImageHeight <= 0)
                     {
                         originalImageWidth = sourceImageWidth;
                         originalImageHeight = sourceImageHeight;
                     }
 
-                    imageBytes = await EncodeSoftwareBitmapToJpegAsync(bitmap).ConfigureAwait(false);
-                    if (imageBytes == null || imageBytes.Length == 0)
-                        return new OllamaOcrResponse();
-                }
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                if (originalImageWidth <= 0 || originalImageHeight <= 0)
+                    string responseText = await _owner.SendOllamaVisionOcrRequestAsync(imageBytes, sourceImageWidth, sourceImageHeight, cancellationToken).ConfigureAwait(false);
+
+                    OllamaOcrResponse result = ParseStructuredOllamaResponse(
+                        responseText,
+                        _owner.OllamaModel,
+                        sourceImageWidth,
+                        sourceImageHeight,
+                        originalImageWidth,
+                        originalImageHeight);
+
+                    var cacheableResult = CloneOllamaOcrResponse(result);
+                    lock (_owner._cacheGate)
+                    {
+                        if (ShouldReuseCachedOcrResult(cacheableResult))
+                            _owner._ollamaCache[cacheKey] = cacheableResult;
+                        else
+                            _owner._ollamaCache.Remove(cacheKey);
+                    }
+
+                    return result;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
                 {
-                    originalImageWidth = sourceImageWidth;
-                    originalImageHeight = sourceImageHeight;
+                    Log.Error(ex, "[OcrService] Ollama OCR failed");
+                    return new OllamaOcrResponse
+                    {
+                        IsSuccessful = false,
+                        StatusMessage = ex.Message
+                    };
                 }
-
-                cancellationToken.ThrowIfCancellationRequested();
-
-                string responseText = await SendOllamaVisionOcrRequestAsync(imageBytes, sourceImageWidth, sourceImageHeight, cancellationToken).ConfigureAwait(false);
-
-                OllamaOcrResponse result = ParseStructuredOllamaResponse(
-                    responseText,
-                    OllamaModel,
-                    sourceImageWidth,
-                    sourceImageHeight,
-                    originalImageWidth,
-                    originalImageHeight);
-
-                var cacheableResult = CloneOllamaOcrResponse(result);
-
-                lock (_cacheGate)
-                {
-                    if (ShouldReuseCachedOcrResult(cacheableResult))
-                        _ollamaCache[cacheKey] = cacheableResult;
-                    else
-                        _ollamaCache.Remove(cacheKey);
-                }
-
-                return result;
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
+
+            private static async Task<(byte[]? Bytes, int Width, int Height)> TryLoadSourceImageAsync(string imagePath, CancellationToken cancellationToken)
             {
-                Log.Error(ex, "[OcrService] Ollama OCR failed");
-                return new OllamaOcrResponse
+                byte[]? imageBytes = await TryGetOriginalImageBytesAndSizeAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                if (imageBytes != null && imageBytes.Length > 0)
                 {
-                    IsSuccessful = false,
-                    StatusMessage = ex.Message
-                };
+                    var originalSize = await TryGetImageSizeAsync(imageBytes, cancellationToken).ConfigureAwait(false);
+                    if (originalSize.Width > 0 && originalSize.Height > 0)
+                        return (imageBytes, originalSize.Width, originalSize.Height);
+                }
+
+                return (imageBytes, 0, 0);
             }
         }
+
+        private sealed class HybridOcrBackend
+        {
+            private readonly OcrService _owner;
+
+            public HybridOcrBackend(OcrService owner)
+            {
+                _owner = owner;
+            }
+
+            public async Task<OllamaOcrResponse> GetOcrAsync(
+                string imagePath,
+                CancellationToken cancellationToken,
+                bool forceRefresh,
+                Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady)
+            {
+                if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
+
+                string cacheKey = _owner.BuildOllamaCacheKey(imagePath, "hybrid");
+                OllamaOcrResponse? cachedHybrid = null;
+                if (!forceRefresh)
+                {
+                    if (_owner.TryGetCachedOcr(imagePath, "hybrid", out var cached, requireCompleteHybrid: false))
+                        cachedHybrid = cached;
+
+                    if (cachedHybrid != null)
+                    {
+                        onLayoutBoxesReady?.Invoke(cachedHybrid.Boxes);
+
+                        var pendingBoxes = GetIncompleteHybridTextBoxes(cachedHybrid.Boxes);
+                        if (pendingBoxes.Count == 0)
+                            return cachedHybrid;
+
+                        try
+                        {
+                            var sourceImage = await _owner.TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                            if (sourceImage.Bytes != null && sourceImage.Width > 0 && sourceImage.Height > 0)
+                            {
+                                await _owner.RecognizeLayoutBoxesWithGlmOcrAsync(
+                                    imagePath,
+                                    sourceImage.Bytes,
+                                    pendingBoxes,
+                                    cancellationToken).ConfigureAwait(false);
+                            }
+
+                            var resumed = BuildOllamaOcrResponse(cachedHybrid.Boxes);
+                            var cacheableResumed = CloneOllamaOcrResponse(resumed);
+                            lock (_owner._cacheGate)
+                            {
+                                if (ShouldReuseCachedOcrResult(cacheableResumed))
+                                    _owner._ollamaCache[cacheKey] = cacheableResumed;
+                                else
+                                    _owner._ollamaCache.Remove(cacheKey);
+                            }
+
+                            return resumed;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            Debug.WriteLine($"[OcrService][ONNX] Hybrid OCR partial retry failed. Error={ex.Message}");
+                            return cachedHybrid;
+                        }
+                    }
+                }
+
+                try
+                {
+                    var sourceImage = await _owner.TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
+                    if (sourceImage.Bytes == null || sourceImage.Width <= 0 || sourceImage.Height <= 0)
+                    {
+                        return await _owner.BuildHybridFallbackResponseAsync(
+                            imagePath,
+                            "Hybrid OCR source image unavailable",
+                            cancellationToken,
+                            forceRefresh,
+                            null).ConfigureAwait(false);
+                    }
+
+                    var layoutBoxes = await _owner.DetectLayoutWithOnnxAsync(
+                        sourceImage.Bytes,
+                        sourceImage.Width,
+                        sourceImage.Height,
+                        cancellationToken).ConfigureAwait(false);
+                    if (layoutBoxes.Count == 0)
+                    {
+                        return await _owner.BuildHybridFallbackResponseAsync(
+                            imagePath,
+                            "Hybrid OCR ONNX layout detection returned no boxes",
+                            cancellationToken,
+                            forceRefresh,
+                            null).ConfigureAwait(false);
+                    }
+
+                    var resultBoxes = BuildLayoutBoundingBoxes(layoutBoxes, sourceImage.Width, sourceImage.Height);
+                    onLayoutBoxesReady?.Invoke(resultBoxes);
+
+                    await _owner.RecognizeLayoutBoxesWithGlmOcrAsync(
+                        imagePath,
+                        sourceImage.Bytes,
+                        resultBoxes,
+                        cancellationToken).ConfigureAwait(false);
+
+                    var result = BuildOllamaOcrResponse(resultBoxes);
+                    var cacheableResult = CloneOllamaOcrResponse(result);
+
+                    lock (_owner._cacheGate)
+                    {
+                        if (ShouldReuseCachedOcrResult(cacheableResult))
+                            _owner._ollamaCache[cacheKey] = cacheableResult;
+                        else
+                            _owner._ollamaCache.Remove(cacheKey);
+                    }
+
+                    return result;
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "[OcrService] Hybrid OCR failed");
+                    return await _owner.BuildHybridFallbackResponseAsync(
+                        imagePath,
+                        "Hybrid OCR failed while executing ONNX layout detection",
+                        cancellationToken,
+                        forceRefresh,
+                        ex).ConfigureAwait(false);
+                }
+            }
+        }
+
+        private sealed class DocLayoutOnnxBackend
+        {
+            private readonly OcrService _owner;
+
+            public DocLayoutOnnxBackend(OcrService owner)
+            {
+                _owner = owner;
+            }
+
+            public async Task<List<DocLayoutBox>> DetectLayoutAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+            {
+                try
+                {
+                    return await RunPrimaryDetectionAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Primary EP layout detection failed. Retrying with CPU EP. Error={ex.Message}");
+                    return await RunCpuFallbackDetectionAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
+            public string ResolveLoadModelPath()
+            {
+                if (_owner.OnnxUseEpContextModel)
+                {
+                    string epContextPath = _owner.GetDocLayoutEpContextModelPath();
+                    if (File.Exists(epContextPath))
+                        return epContextPath;
+                }
+
+                return _owner.GetDocLayoutModelPath();
+            }
+
+            public InferenceSession? GetOrCreateSession()
+            {
+                string modelPath = ResolveLoadModelPath();
+                if (!File.Exists(modelPath))
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Model file not found. Path={modelPath}");
+                    return null;
+                }
+
+                lock (_owner._docLayoutSessionGate)
+                {
+                    if (_owner._docLayoutSession != null
+                        && string.Equals(_owner._docLayoutModelPath, modelPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Debug.WriteLine($"[OcrService][ONNX] Model already loaded. Success=True, Path={modelPath}");
+                        return _owner._docLayoutSession;
+                    }
+
+                    Debug.WriteLine($"[OcrService][ONNX] Loading model... Path={modelPath}");
+                    try
+                    {
+                        _owner._docLayoutSession?.Dispose();
+                        var sessionOptions = CreateSessionOptions();
+                        _owner._docLayoutSession = new InferenceSession(modelPath, sessionOptions);
+                        _owner._docLayoutModelPath = modelPath;
+                        _owner._docLayoutRuntimeEpLogged = false;
+                        Debug.WriteLine($"[OcrService][ONNX] Model loaded. Success=True, Inputs={_owner._docLayoutSession.InputMetadata.Count}, Outputs={_owner._docLayoutSession.OutputMetadata.Count}");
+                        return _owner._docLayoutSession;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[OcrService][ONNX] Model loaded. Success=False, Error={ex.Message}");
+                        throw;
+                    }
+                }
+            }
+
+            public void InvalidateSession()
+            {
+                lock (_owner._docLayoutSessionGate)
+                {
+                    _owner._docLayoutSession?.Dispose();
+                    _owner._docLayoutSession = null;
+                    _owner._docLayoutModelPath = null;
+                    _owner._docLayoutRuntimeEpLogged = false;
+                }
+            }
+
+            public SessionOptions CreateSessionOptions()
+            {
+                var sessionOptions = new SessionOptions
+                {
+                    GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
+                    ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
+                    EnableMemoryPattern = true,
+                    EnableCpuMemArena = true
+                };
+
+                var requestedProviders = ResolveRequestedExecutionProviders();
+                if (requestedProviders.Count > 0)
+                    Debug.WriteLine($"[OcrService][ONNX] Requested EP chain: {string.Join(" -> ", requestedProviders)}");
+                else
+                    Debug.WriteLine("[OcrService][ONNX] Requested EP chain: <none> (runtime default registration will be used)");
+
+                var appendedProviders = new List<string>();
+                foreach (string providerName in requestedProviders)
+                {
+                    Dictionary<string, string>? providerOptions = BuildExecutionProviderOptions(providerName);
+                    if (TryAppendExecutionProviderByName(sessionOptions, providerName, providerOptions))
+                        appendedProviders.Add(providerName);
+                }
+
+                if (appendedProviders.Count > 0)
+                    Debug.WriteLine($"[OcrService][ONNX] EP passed to SessionOptions: {string.Join(" -> ", appendedProviders)}");
+                else
+                    Debug.WriteLine("[OcrService][ONNX] EP append API unavailable for named providers. Using registered certified EPs.");
+
+                return sessionOptions;
+            }
+
+            public async Task<bool> CompileEpContextModelAsync(CancellationToken cancellationToken)
+            {
+                string inputModelPath = _owner.GetDocLayoutModelPath();
+                if (!File.Exists(inputModelPath))
+                {
+                    _owner.OnnxExecutionProviderStatus = "EP context compile skipped: model file not found";
+                    return false;
+                }
+
+                string outputModelPath = _owner.GetDocLayoutEpContextModelPath();
+                string? outputDirectory = Path.GetDirectoryName(outputModelPath);
+                if (!string.IsNullOrWhiteSpace(outputDirectory))
+                    Directory.CreateDirectory(outputDirectory);
+
+                await _owner.EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
+
+                bool compiledByCompileApi = false;
+                try
+                {
+                    compiledByCompileApi = TryCompileEpContextWithCompileApi(inputModelPath, outputModelPath);
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Compile API EP context generation failed: {ex.Message}");
+                }
+
+                if (!compiledByCompileApi)
+                {
+                    try
+                    {
+                        using var options = CreateSessionOptions();
+                        options.OptimizedModelFilePath = outputModelPath;
+                        using var _ = new InferenceSession(inputModelPath, options);
+                        compiledByCompileApi = File.Exists(outputModelPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[OcrService][ONNX] Optimized model fallback generation failed: {ex.Message}");
+                        compiledByCompileApi = false;
+                    }
+                }
+
+                if (!compiledByCompileApi)
+                {
+                    _owner.OnnxExecutionProviderStatus = "EP context compile failed (Compile API unavailable and optimized-model fallback failed)";
+                    return false;
+                }
+
+                InvalidateSession();
+                _owner.OnnxExecutionProviderStatus = $"EP context model ready: {Path.GetFileName(outputModelPath)}";
+                return true;
+            }
+
+            public void TryLogRuntimeExecutionProviders(InferenceSession session)
+            {
+                lock (_owner._docLayoutSessionGate)
+                {
+                    if (_owner._docLayoutRuntimeEpLogged)
+                        return;
+
+                    _owner._docLayoutRuntimeEpLogged = true;
+                }
+
+                try
+                {
+                    var method = session.GetType().GetMethod("GetExecutionProviderNames", Type.EmptyTypes);
+                    if (method?.Invoke(session, null) is IEnumerable<string> names)
+                    {
+                        string epChain = string.Join(" -> ", names.Where(n => !string.IsNullOrWhiteSpace(n)));
+                        Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain: {epChain}");
+                        return;
+                    }
+
+                    Debug.WriteLine("[OcrService][ONNX] Runtime EP execution chain: unavailable (GetExecutionProviderNames API not found)");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain logging failed: {ex.Message}");
+                }
+            }
+
+            private async Task<List<DocLayoutBox>> RunPrimaryDetectionAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+            {
+                await _owner.EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
+
+                if (_owner.OnnxUseEpContextModel
+                    && _owner.OnnxAutoCompileEpContextModel
+                    && _owner.IsDocLayoutModelInstalled()
+                    && !_owner.IsDocLayoutEpContextModelInstalled())
+                {
+                    await CompileEpContextModelAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                Debug.WriteLine($"[OcrService][ONNX] Bounding-box detection request started. InputImage={imageWidth}x{imageHeight}, Bytes={imageBytes?.Length ?? 0}");
+
+                var session = GetOrCreateSession();
+                if (session == null)
+                {
+                    Debug.WriteLine("[OcrService][ONNX] Bounding-box detection completed. Returned=False, BoxCount=0 (session unavailable)");
+                    return new List<DocLayoutBox>();
+                }
+
+                return await _owner.RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+            }
+
+            private async Task<List<DocLayoutBox>> RunCpuFallbackDetectionAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+            {
+                string modelPath = _owner.GetDocLayoutModelPath();
+                if (!File.Exists(modelPath))
+                    modelPath = ResolveLoadModelPath();
+
+                if (!File.Exists(modelPath))
+                {
+                    Debug.WriteLine($"[OcrService][ONNX] CPU fallback model file not found. Path={modelPath}");
+                    return new List<DocLayoutBox>();
+                }
+
+                using var options = CreateCpuOnlyDocLayoutSessionOptions();
+                using var session = new InferenceSession(modelPath, options);
+                Debug.WriteLine($"[OcrService][ONNX] CPU fallback session loaded. Path={modelPath}");
+                return await _owner.RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
+            }
+
+            private Dictionary<string, string>? BuildExecutionProviderOptions(string providerName)
+            {
+                if (string.IsNullOrWhiteSpace(providerName))
+                    return null;
+
+                if (!providerName.Contains("tensorrtrtx", StringComparison.OrdinalIgnoreCase))
+                    return null;
+
+                var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["enable_cuda_graph"] = _owner.OnnxTrtRtxEnableCudaGraph ? "1" : "0"
+                };
+
+                string runtimeCachePath = _owner.OnnxTrtRtxRuntimeCachePath?.Trim() ?? string.Empty;
+                if (!string.IsNullOrWhiteSpace(runtimeCachePath))
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(runtimeCachePath);
+                        options["nv_runtime_cache_path"] = runtimeCachePath;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[OcrService][ONNX] Failed to create runtime cache dir: {runtimeCachePath}, Error={ex.Message}");
+                    }
+                }
+
+                return options;
+            }
+
+            private List<string> ResolveRequestedExecutionProviders()
+            {
+                var providers = new List<string>();
+
+                if (_owner.OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual && !string.IsNullOrWhiteSpace(_owner.OnnxExecutionProviderManualList))
+                {
+                    providers.AddRange(_owner.OnnxExecutionProviderManualList
+                        .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                        .Distinct(StringComparer.OrdinalIgnoreCase));
+                    return providers;
+                }
+
+                var compatible = _owner.GetCompatibleOnnxExecutionProviders();
+                foreach (var provider in compatible)
+                {
+                    if (provider.ReadyState.Contains("Ready", StringComparison.OrdinalIgnoreCase))
+                        providers.Add(provider.Name);
+                }
+
+                return providers;
+            }
+
+            private bool TryCompileEpContextWithCompileApi(string inputModelPath, string outputModelPath)
+            {
+                var ortAssembly = typeof(InferenceSession).Assembly;
+                Type? modelCompilerType = ortAssembly.GetType("Microsoft.ML.OnnxRuntime.ModelCompiler");
+                if (modelCompilerType == null)
+                    return false;
+
+                using var options = CreateSessionOptions();
+                object? modelCompiler = null;
+                foreach (var ctor in modelCompilerType.GetConstructors())
+                {
+                    var parameters = ctor.GetParameters();
+                    if (parameters.Length == 2
+                        && parameters[0].ParameterType == typeof(SessionOptions)
+                        && parameters[1].ParameterType == typeof(string))
+                    {
+                        modelCompiler = ctor.Invoke(new object[] { options, inputModelPath });
+                        break;
+                    }
+                }
+
+                if (modelCompiler == null)
+                    return false;
+
+                var compileToFileMethod = modelCompilerType.GetMethod("CompileToFile", new[] { typeof(string) })
+                    ?? modelCompilerType.GetMethod("Compile", new[] { typeof(string) });
+                if (compileToFileMethod == null)
+                    return false;
+
+                compileToFileMethod.Invoke(modelCompiler, new object[] { outputModelPath });
+                return File.Exists(outputModelPath);
+            }
+        }
+
+        public async Task<OllamaOcrResponse> GetOllamaOcrAsync(string imagePath, CancellationToken cancellationToken, bool forceRefresh = false)
+            => await _ollamaVlmBackend.GetOcrAsync(imagePath, cancellationToken, forceRefresh).ConfigureAwait(false);
 
         public async Task<OllamaOcrResponse> GetHybridOcrAsync(
             string imagePath,
             CancellationToken cancellationToken,
             bool forceRefresh = false,
             Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady = null)
-        {
-            if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
-
-            // Hybrid OCR pipeline
-            // 1) ONNX DocLayout detects reading regions on the original image.
-            // 2) Regions are projected into `BoundingBoxViewModel` for immediate UI layout preview.
-            // 3) Each region is cropped losslessly and recognized by GLM OCR in parallel (throttled).
-            // 4) Final text/boxes are composed and cached.
-            string cacheKey = BuildOllamaCacheKey(imagePath, "hybrid");
-            OllamaOcrResponse? cachedHybrid = null;
-            if (!forceRefresh)
-            {
-                if (TryGetCachedOcr(imagePath, "hybrid", out var cached, requireCompleteHybrid: false))
-                    cachedHybrid = cached;
-
-                if (cachedHybrid != null)
-                {
-                    onLayoutBoxesReady?.Invoke(cachedHybrid.Boxes);
-
-                    var pendingBoxes = GetIncompleteHybridTextBoxes(cachedHybrid.Boxes);
-                    if (pendingBoxes.Count == 0)
-                        return cachedHybrid;
-
-                    try
-                    {
-                        var sourceImage = await TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                        if (sourceImage.Bytes != null && sourceImage.Width > 0 && sourceImage.Height > 0)
-                        {
-                            await RecognizeLayoutBoxesWithGlmOcrAsync(
-                                imagePath,
-                                sourceImage.Bytes,
-                                pendingBoxes,
-                                cancellationToken).ConfigureAwait(false);
-                        }
-
-                        var resumed = BuildOllamaOcrResponse(cachedHybrid.Boxes);
-                        var cacheableResumed = CloneOllamaOcrResponse(resumed);
-                        lock (_cacheGate)
-                        {
-                            if (ShouldReuseCachedOcrResult(cacheableResumed))
-                                _ollamaCache[cacheKey] = cacheableResumed;
-                            else
-                                _ollamaCache.Remove(cacheKey);
-                        }
-
-                        return resumed;
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.WriteLine($"[OcrService][ONNX] Hybrid OCR partial retry failed. Error={ex.Message}");
-                        return cachedHybrid;
-                    }
-                }
-            }
-
-            try
-            {
-                var sourceImage = await TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                if (sourceImage.Bytes == null || sourceImage.Width <= 0 || sourceImage.Height <= 0)
-                {
-                    return await BuildHybridFallbackResponseAsync(
-                        imagePath,
-                        "Hybrid OCR source image unavailable",
-                        cancellationToken,
-                        forceRefresh,
-                        null).ConfigureAwait(false);
-                }
-
-                var layoutBoxes = await DetectLayoutWithOnnxAsync(
-                    sourceImage.Bytes,
-                    sourceImage.Width,
-                    sourceImage.Height,
-                    cancellationToken).ConfigureAwait(false);
-                if (layoutBoxes.Count == 0)
-                {
-                    return await BuildHybridFallbackResponseAsync(
-                        imagePath,
-                        "Hybrid OCR ONNX layout detection returned no boxes",
-                        cancellationToken,
-                        forceRefresh,
-                        null).ConfigureAwait(false);
-                }
-
-                var resultBoxes = BuildLayoutBoundingBoxes(layoutBoxes, sourceImage.Width, sourceImage.Height);
-                onLayoutBoxesReady?.Invoke(resultBoxes);
-
-                await RecognizeLayoutBoxesWithGlmOcrAsync(
-                    imagePath,
-                    sourceImage.Bytes,
-                    resultBoxes,
-                    cancellationToken).ConfigureAwait(false);
-
-                var result = BuildOllamaOcrResponse(resultBoxes);
-                var cacheableResult = CloneOllamaOcrResponse(result);
-
-                lock (_cacheGate)
-                {
-                    if (ShouldReuseCachedOcrResult(cacheableResult))
-                        _ollamaCache[cacheKey] = cacheableResult;
-                    else
-                        _ollamaCache.Remove(cacheKey);
-                }
-
-                return result;
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "[OcrService] Hybrid OCR failed");
-                return await BuildHybridFallbackResponseAsync(
-                    imagePath,
-                    "Hybrid OCR failed while executing ONNX layout detection",
-                    cancellationToken,
-                    forceRefresh,
-                    ex).ConfigureAwait(false);
-            }
-        }
+            => await _hybridOcrBackend.GetOcrAsync(imagePath, cancellationToken, forceRefresh, onLayoutBoxesReady).ConfigureAwait(false);
 
         private async Task<OllamaOcrResponse> BuildHybridFallbackResponseAsync(
             string imagePath,
@@ -513,21 +868,7 @@ namespace MangaViewer.Services
         }
 
         private async Task<List<DocLayoutBox>> DetectLayoutWithOnnxAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
-        {
-            try
-            {
-                return await RunDocLayoutDetectionAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[OcrService][ONNX] Primary EP layout detection failed. Retrying with CPU EP. Error={ex.Message}");
-                return await RunDocLayoutDetectionWithCpuFallbackAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
-            }
-        }
+            => await _docLayoutOnnxBackend.DetectLayoutAsync(imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
 
         private static List<BoundingBoxViewModel> BuildLayoutBoundingBoxes(
             IReadOnlyList<DocLayoutBox> layoutBoxes,
@@ -601,48 +942,6 @@ namespace MangaViewer.Services
                 Boxes = resultBoxes,
                 IsSuccessful = true
             };
-        }
-
-        private async Task<List<DocLayoutBox>> RunDocLayoutDetectionAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
-        {
-            await EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
-
-            if (OnnxUseEpContextModel
-                && OnnxAutoCompileEpContextModel
-                && IsDocLayoutModelInstalled()
-                && !IsDocLayoutEpContextModelInstalled())
-            {
-                await CompileDocLayoutEpContextModelAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            Debug.WriteLine($"[OcrService][ONNX] Bounding-box detection request started. InputImage={imageWidth}x{imageHeight}, Bytes={imageBytes?.Length ?? 0}");
-
-            var session = GetOrCreateDocLayoutSession();
-            if (session == null)
-            {
-                Debug.WriteLine("[OcrService][ONNX] Bounding-box detection completed. Returned=False, BoxCount=0 (session unavailable)");
-                return new List<DocLayoutBox>();
-            }
-
-            return await RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
-        }
-
-        private async Task<List<DocLayoutBox>> RunDocLayoutDetectionWithCpuFallbackAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
-        {
-            string modelPath = GetDocLayoutModelPath();
-            if (!File.Exists(modelPath))
-                modelPath = ResolveDocLayoutLoadModelPath();
-
-            if (!File.Exists(modelPath))
-            {
-                Debug.WriteLine($"[OcrService][ONNX] CPU fallback model file not found. Path={modelPath}");
-                return new List<DocLayoutBox>();
-            }
-
-            using var options = CreateCpuOnlyDocLayoutSessionOptions();
-            using var session = new InferenceSession(modelPath, options);
-            Debug.WriteLine($"[OcrService][ONNX] CPU fallback session loaded. Path={modelPath}");
-            return await RunDocLayoutDetectionCoreAsync(session, imageBytes, imageWidth, imageHeight, cancellationToken).ConfigureAwait(false);
         }
 
         private static SessionOptions CreateCpuOnlyDocLayoutSessionOptions()
@@ -835,140 +1134,8 @@ namespace MangaViewer.Services
                 ?? "scale_factor";
         }
 
-        private InferenceSession? GetOrCreateDocLayoutSession()
-        {
-            string modelPath = ResolveDocLayoutLoadModelPath();
-            if (!File.Exists(modelPath))
-            {
-                Debug.WriteLine($"[OcrService][ONNX] Model file not found. Path={modelPath}");
-                return null;
-            }
-
-            lock (_docLayoutSessionGate)
-            {
-                if (_docLayoutSession != null
-                    && string.Equals(_docLayoutModelPath, modelPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    Debug.WriteLine($"[OcrService][ONNX] Model already loaded. Success=True, Path={modelPath}");
-                    return _docLayoutSession;
-                }
-
-                Debug.WriteLine($"[OcrService][ONNX] Loading model... Path={modelPath}");
-                try
-                {
-                    _docLayoutSession?.Dispose();
-                    var sessionOptions = CreateDocLayoutSessionOptions();
-                    _docLayoutSession = new InferenceSession(modelPath, sessionOptions);
-                    _docLayoutModelPath = modelPath;
-                    _docLayoutRuntimeEpLogged = false;
-                    Debug.WriteLine($"[OcrService][ONNX] Model loaded. Success=True, Inputs={_docLayoutSession.InputMetadata.Count}, Outputs={_docLayoutSession.OutputMetadata.Count}");
-                    return _docLayoutSession;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[OcrService][ONNX] Model loaded. Success=False, Error={ex.Message}");
-                    throw;
-                }
-            }
-        }
-
         private void InvalidateDocLayoutSession()
-        {
-            lock (_docLayoutSessionGate)
-            {
-                _docLayoutSession?.Dispose();
-                _docLayoutSession = null;
-                _docLayoutModelPath = null;
-                _docLayoutRuntimeEpLogged = false;
-            }
-        }
-
-        private SessionOptions CreateDocLayoutSessionOptions()
-        {
-            var sessionOptions = new SessionOptions();
-
-            sessionOptions.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
-            sessionOptions.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
-            sessionOptions.EnableMemoryPattern = true;
-            sessionOptions.EnableCpuMemArena = true;
-
-            var requestedProviders = ResolveRequestedExecutionProviders();
-            if (requestedProviders.Count > 0)
-            {
-                Debug.WriteLine($"[OcrService][ONNX] Requested EP chain: {string.Join(" -> ", requestedProviders)}");
-            }
-            else
-            {
-                Debug.WriteLine("[OcrService][ONNX] Requested EP chain: <none> (runtime default registration will be used)");
-            }
-
-            var appendedProviders = new List<string>();
-            foreach (string providerName in requestedProviders)
-            {
-                Dictionary<string, string>? providerOptions = BuildExecutionProviderOptions(providerName);
-                if (TryAppendExecutionProviderByName(sessionOptions, providerName, providerOptions))
-                    appendedProviders.Add(providerName);
-            }
-
-            if (appendedProviders.Count > 0)
-                Debug.WriteLine($"[OcrService][ONNX] EP passed to SessionOptions: {string.Join(" -> ", appendedProviders)}");
-            else
-                Debug.WriteLine("[OcrService][ONNX] EP append API unavailable for named providers. Using registered certified EPs.");
-
-            return sessionOptions;
-        }
-
-        private Dictionary<string, string>? BuildExecutionProviderOptions(string providerName)
-        {
-            if (string.IsNullOrWhiteSpace(providerName))
-                return null;
-
-            if (!providerName.Contains("tensorrtrtx", StringComparison.OrdinalIgnoreCase))
-                return null;
-
-            var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["enable_cuda_graph"] = OnnxTrtRtxEnableCudaGraph ? "1" : "0"
-            };
-
-            string runtimeCachePath = OnnxTrtRtxRuntimeCachePath?.Trim() ?? string.Empty;
-            if (!string.IsNullOrWhiteSpace(runtimeCachePath))
-            {
-                try
-                {
-                    Directory.CreateDirectory(runtimeCachePath);
-                    options["nv_runtime_cache_path"] = runtimeCachePath;
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[OcrService][ONNX] Failed to create runtime cache dir: {runtimeCachePath}, Error={ex.Message}");
-                }
-            }
-
-            return options;
-        }
-
-        private List<string> ResolveRequestedExecutionProviders()
-        {
-            var providers = new List<string>();
-
-            if (OnnxExecutionProviderMode == OnnxEpRegistrationMode.Manual && !string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
-            {
-                providers.AddRange(OnnxExecutionProviderManualList
-                    .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                    .Distinct(StringComparer.OrdinalIgnoreCase));
-                return providers;
-            }
-
-            var compatible = GetCompatibleOnnxExecutionProviders();
-            foreach (var provider in compatible)
-            {
-                if (provider.ReadyState.Contains("Ready", StringComparison.OrdinalIgnoreCase))
-                    providers.Add(provider.Name);
-            }
-
-            return providers;
-        }
+            => _docLayoutOnnxBackend.InvalidateSession();
 
         private static bool TryAppendExecutionProviderByName(SessionOptions sessionOptions, string providerName, IReadOnlyDictionary<string, string>? providerOptions)
         {
@@ -1056,131 +1223,11 @@ namespace MangaViewer.Services
             return null;
         }
 
-        private string ResolveDocLayoutLoadModelPath()
-        {
-            if (OnnxUseEpContextModel)
-            {
-                string epContextPath = GetDocLayoutEpContextModelPath();
-                if (File.Exists(epContextPath))
-                    return epContextPath;
-            }
-
-            return GetDocLayoutModelPath();
-        }
-
         public async Task<bool> CompileDocLayoutEpContextModelAsync(CancellationToken cancellationToken)
-        {
-            string inputModelPath = GetDocLayoutModelPath();
-            if (!File.Exists(inputModelPath))
-            {
-                OnnxExecutionProviderStatus = "EP context compile skipped: model file not found";
-                return false;
-            }
-
-            string outputModelPath = GetDocLayoutEpContextModelPath();
-            string? outputDirectory = Path.GetDirectoryName(outputModelPath);
-            if (!string.IsNullOrWhiteSpace(outputDirectory))
-                Directory.CreateDirectory(outputDirectory);
-
-            await EnsureOnnxExecutionProvidersReadyAsync(cancellationToken, force: false).ConfigureAwait(false);
-
-            bool compiledByCompileApi = false;
-            try
-            {
-                compiledByCompileApi = TryCompileDocLayoutEpContextWithCompileApi(inputModelPath, outputModelPath);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[OcrService][ONNX] Compile API EP context generation failed: {ex.Message}");
-            }
-
-            if (!compiledByCompileApi)
-            {
-                try
-                {
-                    using var options = CreateDocLayoutSessionOptions();
-                    options.OptimizedModelFilePath = outputModelPath;
-                    using var _ = new InferenceSession(inputModelPath, options);
-                    compiledByCompileApi = File.Exists(outputModelPath);
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[OcrService][ONNX] Optimized model fallback generation failed: {ex.Message}");
-                    compiledByCompileApi = false;
-                }
-            }
-
-            if (!compiledByCompileApi)
-            {
-                OnnxExecutionProviderStatus = "EP context compile failed (Compile API unavailable and optimized-model fallback failed)";
-                return false;
-            }
-
-            InvalidateDocLayoutSession();
-            OnnxExecutionProviderStatus = $"EP context model ready: {Path.GetFileName(outputModelPath)}";
-            return true;
-        }
-
-        private bool TryCompileDocLayoutEpContextWithCompileApi(string inputModelPath, string outputModelPath)
-        {
-            var ortAssembly = typeof(InferenceSession).Assembly;
-            Type? modelCompilerType = ortAssembly.GetType("Microsoft.ML.OnnxRuntime.ModelCompiler");
-            if (modelCompilerType == null)
-                return false;
-
-            using var options = CreateDocLayoutSessionOptions();
-            object? modelCompiler = null;
-            foreach (var ctor in modelCompilerType.GetConstructors())
-            {
-                var parameters = ctor.GetParameters();
-                if (parameters.Length == 2
-                    && parameters[0].ParameterType == typeof(SessionOptions)
-                    && parameters[1].ParameterType == typeof(string))
-                {
-                    modelCompiler = ctor.Invoke(new object[] { options, inputModelPath });
-                    break;
-                }
-            }
-
-            if (modelCompiler == null)
-                return false;
-
-            var compileToFileMethod = modelCompilerType.GetMethod("CompileToFile", new[] { typeof(string) })
-                ?? modelCompilerType.GetMethod("Compile", new[] { typeof(string) });
-            if (compileToFileMethod == null)
-                return false;
-
-            compileToFileMethod.Invoke(modelCompiler, new object[] { outputModelPath });
-            return File.Exists(outputModelPath);
-        }
+            => await _docLayoutOnnxBackend.CompileEpContextModelAsync(cancellationToken).ConfigureAwait(false);
 
         private void TryLogDocLayoutRuntimeExecutionProviders(InferenceSession session)
-        {
-            lock (_docLayoutSessionGate)
-            {
-                if (_docLayoutRuntimeEpLogged)
-                    return;
-
-                _docLayoutRuntimeEpLogged = true;
-            }
-
-            try
-            {
-                var method = session.GetType().GetMethod("GetExecutionProviderNames", Type.EmptyTypes);
-                if (method?.Invoke(session, null) is IEnumerable<string> names)
-                {
-                    string epChain = string.Join(" -> ", names.Where(n => !string.IsNullOrWhiteSpace(n)));
-                    Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain: {epChain}");
-                    return;
-                }
-
-                Debug.WriteLine("[OcrService][ONNX] Runtime EP execution chain: unavailable (GetExecutionProviderNames API not found)");
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain logging failed: {ex.Message}");
-            }
-        }
+            => _docLayoutOnnxBackend.TryLogRuntimeExecutionProviders(session);
 
         private static async Task<byte[]?> EncodeCropToLosslessAsync(byte[] imageBytes, Rect cropRect, CancellationToken cancellationToken)
         {
@@ -1249,30 +1296,15 @@ namespace MangaViewer.Services
 
         private async Task<string> SendOllamaCropOcrRequestAsync(byte[] imageBytes, CancellationToken cancellationToken)
         {
-            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var activeRequest = RegisterActiveOcrRequest(requestCts);
-
-            try
+            return await ExecuteWithActiveOcrRequestAsync(cancellationToken, async (requestToken, activeRequest) =>
             {
-                string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
-                LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, requestCts.Token).ConfigureAwait(false);
-                await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, endpoint, OllamaModel, requestCts.Token).ConfigureAwait(false);
-                bool thinkEnabled = false;
-                object? think = null;
-                try
-                {
-                    OllamaModelCapabilities capabilities = await GetOllamaModelCapabilitiesAsync(OllamaModel, requestCts.Token).ConfigureAwait(false);
-                    if (capabilities.Thinking)
-                    {
-                        thinkEnabled = BuildThinkParameter(OllamaThinkingLevel);
-                        think = thinkEnabled;
-                    }
-                }
-                catch
-                {
-                }
+                var prepared = await PrepareOllamaChatRequestAsync(requestToken).ConfigureAwait(false);
+                string endpoint = prepared.Endpoint;
+                LlmApiFlavor flavor = prepared.Flavor;
+                bool thinkEnabled = prepared.ThinkEnabled;
+                object? think = prepared.Think;
 
-                string cropPrompt = BuildHybridCropOcrPrompt(OllamaModel);
+                string cropPrompt = OllamaOcrProtocol.BuildHybridCropPrompt(OllamaModel);
 
                 if (flavor == LlmApiFlavor.OpenAiCompatible)
                 {
@@ -1282,15 +1314,11 @@ namespace MangaViewer.Services
                         cropPrompt,
                         imageBytes,
                         thinkEnabled,
-                        requestCts.Token).ConfigureAwait(false);
+                        activeRequest,
+                        requestToken).ConfigureAwait(false);
                 }
 
-                var message = new Dictionary<string, object?>
-                {
-                    ["role"] = "user",
-                    ["content"] = cropPrompt,
-                    ["images"] = new[] { Convert.ToBase64String(imageBytes) }
-                };
+                var message = BuildOllamaVisionMessage(cropPrompt, imageBytes);
 
                 var payload = new Dictionary<string, object?>
                 {
@@ -1307,31 +1335,15 @@ namespace MangaViewer.Services
                 if (think != null)
                     payload["think"] = think;
 
-                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-                };
-
-                using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
-                    thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                return await ExecuteNativeOllamaChatRequestAsync(
+                    endpoint,
+                    payload,
                     thinkEnabled,
-                    requestCts.Token).ConfigureAwait(false);
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(requestCts.Token);
-                timeoutCts.CancelAfter(requestLease.EffectiveTimeout < HybridCropRequestTimeout
-                    ? requestLease.EffectiveTimeout
-                    : HybridCropRequestTimeout);
-
-                using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-
-                using var doc = JsonDocument.Parse(json);
-                return NormalizeHybridCropOcrText(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
-            }
-            finally
-            {
-                UnregisterActiveOcrRequest(activeRequest);
-            }
+                    HybridCropRequestTimeout,
+                    "[OcrService][HybridCrop]",
+                    NormalizeHybridCropOcrText,
+                    requestToken).ConfigureAwait(false);
+            }).ConfigureAwait(false);
         }
 
         private static string BuildHybridCropOcrPrompt(string? modelName)
@@ -1511,67 +1523,188 @@ If no readable text exists, return an empty string.";
             return text[..maxLength] + " ... (truncated)";
         }
 
-        private async Task<string> SendOllamaVisionOcrRequestAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+        private async Task<T> ExecuteWithActiveOcrRequestAsync<T>(
+            CancellationToken cancellationToken,
+            Func<CancellationToken, ActiveOcrRequest, Task<T>> action)
         {
             using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var activeRequest = RegisterActiveOcrRequest(requestCts);
 
             try
             {
-                string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
-                LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, requestCts.Token).ConfigureAwait(false);
-                await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, endpoint, OllamaModel, requestCts.Token).ConfigureAwait(false);
-                OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(OllamaModel);
-                bool isQwenFamilyModel = modelFamily == OllamaVisionModelFamily.Qwen;
-                bool isGemmaFamilyModel = modelFamily == OllamaVisionModelFamily.Gemma;
-                object? think = null;
-                bool thinkEnabled = false;
-                OllamaModelCapabilities capabilities;
-                try
-                {
-                    capabilities = await GetOllamaModelCapabilitiesAsync(OllamaModel, requestCts.Token).ConfigureAwait(false);
-                }
-                catch
-                {
-                    capabilities = new OllamaModelCapabilities { Vision = true, Tools = true, Thinking = false };
-                }
+                return await action(requestCts.Token, activeRequest).ConfigureAwait(false);
+            }
+            finally
+            {
+                UnregisterActiveOcrRequest(activeRequest);
+            }
+        }
 
+        private async Task<(string Endpoint, LlmApiFlavor Flavor, bool ThinkEnabled, object? Think)> PrepareOllamaChatRequestAsync(CancellationToken cancellationToken)
+        {
+            string endpoint = LlmEndpointCompatibility.NormalizeEndpoint(OllamaEndpoint);
+            LlmApiFlavor flavor = await LlmEndpointCompatibility.DetectApiFlavorAsync(s_httpClient, endpoint, cancellationToken).ConfigureAwait(false);
+            await LlmEndpointCompatibility.EnsureModelLoadedAsync(s_httpClient, endpoint, OllamaModel, cancellationToken).ConfigureAwait(false);
+
+            bool thinkEnabled = false;
+            object? think = null;
+            try
+            {
+                OllamaModelCapabilities capabilities = await GetOllamaModelCapabilitiesAsync(OllamaModel, cancellationToken).ConfigureAwait(false);
                 if (capabilities.Thinking)
                 {
                     thinkEnabled = BuildThinkParameter(OllamaThinkingLevel);
                     think = thinkEnabled;
                 }
+            }
+            catch
+            {
+            }
 
-                string thinkInstruction = thinkEnabled
-                    ? "Think briefly and answer quickly. Keep internal reasoning minimal and do not include it in the output."
-                    : string.Empty;
-                string structuredInstruction;
-                if (isQwenFamilyModel)
+            return (endpoint, flavor, thinkEnabled, think);
+        }
+
+        private static Dictionary<string, object?> BuildOllamaVisionMessage(string prompt, byte[] imageBytes)
+        {
+            return new Dictionary<string, object?>
+            {
+                ["role"] = "user",
+                ["content"] = prompt,
+                ["images"] = new[] { Convert.ToBase64String(imageBytes) }
+            };
+        }
+
+        private static object[] BuildOpenAiCompatibleImageContent(string prompt, byte[] imageBytes, string mimeType)
+        {
+            return
+            [
+                new Dictionary<string, object?>
                 {
-                    structuredInstruction = @"Return JSON only.
-Use a simple shape like { ""result"": [ { ""text_content"": ""..."", ""bbox_2d"": [ymin, xmin, ymax, xmax] } ] }.
-Include OCR text and location information in reading order.";
+                    ["type"] = "text",
+                    ["text"] = prompt
+                },
+                new Dictionary<string, object?>
+                {
+                    ["type"] = "image_url",
+                    ["image_url"] = new Dictionary<string, object?>
+                    {
+                        ["url"] = $"data:{mimeType};base64,{Convert.ToBase64String(imageBytes)}"
+                    }
                 }
-                else if (isGemmaFamilyModel)
+            ];
+        }
+
+        private async Task<string> ExecuteOpenAiCompatibleChatRequestAsync(
+            string endpoint,
+            Dictionary<string, object?> payload,
+            bool thinkEnabled,
+            TimeSpan maxTimeout,
+            string requestLogPrefix,
+            Func<string?, string> normalizeContent,
+            ActiveOcrRequest activeRequest,
+            CancellationToken cancellationToken)
+        {
+            LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkEnabled);
+
+            using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled,
+                cancellationToken).ConfigureAwait(false);
+            payload["cache_prompt"] = false;
+            bool useManagedSlots = requestLease.SlotId >= 0
+                && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel);
+            if (useManagedSlots && requestLease.SlotEraseEnabled)
+                useManagedSlots = await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
+
+            if (useManagedSlots)
+            {
+                ConfigureActiveOcrRequestSlotClear(activeRequest, endpoint, requestLease);
+                payload["id_slot"] = requestLease.SlotId;
+            }
+
+            string payloadJson = JsonSerializer.Serialize(payload);
+            Debug.WriteLine($"{requestLogPrefix} Request JSON: {TruncateForDebug(payloadJson)}");
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
+            {
+                Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
+            };
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout < maxTimeout ? requestLease.EffectiveTimeout : maxTimeout);
+
+            try
+            {
+                using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+                response.EnsureSuccessStatusCode();
+                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+                using var doc = JsonDocument.Parse(json);
+                string finalContent = normalizeContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
+                Debug.WriteLine($"{requestLogPrefix} Final content: {TruncateForDebug(finalContent)}");
+                return finalContent;
+            }
+            catch
+            {
+                if (requestLease.SlotEraseEnabled
+                    && requestLease.SlotId >= 0
+                    && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel))
                 {
-                    structuredInstruction = @"Recognize text and return JSON with bounding boxes.
-Use a simple shape like { ""result"": [ { ""label"": ""..."", ""box_2d"": [ymin, xmin, ymax, xmax] } ] }.";
-                }
-                else
-                {
-                    structuredInstruction = @"Include OCR text and location information when available.
-When returning box coordinates, use [ymin, xmin, ymax, xmax].
-Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge x=1000, bottom edge y=1000.";
+                    await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
                 }
 
-                string contentFilterInstruction = "Include only dialogue or narration text that should be read by the user. Exclude non-dialogue text such as sound effects, onomatopoeia, decorative background text, and UI/watermark text.";
-                string speechBubbleInstruction = "If dialogue is inside a speech bubble, set bounding box to the full speech bubble area (bubble boundary), not just the tight text glyph bounds.";
+                throw;
+            }
+        }
 
-                string prompt = $@"Extract only dialogue/narration text in speech bubble from the image.
-{structuredInstruction}
-{contentFilterInstruction}
-{speechBubbleInstruction}
-{thinkInstruction}";
+        private async Task<string> ExecuteNativeOllamaChatRequestAsync(
+            string endpoint,
+            Dictionary<string, object?> payload,
+            bool thinkEnabled,
+            TimeSpan maxTimeout,
+            string requestLogPrefix,
+            Func<string?, string> normalizeContent,
+            CancellationToken cancellationToken,
+            bool logResponseReceived = false)
+        {
+            string payloadJson = JsonSerializer.Serialize(payload);
+            Debug.WriteLine($"{requestLogPrefix} Request JSON: {TruncateForDebug(payloadJson)}");
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
+            {
+                Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
+            };
+
+            using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
+                thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                thinkEnabled,
+                cancellationToken).ConfigureAwait(false);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(requestLease.EffectiveTimeout < maxTimeout ? requestLease.EffectiveTimeout : maxTimeout);
+
+            using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
+
+            if (logResponseReceived)
+                Debug.WriteLine($"{requestLogPrefix} Response JSON received.");
+
+            using var doc = JsonDocument.Parse(json);
+            string finalContent = normalizeContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
+            Debug.WriteLine($"{requestLogPrefix} Final content: {TruncateForDebug(finalContent)}");
+            return finalContent;
+        }
+
+        private async Task<string> SendOllamaVisionOcrRequestAsync(byte[] imageBytes, int imageWidth, int imageHeight, CancellationToken cancellationToken)
+        {
+            return await ExecuteWithActiveOcrRequestAsync(cancellationToken, async (requestToken, activeRequest) =>
+            {
+                var prepared = await PrepareOllamaChatRequestAsync(requestToken).ConfigureAwait(false);
+                string endpoint = prepared.Endpoint;
+                LlmApiFlavor flavor = prepared.Flavor;
+                object? think = prepared.Think;
+                bool thinkEnabled = prepared.ThinkEnabled;
+                var promptDefinition = OllamaOcrProtocol.BuildVisionPrompt(OllamaModel, thinkEnabled);
+                string prompt = promptDefinition.Prompt;
 
                 if (flavor == LlmApiFlavor.OpenAiCompatible)
                 {
@@ -1580,16 +1713,12 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                         prompt,
                         imageBytes,
                         thinkEnabled,
-                        isQwenFamilyModel || isGemmaFamilyModel,
-                        requestCts.Token).ConfigureAwait(false);
+                        promptDefinition.UseSchemaResponse,
+                        activeRequest,
+                        requestToken).ConfigureAwait(false);
                 }
 
-                var message = new Dictionary<string, object?>
-                {
-                    ["role"] = "user",
-                    ["content"] = prompt,
-                    ["images"] = new[] { Convert.ToBase64String(imageBytes) }
-                };
+                var message = BuildOllamaVisionMessage(prompt, imageBytes);
 
                 var payload = new Dictionary<string, object?>
                 {
@@ -1598,8 +1727,8 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                     ["messages"] = new[] { message }
                 };
 
-                payload["format"] = (isQwenFamilyModel || isGemmaFamilyModel)
-                    ? BuildOcrJsonSchema()
+                payload["format"] = promptDefinition.UseSchemaResponse
+                    ? OllamaOcrProtocol.BuildOcrJsonSchema()
                     : "json";
                 payload["options"] = new Dictionary<string, object?>
                 {
@@ -1610,36 +1739,16 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                 if (think != null)
                     payload["think"] = think;
 
-                string payloadJson = JsonSerializer.Serialize(payload);
-                Debug.WriteLine($"[OcrService][Ollama] Request JSON: {TruncateForDebug(payloadJson)}");
-
-                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
-                {
-                    Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
-                };
-
-                using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
-                    thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
+                return await ExecuteNativeOllamaChatRequestAsync(
+                    endpoint,
+                    payload,
                     thinkEnabled,
-                    requestCts.Token).ConfigureAwait(false);
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(requestCts.Token);
-                timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
-
-                using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
-                string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-
-                Debug.WriteLine("[OcrService][Ollama] Response JSON received.");
-
-                using var doc = JsonDocument.Parse(json);
-                string finalResponse = StripThinkingContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
-                Debug.WriteLine($"[OcrService][Ollama] Final content: {TruncateForDebug(finalResponse)}");
-                return finalResponse;
-            }
-            finally
-            {
-                UnregisterActiveOcrRequest(activeRequest);
-            }
+                    OllamaThinkingRequestTimeout,
+                    "[OcrService][Ollama]",
+                    OllamaOcrProtocol.StripThinkingContent,
+                    requestToken,
+                    logResponseReceived: true).ConfigureAwait(false);
+            }).ConfigureAwait(false);
         }
 
         private async Task<OllamaModelCapabilities> GetOllamaModelCapabilitiesAsync(string model, CancellationToken cancellationToken)
@@ -1766,100 +1875,34 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             string prompt,
             byte[] imageBytes,
             bool thinkEnabled,
+            ActiveOcrRequest activeRequest,
             CancellationToken cancellationToken)
         {
-            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var activeRequest = RegisterActiveOcrRequest(requestCts);
-
-            try
+            var payload = new Dictionary<string, object?>
             {
-                var payload = new Dictionary<string, object?>
+                ["model"] = OllamaModel,
+                ["stream"] = false,
+                ["temperature"] = 0.0,
+                ["messages"] = new object[]
                 {
-                    ["model"] = OllamaModel,
-                    ["stream"] = false,
-                    ["temperature"] = 0.0,
-                    ["messages"] = new object[]
+                    new Dictionary<string, object?>
                     {
-                        new Dictionary<string, object?>
-                        {
-                            ["role"] = "user",
-                            ["content"] = new object[]
-                            {
-                                new Dictionary<string, object?>
-                                {
-                                    ["type"] = "text",
-                                    ["text"] = prompt
-                                },
-                                new Dictionary<string, object?>
-                                {
-                                    ["type"] = "image_url",
-                                    ["image_url"] = new Dictionary<string, object?>
-                                    {
-                                        ["url"] = $"data:image/png;base64,{Convert.ToBase64String(imageBytes)}"
-                                    }
-                                }
-                            }
-                        }
+                        ["role"] = "user",
+                        ["content"] = BuildOpenAiCompatibleImageContent(prompt, imageBytes, "image/png")
                     }
-                };
-
-                LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkEnabled);
-
-                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
-                };
-
-                Debug.WriteLine($"[OcrService][HybridCrop] OpenAI-compatible crop request. Model={OllamaModel}, Prompt={prompt}");
-
-                using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
-                    thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
-                    thinkEnabled,
-                    requestCts.Token).ConfigureAwait(false);
-                payload["cache_prompt"] = false;
-                bool useManagedSlots = requestLease.SlotId >= 0
-                    && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel);
-                if (useManagedSlots && requestLease.SlotEraseEnabled)
-                    useManagedSlots = await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
-
-                if (useManagedSlots)
-                {
-                    ConfigureActiveOcrRequestSlotClear(activeRequest, endpoint, requestLease);
-                    payload["id_slot"] = requestLease.SlotId;
                 }
+            };
 
-                request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(requestCts.Token);
-                timeoutCts.CancelAfter(requestLease.EffectiveTimeout < HybridCropRequestTimeout
-                    ? requestLease.EffectiveTimeout
-                    : HybridCropRequestTimeout);
-
-                try
-                {
-                    using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
-                    string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-                    using var doc = JsonDocument.Parse(json);
-                    string finalText = NormalizeHybridCropOcrText(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
-                    Debug.WriteLine($"[OcrService][HybridCrop] OpenAI-compatible crop response. Text={TruncateForDebug(finalText)}");
-                    return finalText;
-                }
-                catch
-                {
-                    if (requestLease.SlotEraseEnabled
-                        && requestLease.SlotId >= 0
-                        && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel))
-                    {
-                        await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
-                    }
-
-                    throw;
-                }
-            }
-            finally
-            {
-                UnregisterActiveOcrRequest(activeRequest);
-            }
+            Debug.WriteLine($"[OcrService][HybridCrop] OpenAI-compatible crop request. Model={OllamaModel}, Prompt={prompt}");
+            return await ExecuteOpenAiCompatibleChatRequestAsync(
+                endpoint,
+                payload,
+                thinkEnabled,
+                HybridCropRequestTimeout,
+                "[OcrService][HybridCrop]",
+                OllamaOcrProtocol.NormalizeHybridCropText,
+                activeRequest,
+                cancellationToken).ConfigureAwait(false);
         }
 
         private async Task<string> SendOpenAiCompatibleVisionOcrRequestAsync(
@@ -1868,152 +1911,44 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             byte[] imageBytes,
             bool thinkEnabled,
             bool useSchemaResponse,
+            ActiveOcrRequest activeRequest,
             CancellationToken cancellationToken)
         {
-            using var requestCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var activeRequest = RegisterActiveOcrRequest(requestCts);
-
-            try
+            var payload = new Dictionary<string, object?>
             {
-                var payload = new Dictionary<string, object?>
+                ["model"] = OllamaModel,
+                ["stream"] = false,
+                ["temperature"] = OllamaTemperature,
+                ["messages"] = new object[]
                 {
-                    ["model"] = OllamaModel,
-                    ["stream"] = false,
-                    ["temperature"] = OllamaTemperature,
-                    ["messages"] = new object[]
+                    new Dictionary<string, object?>
                     {
-                        new Dictionary<string, object?>
-                        {
-                            ["role"] = "user",
-                            ["content"] = new object[]
-                            {
-                                new Dictionary<string, object?>
-                                {
-                                    ["type"] = "text",
-                                    ["text"] = prompt
-                                },
-                                new Dictionary<string, object?>
-                                {
-                                    ["type"] = "image_url",
-                                    ["image_url"] = new Dictionary<string, object?>
-                                    {
-                                        ["url"] = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}"
-                                    }
-                                }
-                            }
-                        }
+                        ["role"] = "user",
+                        ["content"] = BuildOpenAiCompatibleImageContent(prompt, imageBytes, "image/jpeg")
                     }
-                };
-
-                payload["response_format"] = useSchemaResponse
-                    ? new Dictionary<string, object?>
-                    {
-                        ["type"] = "json_schema",
-                        ["schema"] = BuildOcrJsonSchema()
-                    }
-                    : new Dictionary<string, object?>
-                    {
-                        ["type"] = "json_object"
-                    };
-
-                LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkEnabled);
-
-                using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(
-                    thinkEnabled ? OllamaThinkingRequestTimeout : OllamaRequestTimeout,
-                    thinkEnabled,
-                    requestCts.Token).ConfigureAwait(false);
-                payload["cache_prompt"] = false;
-                bool useManagedSlots = requestLease.SlotId >= 0
-                    && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel);
-                if (useManagedSlots && requestLease.SlotEraseEnabled)
-                    useManagedSlots = await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
-
-                if (useManagedSlots)
-                {
-                    ConfigureActiveOcrRequestSlotClear(activeRequest, endpoint, requestLease);
-                    payload["id_slot"] = requestLease.SlotId;
                 }
-
-                string payloadJson = JsonSerializer.Serialize(payload);
-                Debug.WriteLine($"[OcrService][llama-server] Request JSON: {TruncateForDebug(payloadJson)}");
-
-                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
-                {
-                    Content = new StringContent(payloadJson, Encoding.UTF8, "application/json")
-                };
-
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(requestCts.Token);
-                timeoutCts.CancelAfter(requestLease.EffectiveTimeout);
-
-                try
-                {
-                    using var response = await s_httpClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
-                    response.EnsureSuccessStatusCode();
-                    string json = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
-                    using var doc = JsonDocument.Parse(json);
-                    string finalContent = StripThinkingContent(LlmEndpointCompatibility.ExtractAssistantText(doc.RootElement));
-                    Debug.WriteLine($"[OcrService][llama-server] Final content: {TruncateForDebug(finalContent)}");
-                    return finalContent;
-                }
-                catch
-                {
-                    if (requestLease.SlotEraseEnabled
-                        && requestLease.SlotId >= 0
-                        && LlmEndpointCompatibility.SupportsManagedSlots(endpoint, OllamaModel))
-                    {
-                        await LlmEndpointCompatibility.TryEraseSlotAsync(s_httpClient, endpoint, requestLease.SlotId, OllamaModel).ConfigureAwait(false);
-                    }
-
-                    throw;
-                }
-            }
-            finally
-            {
-                UnregisterActiveOcrRequest(activeRequest);
-            }
-        }
-
-        private static object BuildOcrJsonSchema()
-        {
-            return new Dictionary<string, object?>
-            {
-                ["type"] = "object",
-                ["additionalProperties"] = false,
-                ["properties"] = new Dictionary<string, object?>
-                {
-                    ["result"] = new Dictionary<string, object?>
-                    {
-                        ["type"] = "array",
-                        ["minItems"] = 0,
-                        ["items"] = new Dictionary<string, object?>
-                        {
-                            ["type"] = "object",
-                            ["additionalProperties"] = false,
-                            ["properties"] = new Dictionary<string, object?>
-                            {
-                                ["bbox_2d"] = new Dictionary<string, object?>
-                                {
-                                    ["type"] = "array",
-                                    ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
-                                    ["minItems"] = 4,
-                                    ["maxItems"] = 4
-                                },
-                                ["box_2d"] = new Dictionary<string, object?>
-                                {
-                                    ["type"] = "array",
-                                    ["items"] = new Dictionary<string, object?> { ["type"] = "number" },
-                                    ["minItems"] = 4,
-                                    ["maxItems"] = 4
-                                },
-                                ["text_content"] = new Dictionary<string, object?> { ["type"] = "string" },
-                                ["text"] = new Dictionary<string, object?> { ["type"] = "string" },
-                                ["label"] = new Dictionary<string, object?> { ["type"] = "string" }
-                            }
-                        }
-                    }
-                },
-                ["required"] = new[] { "result" }
             };
+
+            payload["response_format"] = useSchemaResponse
+                ? new Dictionary<string, object?>
+                {
+                    ["type"] = "json_schema",
+                    ["schema"] = OllamaOcrProtocol.BuildOcrJsonSchema()
+                }
+                : new Dictionary<string, object?>
+                {
+                    ["type"] = "json_object"
+                };
+
+            return await ExecuteOpenAiCompatibleChatRequestAsync(
+                endpoint,
+                payload,
+                thinkEnabled,
+                OllamaThinkingRequestTimeout,
+                "[OcrService][llama-server]",
+                OllamaOcrProtocol.StripThinkingContent,
+                activeRequest,
+                cancellationToken).ConfigureAwait(false);
         }
 
         private static OllamaOcrResponse ParseStructuredOllamaResponse(
@@ -2023,113 +1958,13 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             int sourceImageHeight,
             int originalImageWidth,
             int originalImageHeight)
-        {
-            // Expected primary shape:
-            // [ { "bbox_2d": [x1,y1,x2,y2], "text_content": "..." }, ... ]
-            // Legacy fallback shape is also supported via x/y/width/height fields.
-            string jsonText = TrimMarkdownCodeFence(responseText);
-            if (string.IsNullOrWhiteSpace(jsonText))
-                return new OllamaOcrResponse();
-
-            try
-            {
-                using var doc = JsonDocument.Parse(jsonText);
-                var root = doc.RootElement;
-
-                JsonElement boxesElement;
-                if (root.ValueKind == JsonValueKind.Array)
-                {
-                    boxesElement = root;
-                }
-                else if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("boxes", out var rootBoxes)
-                    && rootBoxes.ValueKind == JsonValueKind.Array)
-                {
-                    boxesElement = rootBoxes;
-                }
-                else if (root.ValueKind == JsonValueKind.Object
-                    && root.TryGetProperty("result", out var rootResult)
-                    && rootResult.ValueKind == JsonValueKind.Array)
-                {
-                    boxesElement = rootResult;
-                }
-                else
-                {
-                    return new OllamaOcrResponse { Text = responseText.Trim(), IsSuccessful = true };
-                }
-
-                var rawBoxes = new List<RawOllamaBox>();
-                OllamaVisionModelFamily modelFamily = GetOllamaVisionModelFamily(modelName);
-                bool useNormalizedYxOrder = true; // All models now use [ymin, xmin, ymax, xmax] format
-                foreach (var item in boxesElement.EnumerateArray())
-                {
-                    if (item.ValueKind != JsonValueKind.Object) continue;
-
-                    string boxText = item.TryGetProperty("text_content", out var bt) && bt.ValueKind == JsonValueKind.String
-                        ? (bt.GetString() ?? string.Empty)
-                        : (item.TryGetProperty("text", out var legacyBt) && legacyBt.ValueKind == JsonValueKind.String
-                            ? (legacyBt.GetString() ?? string.Empty)
-                            : (item.TryGetProperty("label", out var labelBt) && labelBt.ValueKind == JsonValueKind.String
-                                ? (labelBt.GetString() ?? string.Empty)
-                                : string.Empty));
-
-                    if (!TryReadBbox2D(item, out var x1, out var y1, out var x2, out var y2, useNormalizedYxOrder))
-                    {
-                        double legacyX = ReadDouble(item, "x");
-                        double legacyY = ReadDouble(item, "y");
-                        double legacyWidth = Math.Max(0, ReadDouble(item, "width"));
-                        double legacyHeight = Math.Max(0, ReadDouble(item, "height"));
-                        x1 = legacyX;
-                        y1 = legacyY;
-                        x2 = legacyX + legacyWidth;
-                        y2 = legacyY + legacyHeight;
-                    }
-
-                    rawBoxes.Add(new RawOllamaBox(boxText, x1, y1, x2, y2));
-                }
-
-                OllamaCoordinateSpace coordinateSpace = SelectOllamaCoordinateSpace(
-                    rawBoxes,
-                    modelName,
-                    sourceImageWidth,
-                    sourceImageHeight,
-                    originalImageWidth,
-                    originalImageHeight);
-
-                var boxes = new List<BoundingBoxViewModel>(rawBoxes.Count);
-                foreach (var raw in rawBoxes)
-                {
-                    var scaledRect = ScaleFromOllamaSpace(
-                        raw.X1,
-                        raw.Y1,
-                        raw.X2,
-                        raw.Y2,
-                        sourceImageWidth,
-                        sourceImageHeight,
-                        originalImageWidth,
-                        originalImageHeight,
-                        coordinateSpace);
-                    if (scaledRect.Width <= 0 || scaledRect.Height <= 0) continue;
-
-                    boxes.Add(new BoundingBoxViewModel(raw.Text, scaledRect, originalImageWidth, originalImageHeight));
-                }
-
-                string text = boxes.Count > 0
-                    ? string.Join(Environment.NewLine, boxes.Select(b => b.Text).Where(t => !string.IsNullOrWhiteSpace(t)))
-                    : string.Empty;
-
-                return new OllamaOcrResponse
-                {
-                    Text = text,
-                    Boxes = boxes,
-                    IsSuccessful = true
-                };
-            }
-            catch
-            {
-                return new OllamaOcrResponse { Text = responseText.Trim(), IsSuccessful = true };
-            }
-        }
+            => OllamaOcrProtocol.ParseStructuredResponse(
+                responseText,
+                modelName,
+                sourceImageWidth,
+                sourceImageHeight,
+                originalImageWidth,
+                originalImageHeight);
 
         private static double ReadDouble(JsonElement element, string propertyName)
         {

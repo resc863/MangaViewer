@@ -6,27 +6,27 @@ using System.Threading.Tasks;
 using Anthropic;
 using Anthropic.Models.Messages;
 using Microsoft.Extensions.AI;
-using SystemType = System.Type;
 
 namespace MangaViewer.Services
 {
-    public class AnthropicChatClient : ChatClientBase
+    public sealed class AnthropicChatClient : DelegatingChatClientBase
     {
         private readonly AnthropicClient _client;
-        private readonly IChatClient _innerClient;
         private readonly string _model;
         private readonly string _thinkingLevel;
 
         public AnthropicChatClient(string apiKey, string model, string thinkingLevel = "Off")
-            : base("Anthropic")
+            : this(CreateClients(apiKey, model), model, thinkingLevel)
         {
-            _client = new AnthropicClient() { ApiKey = apiKey };
-            _innerClient = _client.AsIChatClient(model);
+        }
+
+        private AnthropicChatClient((AnthropicClient Client, IChatClient InnerClient) clients, string model, string thinkingLevel)
+            : base("Anthropic", clients.InnerClient)
+        {
+            _client = clients.Client;
             _model = model;
             _thinkingLevel = thinkingLevel;
         }
-
-        public override void Dispose() => _innerClient.Dispose();
 
         public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
@@ -56,13 +56,13 @@ namespace MangaViewer.Services
                 return new ChatResponse(new ChatMessage(Microsoft.Extensions.AI.ChatRole.Assistant, text));
             }
 
-            return await _innerClient.GetResponseAsync(chatMessages, options, cancellationToken);
+            return await GetInnerResponseAsync(chatMessages, options, cancellationToken);
         }
 
-        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => _innerClient.GetStreamingResponseAsync(chatMessages, options, cancellationToken);
-
-        public override object? GetService(SystemType serviceType, object? serviceKey = null)
-            => _innerClient.GetService(serviceType, serviceKey);
+        private static (AnthropicClient Client, IChatClient InnerClient) CreateClients(string apiKey, string model)
+        {
+            var client = new AnthropicClient() { ApiKey = apiKey };
+            return (client, client.AsIChatClient(model));
+        }
     }
 }

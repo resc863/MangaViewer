@@ -13,26 +13,22 @@ using ChatMessage = Microsoft.Extensions.AI.ChatMessage;
 
 namespace MangaViewer.Services
 {
-    public class OpenAIChatClient : ChatClientBase
+    public sealed class OpenAIChatClient : DelegatingChatClientBase
     {
-        private readonly IChatClient _innerClient;
         private readonly OpenAI.Chat.ChatClient _chatClient;
         private readonly string _thinkingLevel;
 
         public OpenAIChatClient(string apiKey, string model, string endpoint = "https://api.openai.com/v1/", string thinkingLevel = "Off")
-            : base("OpenAI")
+            : this(CreateClients(apiKey, model, endpoint), thinkingLevel)
         {
-            var credential = new ApiKeyCredential(apiKey);
-            var openAIClient = endpoint.TrimEnd('/') == "https://api.openai.com/v1"
-                ? new OpenAIClient(credential)
-                : new OpenAIClient(credential, new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
-
-            _chatClient = openAIClient.GetChatClient(model);
-            _innerClient = _chatClient.AsIChatClient();
-            _thinkingLevel = thinkingLevel;
         }
 
-        public override void Dispose() => _innerClient.Dispose();
+        private OpenAIChatClient((OpenAI.Chat.ChatClient ChatClient, IChatClient InnerClient) clients, string thinkingLevel)
+            : base("OpenAI", clients.InnerClient)
+        {
+            _chatClient = clients.ChatClient;
+            _thinkingLevel = thinkingLevel;
+        }
 
         public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
@@ -57,11 +53,19 @@ namespace MangaViewer.Services
                 return new ChatResponse(new ChatMessage(ChatRole.Assistant, text));
             }
 
-            return await _innerClient.GetResponseAsync(chatMessages, options, cancellationToken);
+            return await GetInnerResponseAsync(chatMessages, options, cancellationToken);
         }
 
-        public override IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
-            => _innerClient.GetStreamingResponseAsync(chatMessages, options, cancellationToken);
+        private static (OpenAI.Chat.ChatClient ChatClient, IChatClient InnerClient) CreateClients(string apiKey, string model, string endpoint)
+        {
+            var credential = new ApiKeyCredential(apiKey);
+            var openAIClient = endpoint.TrimEnd('/') == "https://api.openai.com/v1"
+                ? new OpenAIClient(credential)
+                : new OpenAIClient(credential, new OpenAIClientOptions { Endpoint = new Uri(endpoint) });
+
+            var chatClient = openAIClient.GetChatClient(model);
+            return (chatClient, chatClient.AsIChatClient());
+        }
 
         private ChatReasoningEffortLevel? GetReasoningEffortLevel()
         {
@@ -73,8 +77,5 @@ namespace MangaViewer.Services
                 _ => null
             };
         }
-
-        public override object? GetService(Type serviceType, object? serviceKey = null)
-            => _innerClient.GetService(serviceType, serviceKey);
     }
 }

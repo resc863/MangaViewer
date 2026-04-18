@@ -7,9 +7,10 @@ namespace MangaViewer.Services
         string ApiKey,
         string Endpoint)
     {
-        public string ProviderName => TranslationProviders.ToName(Provider);
-        public bool RequiresApiKey => Provider != TranslationProviderKind.Ollama;
-        public bool UsesSelectableModel => Provider is TranslationProviderKind.Google or TranslationProviderKind.Ollama;
-        public bool UsesEndpoint => Provider == TranslationProviderKind.Ollama;
+        public TranslationProviderDescriptor Descriptor => TranslationProviders.GetDescriptor(Provider);
+        public string ProviderName => Descriptor.Name;
+        public bool RequiresApiKey => Descriptor.RequiresApiKey;
+        public bool UsesSelectableModel => Descriptor.UsesSelectableModel;
+        public bool UsesEndpoint => Descriptor.UsesEndpoint;
     }
 }

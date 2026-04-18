@@ -189,6 +189,9 @@ namespace MangaViewer.Services
         private TimeSpan _debounceDelay = TimeSpan.FromMilliseconds(250);
 
         private readonly IImageDecoder _decoder = new WinRtImageDecoder();
+        private readonly OllamaVlmOcrBackend _ollamaVlmBackend;
+        private readonly HybridOcrBackend _hybridOcrBackend;
+        private readonly DocLayoutOnnxBackend _docLayoutOnnxBackend;
 
         private sealed class ActiveOcrRequest
         {
@@ -201,6 +204,9 @@ namespace MangaViewer.Services
         {
             _engineCache["auto"] = TryCreateEngineForLanguage("auto");
             _syncContext = SynchronizationContext.Current;
+            _ollamaVlmBackend = new OllamaVlmOcrBackend(this);
+            _hybridOcrBackend = new HybridOcrBackend(this);
+            _docLayoutOnnxBackend = new DocLayoutOnnxBackend(this);
 
             Backend = (OcrBackend)SettingsProvider.Get("OcrBackend", 0);
             OllamaEndpoint = SettingsProvider.Get("OllamaEndpoint", "http://localhost:11434");

@@ -43,6 +43,10 @@ A WinUI 3 manga/image reader for Windows with local folder reading, library mana
 - Translation (OCR result translation)
   - Translates OCR text or OCR boxes through LLM APIs
   - Providers: **Google Gemini** / **OpenAI** / **Anthropic (Claude)** / **Ollama**
+  - Architecture
+    - `TranslationService` owns translation orchestration, response normalization, and translation-result caching
+    - `TranslationProviderDescriptor` centralizes provider metadata, settings accessors, thinking normalization, and client construction
+    - `DelegatingChatClientBase` removes duplicated inner-client forwarding logic from provider wrappers
   - Provider settings
     - Google: API key, system prompt, selectable model list fetch
     - OpenAI: API key, manual model entry, provider-specific thinking level
@@ -129,8 +133,8 @@ flowchart TD
     B -->|Hybrid| C[OcrService.GetHybridOcrAsync]
     B -->|VLM| D[OcrService.GetOllamaOcrAsync]
 
-    C --> E[Load original image bytes]
-    E --> F[Run PP-DocLayoutV3 ONNX layout detection]
+    C --> E[HybridOcrBackend loads original image bytes]
+    E --> F[DocLayoutOnnxBackend runs PP-DocLayoutV3 ONNX layout detection]
     F --> G{Primary EP success?}
     G -->|No| H[Retry ONNX with CPU EP]
     H --> I{Layout available?}
@@ -143,8 +147,8 @@ flowchart TD
     N -->|Yes| D
     N -->|No| O[Return Hybrid OCR failure status]
 
-    D --> P[Send full-image OCR request to Ollama-compatible endpoint]
-    P --> Q[Parse structured/plain response]
+    D --> P[OllamaVlmOcrBackend sends full-image OCR request]
+    P --> Q[OllamaOcrProtocol parses structured/plain response]
     Q --> R[Build OCR boxes + text]
 
     M --> S[Cache by mode=hybrid]
@@ -164,24 +168,25 @@ flowchart TD
     C --> E[Build JSON payload with page_text and box list]
     D --> F[Build plain translation prompt]
 
-    E --> G[TranslationClientFactory.TryCreate]
+    E --> G[TranslationService builds request payload]
     F --> G
 
-    G --> H{Selected provider}
-    H -->|Google| I[GoogleGenAIChatClient]
-    H -->|OpenAI| J[OpenAIChatClient]
-    H -->|Anthropic| K[AnthropicChatClient]
-    H -->|Ollama| L[OllamaChatClient]
+    G --> H[TranslationClientFactory.TryCreate]
+    H --> I{Selected provider}
+    I -->|Google| J[GoogleGenAIChatClient]
+    I -->|OpenAI| K[OpenAIChatClient]
+    I -->|Anthropic| L[AnthropicChatClient]
+    I -->|Ollama| M[OllamaChatClient]
 
-    I --> M[Provider API call]
-    J --> M
-    K --> M
-    L --> M
+    J --> N[Provider API call]
+    K --> N
+    L --> N
+    M --> N
 
-    M --> N[Normalize result / extract JSON if needed]
-    N --> O[Cache by provider + model + thinking + target language + input]
-    O --> P[Map translations back to boxes or page text]
-    P --> Q[Render translated overlay in MangaReaderPage]
+    N --> O[TranslationService normalizes result / extracts JSON if needed]
+    O --> P[Cache by provider + model + thinking + target language + input]
+    P --> Q[Map translations back to boxes or page text]
+    Q --> R[Render translated overlay in MangaReaderPage]
 ```
 
 ## Project Structure (short)
@@ -206,6 +211,10 @@ MangaViewer/
   Services/
     MangaManager.cs               # local folder/page mapping
     OcrService.cs                 # Hybrid/VLM OCR, ONNX layout detection, Ollama-compatible OCR
+    OllamaOcrProtocol.cs          # OCR prompt/schema/parsing helper
+    TranslationService.cs         # translation orchestration + caching
+    TranslationProviderDescriptor.cs # provider metadata registry entry
+    DelegatingChatClientBase.cs   # shared inner-client forwarding base
     TranslationSettingsService.cs # translation provider/model/API key/overlay/prefetch settings
     GoogleGenAIChatClient.cs      # Google Gemini API (IChatClient)
     OpenAIChatClient.cs           # OpenAI API (IChatClient)
@@ -234,6 +243,7 @@ MangaViewer/
 - Hybrid OCR requires the `PP-DocLayoutV3` ONNX model, and OCR/translation features that use Ollama-compatible models require a reachable endpoint.
 - Large galleries may consume more memory; adjust cache limits or clear cache in Settings.
 - This app is a client example for browsing external websites (e-hentai). Follow the site's ToS and local laws. Trademarks and copyrights belong to their owners.
+- Service-level architecture notes for the refactor live in `MangaViewer/Services/AI-ARCHITECTURE.md` and `MangaViewer/Services/README.md`.
 
 ## Architecture & Code Quality
 

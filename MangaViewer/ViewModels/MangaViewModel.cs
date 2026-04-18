@@ -13,24 +13,17 @@ using Microsoft.UI.Xaml.Controls;
 using MangaViewer.Services.Thumbnails;
 using MangaViewer.Services.Logging;
 using System.IO;
-using System.Text.Encodings.Web;
-using System.Text.Json;
-using Microsoft.Extensions.AI;
 
 namespace MangaViewer.ViewModels
 {
     public partial class MangaViewModel : BaseViewModel, IDisposable
     {
-        private static readonly JsonSerializerOptions PromptJsonSerializerOptions = new()
-        {
-            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
-        };
-
         private readonly MangaManager _mangaManager = new();
         private readonly ImageCacheService _imageCache = ImageCacheService.Instance;
         private readonly OcrService _ocrService = OcrService.Instance;
         private readonly BookmarkService _bookmarkService = BookmarkService.Instance;
         private readonly LibraryService _libraryService = new();
+        private readonly TranslationService _translationService = TranslationService.Instance;
 
         private BitmapImage? _leftImageSource;
         private BitmapImage? _rightImageSource;
@@ -56,7 +49,6 @@ namespace MangaViewer.ViewModels
         private CancellationTokenSource? _pageLoadCts;
         private int _pageLoadVersion;
 
-        private static readonly ConcurrentDictionary<string, string> _translationCache = new(StringComparer.Ordinal);
         private readonly Dictionary<int, bool> _pageOcrStates = new();
         private readonly Dictionary<int, bool> _pageTranslationStates = new();
         private static readonly TimeSpan TranslationPerSideTimeout = TimeSpan.FromSeconds(120);
@@ -304,7 +296,7 @@ namespace MangaViewer.ViewModels
 
         private void OnTranslationSettingsChanged(object? sender, EventArgs e)
         {
-            _translationCache.Clear();
+            _translationService.ClearCache();
             PageViewChanged?.Invoke(this, EventArgs.Empty);
         }
 
@@ -1406,62 +1398,13 @@ namespace MangaViewer.ViewModels
             var merged = BuildMergedOverlappingBoxes(indexed);
             if (merged.Count == 0) return;
 
-            string fullText = string.Join(Environment.NewLine, merged.Select(x => x.Text));
-            string pageText = string.IsNullOrWhiteSpace(pageOcrText) ? fullText : pageOcrText.Trim();
-            var settings = TranslationSettingsService.Instance;
-            var providerSettings = settings.GetCurrentProviderSettings();
-            if (!TranslationClientFactory.TryCreate(settings, out var translationClient))
-                return;
-
-            string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
-
-            string boxInputKey = string.Join("\u241E", merged.Select(x => x.Text));
-            string cacheKey = providerSettings.UsesEndpoint
-                ? $"box|{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}"
-                : $"box|{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{pageText}|{boxInputKey}";
-
-            if (_translationCache.TryGetValue(cacheKey, out string? cached))
-            {
-                ApplyMergedBoxTranslationsFromJson(merged, cached);
-                return;
-            }
-
-            var boxPayload = new
-            {
-                page_text = pageText,
-                boxes = merged.Select(x => new { index = x.Index, text = x.Text }).ToArray()
-            };
-
-            string jsonPayload = JsonSerializer.Serialize(boxPayload, PromptJsonSerializerOptions);
-            string boxSystemPrompt = string.IsNullOrWhiteSpace(translationClient.SystemPrompt)
-                ? "You are a professional manga translator."
-                : translationClient.SystemPrompt;
-            boxSystemPrompt += $" Translate into {targetLanguage}. Return only strict JSON.";
-
-            var messages = new List<ChatMessage>
-            {
-                new ChatMessage(ChatRole.System, boxSystemPrompt),
-                new ChatMessage(ChatRole.User,
-                    $"Use page_text as full-page context, but translate each box independently into {targetLanguage}. " +
-                    "For every output item, text must be the translation of the matching input box text with the same index. " +
-                    "Do not merge boxes, skip boxes, or output full-page summaries. Preserve speaking style and tone. Return JSON only in this schema: " +
-                    "{\"translations\":[{\"index\":0,\"text\":\"...\"}]}. " +
-                    "Use the exact same index values from input. " +
-                    "Do not add markdown, comments, or extra keys.\nInput JSON:\n" + jsonPayload)
-            };
-
-            Log.Info($"[Translation][Request] provider={providerSettings.ProviderName}, model={translationClient.Model}, thinking={translationClient.EffectiveThinkingLevel}, targetLanguage={targetLanguage}, mode=box");
-            Log.Info($"[Translation][Request][System] {boxSystemPrompt}");
-            Log.Info($"[Translation][Request][User] {messages[1].Text}");
-
-            using (translationClient.Client)
-            {
-                var response = await translationClient.Client.GetResponseAsync(messages, cancellationToken: cancellationToken).ConfigureAwait(true);
-                string content = response.Messages.Count > 0 ? (response.Messages[0].Text ?? string.Empty) : string.Empty;
-                string normalizedJson = NormalizeJsonText(content);
-                _translationCache[cacheKey] = normalizedJson;
-                ApplyMergedBoxTranslationsFromJson(merged, normalizedJson);
-            }
+            var inputs = merged
+                .Select(group => new IndexedTranslationInput(group.Index, group.Text))
+                .ToArray();
+            var translations = await _translationService
+                .TranslateIndexedTextAsync(inputs, pageOcrText, cancellationToken)
+                .ConfigureAwait(true);
+            ApplyMergedBoxTranslations(merged, translations);
         }
 
         private static List<MergedIndexedBox> BuildMergedOverlappingBoxes(IReadOnlyList<IndexedBox> indexed)
@@ -1525,107 +1468,13 @@ namespace MangaViewer.ViewModels
             return overlapW > 0 && overlapH > 0;
         }
 
-        private static string NormalizeJsonText(string content)
-        {
-            if (string.IsNullOrWhiteSpace(content)) return "{}";
-            string trimmed = content.Trim();
-            if (!trimmed.StartsWith("```", StringComparison.Ordinal))
-                return ExtractJsonPayload(trimmed);
-
-            int firstLineBreak = trimmed.IndexOf('\n');
-            if (firstLineBreak < 0)
-                return trimmed.Trim('`').Trim();
-
-            string body = trimmed[(firstLineBreak + 1)..];
-            int fenceEnd = body.LastIndexOf("```", StringComparison.Ordinal);
-            if (fenceEnd >= 0)
-                body = body[..fenceEnd];
-            return ExtractJsonPayload(body.Trim());
-        }
-
-        private static string ExtractJsonPayload(string text)
-        {
-            if (string.IsNullOrWhiteSpace(text)) return "{}";
-
-            int objStart = text.IndexOf('{');
-            int arrStart = text.IndexOf('[');
-            int start = objStart < 0 ? arrStart : arrStart < 0 ? objStart : Math.Min(objStart, arrStart);
-            if (start < 0) return text.Trim();
-
-            int objEnd = text.LastIndexOf('}');
-            int arrEnd = text.LastIndexOf(']');
-            int end = Math.Max(objEnd, arrEnd);
-            if (end < start) return text[start..].Trim();
-
-            return text.Substring(start, end - start + 1).Trim();
-        }
-
-        private static void ApplyMergedBoxTranslationsFromJson(IReadOnlyList<MergedIndexedBox> mergedBoxes, string json)
+        private static void ApplyMergedBoxTranslations(IReadOnlyList<MergedIndexedBox> mergedBoxes, IReadOnlyDictionary<int, string> translations)
         {
             if (mergedBoxes.Count == 0) return;
 
-            var translationMap = new Dictionary<int, string>();
-            try
-            {
-                using var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
-                var root = doc.RootElement;
-
-                JsonElement translationsElement;
-                bool found = false;
-                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("translations", out translationsElement) && translationsElement.ValueKind == JsonValueKind.Array)
-                {
-                    found = true;
-                }
-                else if (root.ValueKind == JsonValueKind.Array)
-                {
-                    translationsElement = root;
-                    found = true;
-                }
-                else
-                {
-                    translationsElement = default;
-                }
-
-                if (found)
-                {
-                    foreach (var item in translationsElement.EnumerateArray())
-                    {
-                        if (item.ValueKind != JsonValueKind.Object) continue;
-                        if (!item.TryGetProperty("index", out var indexElement)) continue;
-
-                        int index;
-                        if (indexElement.ValueKind == JsonValueKind.Number)
-                        {
-                            if (!indexElement.TryGetInt32(out index)) continue;
-                        }
-                        else if (indexElement.ValueKind == JsonValueKind.String && int.TryParse(indexElement.GetString(), out int parsed))
-                        {
-                            index = parsed;
-                        }
-                        else
-                        {
-                            continue;
-                        }
-
-                        string text = string.Empty;
-                        if (item.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String)
-                            text = textElement.GetString() ?? string.Empty;
-                        else if (item.TryGetProperty("translated", out var translatedElement) && translatedElement.ValueKind == JsonValueKind.String)
-                            text = translatedElement.GetString() ?? string.Empty;
-                        else if (item.TryGetProperty("translation", out var translationElement) && translationElement.ValueKind == JsonValueKind.String)
-                            text = translationElement.GetString() ?? string.Empty;
-
-                        translationMap[index] = text;
-                    }
-                }
-            }
-            catch
-            {
-            }
-
             foreach (var group in mergedBoxes)
             {
-                if (translationMap.TryGetValue(group.Index, out var translated) && !string.IsNullOrWhiteSpace(translated))
+                if (translations.TryGetValue(group.Index, out var translated) && !string.IsNullOrWhiteSpace(translated))
                 {
                     foreach (var member in group.Members)
                         member.Box.TranslatedText = translated;
@@ -1641,40 +1490,7 @@ namespace MangaViewer.ViewModels
         }
 
         private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
-        {
-            var settings = TranslationSettingsService.Instance;
-            var providerSettings = settings.GetCurrentProviderSettings();
-            if (!TranslationClientFactory.TryCreate(settings, out var translationClient))
-            {
-                return "번역 공급자를 설정해주세요.";
-            }
-
-            string targetLanguage = string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
-            string cacheKey = providerSettings.UsesEndpoint
-                ? $"{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}"
-                : $"{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}";
-            if (_translationCache.TryGetValue(cacheKey, out string? cached))
-                return cached;
-
-            var messages = new List<ChatMessage>();
-            string effectiveSystemPrompt = string.IsNullOrWhiteSpace(translationClient.SystemPrompt)
-                ? $"You are a professional translator. Translate the user text into {targetLanguage}. Return only the translated text."
-                : translationClient.SystemPrompt + $" Translate the output into {targetLanguage} and return only the translated text.";
-            messages.Add(new ChatMessage(ChatRole.System, effectiveSystemPrompt));
-            messages.Add(new ChatMessage(ChatRole.User, text));
-
-            Log.Info($"[Translation][Request] provider={providerSettings.ProviderName}, model={translationClient.Model}, thinking={translationClient.EffectiveThinkingLevel}, targetLanguage={targetLanguage}");
-            Log.Info($"[Translation][Request][System] {effectiveSystemPrompt}");
-            Log.Info($"[Translation][Request][User] {text}");
-
-            using (translationClient.Client)
-            {
-                var response = await translationClient.Client.GetResponseAsync(messages, cancellationToken: cancellationToken);
-                string result = response.Messages.Count > 0 ? (response.Messages[0].Text ?? "") : "";
-                _translationCache[cacheKey] = result;
-                return result;
-            }
-        }
+            => await _translationService.TranslateTextAsync(text, cancellationToken).ConfigureAwait(true);
 
         private void StartAdjacentPagePrefetch()
         {

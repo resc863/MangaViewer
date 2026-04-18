@@ -53,26 +53,28 @@ namespace MangaViewer.Services
         internal TranslationProviderKind ProviderKind
         {
             get => TranslationProviders.ParseOrDefault(Provider);
-            set => Provider = TranslationProviders.ToName(value);
+            set => Provider = TranslationProviders.GetDescriptor(value).Name;
         }
 
         internal TranslationProviderSettingsSnapshot GetCurrentProviderSettings()
             => GetProviderSettings(ProviderKind);
 
         public static bool IsOllamaProvider(string? provider)
-            => string.Equals(provider, TranslationProviders.Ollama, StringComparison.OrdinalIgnoreCase);
+            => TranslationProviders.ParseOrDefault(provider) == TranslationProviderKind.Ollama;
 
         internal static bool IsOllamaProvider(TranslationProviderKind provider)
             => provider == TranslationProviderKind.Ollama;
 
         internal TranslationProviderSettingsSnapshot GetProviderSettings(TranslationProviderKind provider)
-            => provider switch
-            {
-                TranslationProviderKind.OpenAI => new TranslationProviderSettingsSnapshot(provider, OpenAIModel, OpenAISystemPrompt, OpenAIApiKey, string.Empty),
-                TranslationProviderKind.Anthropic => new TranslationProviderSettingsSnapshot(provider, AnthropicModel, AnthropicSystemPrompt, AnthropicApiKey, string.Empty),
-                TranslationProviderKind.Ollama => new TranslationProviderSettingsSnapshot(provider, OllamaModel, OllamaSystemPrompt, string.Empty, OllamaEndpoint),
-                _ => new TranslationProviderSettingsSnapshot(TranslationProviderKind.Google, GoogleModel, GoogleSystemPrompt, GoogleApiKey, string.Empty)
-            };
+        {
+            var descriptor = TranslationProviders.GetDescriptor(provider);
+            return new TranslationProviderSettingsSnapshot(
+                descriptor.Kind,
+                descriptor.GetModel(this),
+                descriptor.GetSystemPrompt(this),
+                descriptor.GetApiKey(this),
+                descriptor.GetEndpoint(this));
+        }
 
         internal TranslationProviderSettingsSnapshot GetProviderSettings(string? provider)
             => GetProviderSettings(TranslationProviders.ParseOrDefault(provider));
@@ -81,85 +83,37 @@ namespace MangaViewer.Services
             => GetProviderSettings(provider).Model;
 
         internal string GetModelForProvider(TranslationProviderKind provider)
-            => GetProviderSettings(provider).Model;
+            => TranslationProviders.GetDescriptor(provider).GetModel(this);
 
         public void SetModelForProvider(string? provider, string value)
             => SetModelForProvider(TranslationProviders.ParseOrDefault(provider), value);
 
         internal void SetModelForProvider(TranslationProviderKind provider, string value)
-        {
-            SetProviderValue(
-                provider,
-                value,
-                googleSetter: static (service, newValue) => service.GoogleModel = newValue,
-                openAiSetter: static (service, newValue) => service.OpenAIModel = newValue,
-                anthropicSetter: static (service, newValue) => service.AnthropicModel = newValue,
-                ollamaSetter: static (service, newValue) => service.OllamaModel = newValue);
-        }
+            => TranslationProviders.GetDescriptor(provider).SetModel(this, value);
 
         public string GetSystemPromptForProvider(string? provider)
             => GetProviderSettings(provider).SystemPrompt;
 
         internal string GetSystemPromptForProvider(TranslationProviderKind provider)
-            => GetProviderSettings(provider).SystemPrompt;
+            => TranslationProviders.GetDescriptor(provider).GetSystemPrompt(this);
 
         public void SetSystemPromptForProvider(string? provider, string value)
             => SetSystemPromptForProvider(TranslationProviders.ParseOrDefault(provider), value);
 
         internal void SetSystemPromptForProvider(TranslationProviderKind provider, string value)
-        {
-            SetProviderValue(
-                provider,
-                value,
-                googleSetter: static (service, newValue) => service.GoogleSystemPrompt = newValue,
-                openAiSetter: static (service, newValue) => service.OpenAISystemPrompt = newValue,
-                anthropicSetter: static (service, newValue) => service.AnthropicSystemPrompt = newValue,
-                ollamaSetter: static (service, newValue) => service.OllamaSystemPrompt = newValue);
-        }
+            => TranslationProviders.GetDescriptor(provider).SetSystemPrompt(this, value);
 
         public string GetApiKeyForProvider(string? provider)
             => GetProviderSettings(provider).ApiKey;
 
         internal string GetApiKeyForProvider(TranslationProviderKind provider)
-            => GetProviderSettings(provider).ApiKey;
+            => TranslationProviders.GetDescriptor(provider).GetApiKey(this);
 
         public void SetApiKeyForProvider(string? provider, string value)
             => SetApiKeyForProvider(TranslationProviders.ParseOrDefault(provider), value);
 
         internal void SetApiKeyForProvider(TranslationProviderKind provider, string value)
-        {
-            SetProviderValue(
-                provider,
-                value,
-                googleSetter: static (service, newValue) => service.GoogleApiKey = newValue,
-                openAiSetter: static (service, newValue) => service.OpenAIApiKey = newValue,
-                anthropicSetter: static (service, newValue) => service.AnthropicApiKey = newValue);
-        }
-
-        private void SetProviderValue(
-            TranslationProviderKind provider,
-            string value,
-            Action<TranslationSettingsService, string> googleSetter,
-            Action<TranslationSettingsService, string> openAiSetter,
-            Action<TranslationSettingsService, string> anthropicSetter,
-            Action<TranslationSettingsService, string>? ollamaSetter = null)
-        {
-            switch (provider)
-            {
-                case TranslationProviderKind.OpenAI:
-                    openAiSetter(this, value);
-                    break;
-                case TranslationProviderKind.Anthropic:
-                    anthropicSetter(this, value);
-                    break;
-                case TranslationProviderKind.Ollama when ollamaSetter != null:
-                    ollamaSetter(this, value);
-                    break;
-                default:
-                    googleSetter(this, value);
-                    break;
-            }
-        }
+            => TranslationProviders.GetDescriptor(provider).SetApiKey(this, value);
 
         public string OllamaModel
         {
