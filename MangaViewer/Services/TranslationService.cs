@@ -31,7 +31,7 @@ namespace MangaViewer.Services
 
         public void ClearCache() => s_translationCache.Clear();
 
-        public async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
+        public async Task<string> TranslateTextAsync(string text, bool forceRefresh = false, CancellationToken cancellationToken = default)
         {
             var settings = TranslationSettingsService.Instance;
             var providerSettings = settings.GetCurrentProviderSettings();
@@ -42,7 +42,7 @@ namespace MangaViewer.Services
             string cacheKey = providerSettings.UsesEndpoint
                 ? $"{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}"
                 : $"{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{text}";
-            if (s_translationCache.TryGetValue(cacheKey, out string? cached))
+            if (!forceRefresh && s_translationCache.TryGetValue(cacheKey, out string? cached))
                 return cached;
 
             var messages = new List<ChatMessage>();
@@ -68,6 +68,7 @@ namespace MangaViewer.Services
         internal async Task<IReadOnlyDictionary<int, string>> TranslateIndexedTextAsync(
             IReadOnlyList<IndexedTranslationInput> inputs,
             string? pageText,
+            bool forceRefresh = false,
             CancellationToken cancellationToken = default)
         {
             if (inputs.Count == 0)
@@ -86,7 +87,7 @@ namespace MangaViewer.Services
                 ? $"box|{providerSettings.ProviderName}|{providerSettings.Endpoint}|{translationClient.Model}|think={translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{effectivePageText}|{boxInputKey}"
                 : $"box|{providerSettings.ProviderName}|{translationClient.Model}|{translationClient.EffectiveThinkingLevel}|lang={targetLanguage}|{effectivePageText}|{boxInputKey}";
 
-            if (s_translationCache.TryGetValue(cacheKey, out string? cached))
+            if (!forceRefresh && s_translationCache.TryGetValue(cacheKey, out string? cached))
                 return ParseIndexedTranslations(cached);
 
             var boxPayload = new

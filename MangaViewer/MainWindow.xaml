@@ -93,6 +93,13 @@
                             <FontIcon Glyph="&#xE8C1;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
+                    <AppBarButton Label="새로고침"
+                                  ToolTipService.ToolTip="현재 페이지 번역 다시 요청"
+                                  Command="{Binding RefreshTranslationCommand}">
+                        <AppBarButton.Icon>
+                            <SymbolIcon Symbol="Refresh"/>
+                        </AppBarButton.Icon>
+                    </AppBarButton>
                 </CommandBar.PrimaryCommands>
             </CommandBar>
             <!-- Drag region for system title bar behaviors -->

@@ -213,6 +213,7 @@ namespace MangaViewer.ViewModels
         public RelayCommand ToggleNavPaneCommand { get; }
         public RelayCommand GoLeftCommand { get; }
         public RelayCommand GoRightCommand { get; }
+        public AsyncRelayCommand RefreshTranslationCommand { get; }
         public RelayCommand AddBookmarkCommand { get; }
         public RelayCommand RemoveBookmarkCommand { get; }
         public RelayCommand NavigateToBookmarkCommand { get; }
@@ -277,6 +278,7 @@ namespace MangaViewer.ViewModels
             ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
+            RefreshTranslationCommand = new AsyncRelayCommand(async _ => await RefreshCurrentPageTranslationAsync(), _ => CanRefreshCurrentPageTranslation());
             AddBookmarkCommand = new RelayCommand(_ => AddCurrentBookmark(), _ => _mangaManager.TotalImages > 0);
             RemoveBookmarkCommand = new RelayCommand(o => RemoveBookmark(o as MangaPageViewModel), _ => Bookmarks.Count > 0);
             NavigateToBookmarkCommand = new RelayCommand(o => NavigateToBookmark(o as MangaPageViewModel));
@@ -680,9 +682,36 @@ namespace MangaViewer.ViewModels
             ToggleBookmarkPaneCommand.RaiseCanExecuteChanged();
             GoLeftCommand.RaiseCanExecuteChanged();
             GoRightCommand.RaiseCanExecuteChanged();
+            RefreshTranslationCommand.RaiseCanExecuteChanged();
             AddBookmarkCommand.RaiseCanExecuteChanged();
             RemoveBookmarkCommand.RaiseCanExecuteChanged();
             OnPropertyChanged(nameof(IsOcrToggleEnabled));
+        }
+
+        private bool CanRefreshCurrentPageTranslation()
+            => IsTranslationActive
+                && IsOcrActive
+                && !IsOcrRunning
+                && (!string.IsNullOrWhiteSpace(LeftImageFilePath) || !string.IsNullOrWhiteSpace(RightImageFilePath));
+
+        private async Task RefreshCurrentPageTranslationAsync()
+        {
+            if (!CanRefreshCurrentPageTranslation())
+                return;
+
+            bool hasOcrContent = _leftOcrBoxes.Count > 0
+                || _rightOcrBoxes.Count > 0
+                || !string.IsNullOrWhiteSpace(LeftOcrText)
+                || !string.IsNullOrWhiteSpace(RightOcrText);
+
+            if (!hasOcrContent)
+            {
+                SetOcrStatus("현재 페이지 OCR 결과가 없어 번역을 다시 요청할 수 없습니다.", InfoBarSeverity.Warning, true);
+                return;
+            }
+
+            ClearTranslationState(notifyPageView: true);
+            await RunTranslationAsync(forceRefresh: true).ConfigureAwait(true);
         }
 
         public void UpdateRasterizationScale(double scale)
@@ -1196,7 +1225,7 @@ namespace MangaViewer.ViewModels
             return true;
         }
 
-        private async Task RunTranslationAsync()
+        private async Task RunTranslationAsync(bool forceRefresh = false)
         {
             bool hasBoxOcr = _leftOcrBoxes.Count > 0 || _rightOcrBoxes.Count > 0;
             bool hasPlainTextOcr = !string.IsNullOrWhiteSpace(LeftOcrText) || !string.IsNullOrWhiteSpace(RightOcrText);
@@ -1248,19 +1277,19 @@ namespace MangaViewer.ViewModels
                 {
                     if (_mangaManager.IsRightToLeft)
                     {
-                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false, forceRefresh: forceRefresh).ConfigureAwait(true);
                         if (rightHasTranslationTarget)
                             NotifyTranslationProgress(isLeft: false);
-                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true, forceRefresh: forceRefresh).ConfigureAwait(true);
                         if (leftHasTranslationTarget)
                             NotifyTranslationProgress(isLeft: true);
                     }
                     else
                     {
-                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_leftOcrBoxes, LeftOcrText, isLeft: true, forceRefresh: forceRefresh).ConfigureAwait(true);
                         if (leftHasTranslationTarget)
                             NotifyTranslationProgress(isLeft: true);
-                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false).ConfigureAwait(true);
+                        await TranslateBoxSideAsync(_rightOcrBoxes, RightOcrText, isLeft: false, forceRefresh: forceRefresh).ConfigureAwait(true);
                         if (rightHasTranslationTarget)
                             NotifyTranslationProgress(isLeft: false);
                     }
@@ -1270,13 +1299,13 @@ namespace MangaViewer.ViewModels
                 {
                     if (!string.IsNullOrWhiteSpace(LeftOcrText))
                     {
-                        TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText).ConfigureAwait(true);
+                        TranslatedLeftOcrText = await TranslateTextAsync(LeftOcrText, forceRefresh: forceRefresh).ConfigureAwait(true);
                         NotifyTranslationProgress(isLeft: true);
                     }
 
                     if (!string.IsNullOrWhiteSpace(RightOcrText))
                     {
-                        TranslatedRightOcrText = await TranslateTextAsync(RightOcrText).ConfigureAwait(true);
+                        TranslatedRightOcrText = await TranslateTextAsync(RightOcrText, forceRefresh: forceRefresh).ConfigureAwait(true);
                         NotifyTranslationProgress(isLeft: false);
                     }
                 }
@@ -1329,7 +1358,7 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private async Task TranslateBoxSideAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, bool isLeft)
+        private async Task TranslateBoxSideAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, bool isLeft, bool forceRefresh = false)
         {
             if (boxes.Count == 0)
             {
@@ -1350,7 +1379,7 @@ namespace MangaViewer.ViewModels
                 }
 
                 using var timeoutCts = new CancellationTokenSource(timeout);
-                await TranslateBoundingBoxesWithContextAsync(boxes, pageOcrText, timeoutCts.Token).ConfigureAwait(true);
+                await TranslateBoundingBoxesWithContextAsync(boxes, pageOcrText, forceRefresh, timeoutCts.Token).ConfigureAwait(true);
             }
             catch (OperationCanceledException)
             {
@@ -1385,7 +1414,7 @@ namespace MangaViewer.ViewModels
             return lines.Count == 0 ? string.Empty : string.Join(Environment.NewLine, lines);
         }
 
-        private async Task TranslateBoundingBoxesWithContextAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, CancellationToken cancellationToken = default)
+        private async Task TranslateBoundingBoxesWithContextAsync(IReadOnlyList<BoundingBoxViewModel> boxes, string? pageOcrText, bool forceRefresh = false, CancellationToken cancellationToken = default)
         {
             if (boxes.Count == 0) return;
 
@@ -1402,7 +1431,7 @@ namespace MangaViewer.ViewModels
                 .Select(group => new IndexedTranslationInput(group.Index, group.Text))
                 .ToArray();
             var translations = await _translationService
-                .TranslateIndexedTextAsync(inputs, pageOcrText, cancellationToken)
+                .TranslateIndexedTextAsync(inputs, pageOcrText, forceRefresh, cancellationToken)
                 .ConfigureAwait(true);
             ApplyMergedBoxTranslations(merged, translations);
         }
@@ -1489,8 +1518,8 @@ namespace MangaViewer.ViewModels
             }
         }
 
-        private async Task<string> TranslateTextAsync(string text, CancellationToken cancellationToken = default)
-            => await _translationService.TranslateTextAsync(text, cancellationToken).ConfigureAwait(true);
+        private async Task<string> TranslateTextAsync(string text, bool forceRefresh = false, CancellationToken cancellationToken = default)
+            => await _translationService.TranslateTextAsync(text, forceRefresh, cancellationToken).ConfigureAwait(true);
 
         private void StartAdjacentPagePrefetch()
         {
@@ -1540,7 +1569,7 @@ namespace MangaViewer.ViewModels
                     foreach (var pair in prefetchedTexts)
                     {
                         token.ThrowIfCancellationRequested();
-                        await TranslateTextAsync(pair.Value, token).ConfigureAwait(false);
+                        await TranslateTextAsync(pair.Value, cancellationToken: token).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException) { }
