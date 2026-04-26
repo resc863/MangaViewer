@@ -166,6 +166,7 @@ namespace MangaViewer.Services
                         if (flush)
                         {
                             var toAdd = batch.ToArray();
+                            bool isFinalBatch = i == imageFiles.Count - 1;
                             batch.Clear();
                             
                             dispatcher.TryEnqueue(() =>
@@ -173,6 +174,8 @@ namespace MangaViewer.Services
                                 if (!currentCts.IsCancellationRequested)
                                 {
                                     foreach (var vm in toAdd) _pages.Add(vm);
+                                    if (isFinalBatch)
+                                        RaiseMangaLoaded();
                                     RaisePageChanged();
                                 }
                             });

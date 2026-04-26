@@ -29,7 +29,7 @@ namespace MangaViewer.ViewModels
         private BitmapImage? _rightImageSource;
         private int _selectedThumbnailIndex = -1;
         private bool _isPaneOpen;
-        private bool _isBookmarkPaneOpen;
+        private bool _isBookmarkFilterActive;
         private bool _isNavOpen;
         private bool _isLoading;
         private bool _isSinglePageMode;
@@ -64,6 +64,9 @@ namespace MangaViewer.ViewModels
 
         public ReadOnlyObservableCollection<MangaPageViewModel> Thumbnails => _mangaManager.Pages;
         public ObservableCollection<MangaPageViewModel> Bookmarks { get; } = new();
+        public IReadOnlyList<MangaPageViewModel> VisibleThumbnails => IsBookmarkFilterActive ? Bookmarks : Thumbnails;
+        public bool HasVisibleThumbnails => VisibleThumbnails.Count > 0;
+        public bool IsBookmarkFilterEmpty => IsBookmarkFilterActive && Bookmarks.Count == 0;
 
         public string? LeftImageFilePath { get; private set; }
         public string? RightImageFilePath { get; private set; }
@@ -165,14 +168,39 @@ namespace MangaViewer.ViewModels
                 if (SetProperty(ref _selectedThumbnailIndex, value))
                 {
                     ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(_selectedThumbnailIndex);
+                    SyncDisplayedThumbnailSelection();
                     if (value >= 0)
                         _mangaManager.SetCurrentPageFromImageIndex(value);
                 }
             }
         }
 
+        private MangaPageViewModel? _selectedThumbnailItem;
+        public MangaPageViewModel? SelectedThumbnailItem
+        {
+            get => _selectedThumbnailItem;
+            set
+            {
+                if (SetProperty(ref _selectedThumbnailItem, value) && value != null)
+                    NavigateToThumbnail(value);
+            }
+        }
+
         public bool IsPaneOpen { get => _isPaneOpen; set => SetProperty(ref _isPaneOpen, value); }
-        public bool IsBookmarkPaneOpen { get => _isBookmarkPaneOpen; set => SetProperty(ref _isBookmarkPaneOpen, value); }
+        public bool IsBookmarkFilterActive
+        {
+            get => _isBookmarkFilterActive;
+            set
+            {
+                if (SetProperty(ref _isBookmarkFilterActive, value))
+                {
+                    OnPropertyChanged(nameof(VisibleThumbnails));
+                    OnPropertyChanged(nameof(HasVisibleThumbnails));
+                    OnPropertyChanged(nameof(IsBookmarkFilterEmpty));
+                    SyncDisplayedThumbnailSelection();
+                }
+            }
+        }
         public bool IsNavOpen { get => _isNavOpen; set => SetProperty(ref _isNavOpen, value); }
         public bool IsLoading
         {
@@ -274,7 +302,7 @@ namespace MangaViewer.ViewModels
             ToggleDirectionCommand = new RelayCommand(_ => { _mangaManager.ToggleDirection(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
             ToggleCoverCommand = new RelayCommand(_ => { _mangaManager.ToggleCover(); CancelOcr(); }, _ => _mangaManager.TotalImages > 0);
             TogglePaneCommand = new RelayCommand(_ => IsPaneOpen = !IsPaneOpen);
-            ToggleBookmarkPaneCommand = new RelayCommand(_ => IsBookmarkPaneOpen = !IsBookmarkPaneOpen);
+            ToggleBookmarkPaneCommand = new RelayCommand(_ => IsBookmarkFilterActive = !IsBookmarkFilterActive);
             ToggleNavPaneCommand = new RelayCommand(_ => IsNavOpen = !IsNavOpen);
             GoLeftCommand = new RelayCommand(_ => NavigateLogicalLeft(), _ => _mangaManager.TotalImages > 0);
             GoRightCommand = new RelayCommand(_ => NavigateLogicalRight(), _ => _mangaManager.TotalImages > 0);
@@ -317,6 +345,11 @@ namespace MangaViewer.ViewModels
             ClearCurrentImages();
 
             Bookmarks.Clear();
+            OnPropertyChanged(nameof(VisibleThumbnails));
+            OnPropertyChanged(nameof(HasVisibleThumbnails));
+            OnPropertyChanged(nameof(IsBookmarkFilterEmpty));
+            SyncDisplayedThumbnailSelection();
+            UpdateCommandStates();
         }
 
         /// <summary>
@@ -445,7 +478,6 @@ namespace MangaViewer.ViewModels
             _pageOcrStates.Clear();
             _pageTranslationStates.Clear();
             OnPropertyChanged(nameof(Thumbnails));
-            UpdateCommandStates();
 
             try
             {
@@ -453,6 +485,8 @@ namespace MangaViewer.ViewModels
                 RebuildBookmarksFromStore();
             }
             catch { }
+
+            UpdateCommandStates();
 
             MangaFolderLoaded?.Invoke(this, EventArgs.Empty);
             // Trigger initial page load
@@ -463,13 +497,23 @@ namespace MangaViewer.ViewModels
         {
             Bookmarks.Clear();
 
-            var distinct = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var distinct = new HashSet<MangaPageViewModel>();
             foreach (var p in _bookmarkService.GetAll())
             {
                 if (string.IsNullOrWhiteSpace(p)) continue;
-                if (!distinct.Add(p)) continue;
-                Bookmarks.Add(new MangaPageViewModel { FilePath = p });
+                int index = _mangaManager.FindImageIndexByPath(p);
+                if (index < 0 || index >= Thumbnails.Count) continue;
+
+                var thumbnail = Thumbnails[index];
+                if (!distinct.Add(thumbnail)) continue;
+                Bookmarks.Add(thumbnail);
             }
+
+            OnPropertyChanged(nameof(VisibleThumbnails));
+            OnPropertyChanged(nameof(HasVisibleThumbnails));
+            OnPropertyChanged(nameof(IsBookmarkFilterEmpty));
+            SyncDisplayedThumbnailSelection();
+            UpdateCommandStates();
         }
 
         private async void OnPageChanged()
@@ -629,6 +673,28 @@ namespace MangaViewer.ViewModels
             int primaryImageIndex = _mangaManager.GetPrimaryImageIndexForPage(_mangaManager.CurrentPageIndex);
             if (_selectedThumbnailIndex != primaryImageIndex)
                 SelectedThumbnailIndex = primaryImageIndex;
+            else
+                SyncDisplayedThumbnailSelection();
+        }
+
+        public int GetThumbnailIndex(MangaPageViewModel? page)
+            => page == null ? -1 : Thumbnails.IndexOf(page);
+
+        private void SyncDisplayedThumbnailSelection()
+        {
+            MangaPageViewModel? selected = null;
+            if (_selectedThumbnailIndex >= 0 && _selectedThumbnailIndex < Thumbnails.Count)
+            {
+                var current = Thumbnails[_selectedThumbnailIndex];
+                if (!IsBookmarkFilterActive || Bookmarks.Contains(current))
+                    selected = current;
+            }
+
+            if (!ReferenceEquals(_selectedThumbnailItem, selected))
+            {
+                _selectedThumbnailItem = selected;
+                OnPropertyChanged(nameof(SelectedThumbnailItem));
+            }
         }
 
         private void TryPrefetchAround()
@@ -1747,7 +1813,12 @@ namespace MangaViewer.ViewModels
             foreach (var b in Bookmarks)
                 if (string.Equals(b.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
 
-            Bookmarks.Add(new MangaPageViewModel { FilePath = path });
+            Bookmarks.Add(Thumbnails[imageIndex]);
+            OnPropertyChanged(nameof(VisibleThumbnails));
+            OnPropertyChanged(nameof(HasVisibleThumbnails));
+            OnPropertyChanged(nameof(IsBookmarkFilterEmpty));
+            SyncDisplayedThumbnailSelection();
+            UpdateCommandStates();
         }
 
         private void RemoveBookmark(MangaPageViewModel? vm)
@@ -1755,14 +1826,27 @@ namespace MangaViewer.ViewModels
             if (vm?.FilePath == null) return;
             if (_bookmarkService.Remove(vm.FilePath))
             {
-                Bookmarks.Remove(vm);
+                var existing = Bookmarks.FirstOrDefault(b => string.Equals(b.FilePath, vm.FilePath, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                    Bookmarks.Remove(existing);
+
+                OnPropertyChanged(nameof(VisibleThumbnails));
+                OnPropertyChanged(nameof(HasVisibleThumbnails));
+                OnPropertyChanged(nameof(IsBookmarkFilterEmpty));
+                SyncDisplayedThumbnailSelection();
+                UpdateCommandStates();
             }
         }
 
         private void NavigateToBookmark(MangaPageViewModel? vm)
+            => NavigateToThumbnail(vm);
+
+        private void NavigateToThumbnail(MangaPageViewModel? vm)
         {
             if (vm?.FilePath == null) return;
-            int idx = _mangaManager.FindImageIndexByPath(vm.FilePath);
+            int idx = GetThumbnailIndex(vm);
+            if (idx < 0)
+                idx = _mangaManager.FindImageIndexByPath(vm.FilePath);
             if (idx >= 0)
             {
                 SelectedThumbnailIndex = idx;

@@ -14,54 +14,7 @@
         <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
     </Page.Resources>
     <Grid Background="Transparent">
-        <!-- Outer grid to host left bookmark pane and right reader split -->
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="Auto"/>
-            <ColumnDefinition Width="*"/>
-        </Grid.ColumnDefinitions>
-
-        <!-- Left Bookmark Pane (bring to front) -->
-        <Grid Grid.Column="0" Background="Transparent" Visibility="{Binding IsBookmarkPaneOpen, Converter={StaticResource BooleanToVisibilityConverter}}" Canvas.ZIndex="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="8"/>
-                <ColumnDefinition Width="200"/>
-            </Grid.ColumnDefinitions>
-            <Thumb x:Name="BookmarkPaneResizeThumb"
-                   Grid.Column="0"
-                   Background="Transparent"
-                   DragDelta="BookmarkPaneResizeThumb_DragDelta">
-                <Thumb.Template>
-                    <ControlTemplate TargetType="Thumb">
-                        <Grid Background="Transparent">
-                            <Border Width="1"
-                                    HorizontalAlignment="Left"
-                                    Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
-                        </Grid>
-                    </ControlTemplate>
-                </Thumb.Template>
-            </Thumb>
-            <ListView x:Name="BookmarksList"
-                      Grid.Column="1"
-                      Background="Transparent"
-                      ItemsSource="{Binding Bookmarks}"
-                      SelectionMode="Single"
-                      IsItemClickEnabled="True"
-                      ItemClick="BookmarksList_ItemClick"
-                      ContainerContentChanging="BookmarksList_ContainerContentChanging">
-                <ListView.ItemTemplate>
-                    <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
-                        <Grid>
-                            <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
-                            <Button x:Name="RemoveBookmarkButton" x:Uid="RemoveBookmarkButton" Content="제거" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,5,5,0" Click="RemoveBookmark_Click"/>
-                        </Grid>
-                    </DataTemplate>
-                </ListView.ItemTemplate>
-            </ListView>
-        </Grid>
-
-        <!-- Main Reader Area (existing right-side thumbnails SplitView) -->
         <SplitView x:Name="ReaderSplitView"
-                   Grid.Column="1"
                    DisplayMode="Inline"
                    OpenPaneLength="160"
                    IsPaneOpen="{Binding IsPaneOpen, Mode=TwoWay}"
@@ -95,20 +48,55 @@
                         </Thumb.Template>
                     </Thumb>
 
-                    <!-- Thumbnails list -->
-                    <ListView x:Name="ThumbnailsList"
-                              Grid.Column="1"
-                              Background="Transparent"
-                              ItemsSource="{Binding Thumbnails}"
-                              SelectedIndex="{Binding SelectedThumbnailIndex, Mode=TwoWay}"
-                              SelectionMode="Single"
-                              ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
-                        <ListView.ItemTemplate>
-                            <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
-                                <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
-                            </DataTemplate>
-                        </ListView.ItemTemplate>
-                    </ListView>
+                    <Grid Grid.Column="1">
+                        <!-- Thumbnails list -->
+                        <ListView x:Name="ThumbnailsList"
+                                  Background="Transparent"
+                                  ItemsSource="{Binding VisibleThumbnails}"
+                                  SelectedItem="{Binding SelectedThumbnailItem, Mode=TwoWay}"
+                                  SelectionMode="Single"
+                                  ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
+                                    <Grid>
+                                        <Image Source="{Binding ThumbnailSource}" Height="120" Stretch="Uniform" Margin="5"/>
+                                        <Button x:Name="RemoveBookmarkButton"
+                                                x:Uid="RemoveBookmarkButton"
+                                                Content="제거"
+                                                HorizontalAlignment="Right"
+                                                VerticalAlignment="Top"
+                                                Margin="0,5,5,0"
+                                                Click="RemoveBookmark_Click"
+                                                Visibility="{Binding DataContext.IsBookmarkFilterActive, ElementName=ThumbnailsList, Converter={StaticResource BooleanToVisibilityConverter}}"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+
+                        <Border Background="Transparent"
+                                IsHitTestVisible="False"
+                                Visibility="{Binding IsBookmarkFilterEmpty, Converter={StaticResource BooleanToVisibilityConverter}}">
+                            <StackPanel HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        Spacing="8"
+                                        MaxWidth="180">
+                                <FontIcon Glyph="&#xE735;"
+                                          FontFamily="Segoe MDL2 Assets"
+                                          FontSize="28"
+                                          HorizontalAlignment="Center"
+                                          Opacity="0.8"/>
+                                <TextBlock Text="북마크가 없습니다"
+                                           HorizontalAlignment="Center"
+                                           TextAlignment="Center"
+                                           Style="{ThemeResource BodyStrongTextBlockStyle}"/>
+                                <TextBlock Text="현재 페이지를 북마크에 추가하면 여기에서만 모아 볼 수 있습니다."
+                                           HorizontalAlignment="Center"
+                                           TextAlignment="Center"
+                                           TextWrapping="Wrap"
+                                           Opacity="0.8"/>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
                 </Grid>
             </SplitView.Pane>
             <SplitView.Content>
@@ -265,7 +253,6 @@
         </SplitView>
 
         <InfoBar
-            Grid.Column="1"
             IsOpen="{Binding IsInfoBarOpen, Mode=TwoWay}"
             Message="{Binding OcrStatusMessage}"
             Severity="{Binding OcrSeverity}"
@@ -277,7 +264,6 @@
             Canvas.ZIndex="100" />
 
         <InfoBar
-            Grid.Column="1"
             IsOpen="{Binding IsProgressPopupOpen, Mode=TwoWay}"
             Message="{Binding ProgressPopupMessage}"
             Severity="Informational"

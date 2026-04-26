@@ -49,8 +49,8 @@
                     </AppBarToggleButton>
                     <AppBarToggleButton x:Name="BookmarkPaneToggle"
                                          x:Uid="BookmarkPaneToggle"
-                                         ToolTipService.ToolTip="북마크 패널"
-                                         IsChecked="{Binding IsBookmarkPaneOpen, Mode=TwoWay}">
+                                         ToolTipService.ToolTip="북마크만 보기"
+                                         IsChecked="{Binding IsBookmarkFilterActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE735;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>

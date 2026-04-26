@@ -509,7 +509,7 @@ Placement/sizing helpers:
 
 ## Behavior
 - On folder load completion, `bookmarks.json` is read and the list is rebuilt.
-- Items can appear even if the actual file is currently missing; thumbnail/navigation may fail until the file exists again.
+- Only bookmarks that still map to pages in the current thumbnail list are shown in the filtered pane.
 - When starting streaming gallery (`BeginStreamingGallery`), the bookmark list is cleared.
 
 ## Developer notes
@@ -521,14 +521,14 @@ Placement/sizing helpers:
   - `Remove(string path) : bool` — persists immediately on success
 - **ViewModel**: `MangaViewModel`
   - Collection: `Bookmarks (ObservableCollection<MangaPageViewModel>)`
-  - Panel toggle: `IsBookmarkPaneOpen (bool)`
+  - Filter toggle: `IsBookmarkFilterActive (bool)`
+  - Active list binding: `VisibleThumbnails (IReadOnlyList<MangaPageViewModel>)`
   - Commands: `AddBookmarkCommand`, `RemoveBookmarkCommand`, `NavigateToBookmarkCommand`, `ToggleBookmarkPaneCommand`
   - Folder load timing: `OnMangaLoaded` → `BookmarkService.LoadForFolder(...)` → `RebuildBookmarksFromStore()`
 - **UI**
   - Toolbar toggle/button: `MainWindow.xaml`
-  - Panel/list/buttons: `MangaReaderPage.xaml` `BookmarksList`
-  - Thumbnails: `ThumbnailDecodeScheduler.EnqueueBookmark(...)` asynchronously decodes bookmark thumbnails (separate from the viewport queue)
-  - Settings key (width): `BookmarkPaneWidth` (via `SettingsProvider.Get/Set`)
+  - Filtered thumbnail list/buttons: `MangaReaderPage.xaml` `ThumbnailsList`
+  - Thumbnails: unified viewport-driven decode path in `MangaReaderPage.xaml.cs`
 
 ## Limitations
 - Bookmarks are path-based. If files/folders are renamed or moved, navigation and thumbnail loading for those items may fail.

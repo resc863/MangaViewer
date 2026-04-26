@@ -33,9 +33,6 @@ namespace MangaViewer.Pages
         private const double PaneMinWidth = 120;
         private const double PaneMaxWidth = 420;
 
-        private const double BookmarkPaneMinWidth = 120;
-        private const double BookmarkPaneMaxWidth = 420;
-
         private int _prefetchRadius = 24;
         private int _prefetchRadiusIdle = 48;
         private DateTime _lastScrollTime = DateTime.MinValue;
@@ -105,10 +102,6 @@ namespace MangaViewer.Pages
                 var w = SettingsProvider.Get("ReaderPaneWidth", double.NaN);
                 if (!double.IsNaN(w))
                     ReaderSplitView.OpenPaneLength = Math.Clamp(w, PaneMinWidth, PaneMaxWidth);
-
-                var bw = SettingsProvider.Get("BookmarkPaneWidth", double.NaN);
-                if (!double.IsNaN(bw) && BookmarksList?.Parent is Grid g)
-                    g.ColumnDefinitions[1].Width = new GridLength(Math.Clamp(bw, BookmarkPaneMinWidth, BookmarkPaneMaxWidth));
             }
             catch { }
 
@@ -223,13 +216,6 @@ namespace MangaViewer.Pages
             if (ViewModel.Bookmarks is INotifyCollectionChanged bincc)
                 bincc.CollectionChanged += OnBookmarksChanged;
 
-            foreach (var bm in ViewModel.Bookmarks)
-            {
-                bm.PropertyChanged += OnPagePropertyChanged;
-                if (!string.IsNullOrEmpty(bm.FilePath) && !bm.HasThumbnail && !bm.IsThumbnailLoading)
-                    ThumbnailDecodeScheduler.Instance.EnqueueBookmark(bm, bm.FilePath, DispatcherQueue);
-            }
-
             StartThumbnailAutoRefresh();
             RedrawAllOcr();
         }
@@ -252,9 +238,6 @@ namespace MangaViewer.Pages
 
             if (vm.Bookmarks is INotifyCollectionChanged bincc)
                 bincc.CollectionChanged -= OnBookmarksChanged;
-
-            foreach (var b in vm.Bookmarks)
-                b.PropertyChanged -= OnPagePropertyChanged;
         }
 
         private void OnVmRedrawRequested(object? sender, EventArgs e) => RedrawAllOcr();
@@ -269,28 +252,9 @@ namespace MangaViewer.Pages
 
         private void OnBookmarksChanged(object? sender, NotifyCollectionChangedEventArgs e)
         {
-            if (e.NewItems != null)
-            {
-                foreach (var item in e.NewItems)
-                {
-                    if (item is MangaPageViewModel m)
-                    {
-                        m.PropertyChanged -= OnPagePropertyChanged;
-                        m.PropertyChanged += OnPagePropertyChanged;
-                        if (!string.IsNullOrEmpty(m.FilePath) && !m.HasThumbnail && !m.IsThumbnailLoading)
-                            ThumbnailDecodeScheduler.Instance.EnqueueBookmark(m, m.FilePath, DispatcherQueue);
-                    }
-                }
-            }
-
-            if (e.OldItems != null)
-            {
-                foreach (var item in e.OldItems)
-                {
-                    if (item is MangaPageViewModel m)
-                        m.PropertyChanged -= OnPagePropertyChanged;
-                }
-            }
+            if (_isUnloaded || ViewModel == null) return;
+            if (ViewModel.IsBookmarkFilterActive)
+                RebuildViewportThumbnailQueue(radius: 48);
         }
 
         private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -303,6 +267,14 @@ namespace MangaViewer.Pages
 
                 _preferredPaneOpen = vm.IsPaneOpen;
                 try { SettingsProvider.Set("ReaderPaneOpenPreferred", _preferredPaneOpen.Value); } catch { }
+                return;
+            }
+
+            if (e.PropertyName == nameof(MangaViewModel.IsBookmarkFilterActive)
+                || e.PropertyName == nameof(MangaViewModel.VisibleThumbnails)
+                || e.PropertyName == nameof(MangaViewModel.SelectedThumbnailItem))
+            {
+                RebuildViewportThumbnailQueue(radius: 48);
                 return;
             }
 
@@ -408,45 +380,57 @@ namespace MangaViewer.Pages
         private void UpdatePriorityByViewport()
         {
             if (ThumbnailsList == null || ViewModel == null) return;
+            var thumbnails = ViewModel.VisibleThumbnails;
+            if (thumbnails.Count == 0) return;
             if (!TryGetRealizedIndexRange(out int minIndex, out int maxIndex)) return;
 
             int pivot = (minIndex + maxIndex) / 2;
-            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
+            int selectedIndex = ViewModel.GetThumbnailIndex(ViewModel.SelectedThumbnailItem);
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(selectedIndex >= 0 ? selectedIndex : pivot);
 
             int radius = (DateTime.Now - _lastScrollTime).TotalMilliseconds > 500 ? _prefetchRadiusIdle : _prefetchRadius;
             int start = Math.Max(0, pivot - radius);
-            int end = Math.Min(ViewModel.Thumbnails.Count - 1, pivot + radius);
+            int end = Math.Min(thumbnails.Count - 1, pivot + radius);
 
             for (int i = start; i <= end; i++)
             {
-                var vm = ViewModel.Thumbnails[i];
+                var vm = thumbnails[i];
                 if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
-                    ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, i, pivot, DispatcherQueue);
+                {
+                    int actualIndex = ViewModel.GetThumbnailIndex(vm);
+                    ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, actualIndex >= 0 ? actualIndex : i, selectedIndex >= 0 ? selectedIndex : pivot, DispatcherQueue);
+                }
             }
         }
 
         private void KickVisibleThumbnailDecode()
         {
             if (_isUnloaded) return;
-            if (ThumbnailsList == null || ViewModel == null || ViewModel.Thumbnails.Count == 0) return;
+            if (ThumbnailsList == null || ViewModel == null) return;
+            var thumbnails = ViewModel.VisibleThumbnails;
+            if (thumbnails.Count == 0) return;
             if (!DispatcherQueue.HasThreadAccess) return;
 
             var panel = ThumbnailsList.ItemsPanelRoot as Panel;
             if (panel == null || panel.Children.Count == 0) return;
 
             int pivot = GetCurrentViewportPivot();
-            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
+            int selectedIndex = ViewModel.GetThumbnailIndex(ViewModel.SelectedThumbnailItem);
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(selectedIndex >= 0 ? selectedIndex : pivot);
 
             for (int i = 0; i < panel.Children.Count; i++)
             {
                 if (panel.Children[i] is not ListViewItem lvi) continue;
 
                 int index = ThumbnailsList.IndexFromContainer(lvi);
-                if (index < 0 || index >= ViewModel.Thumbnails.Count) continue;
+                if (index < 0 || index >= thumbnails.Count) continue;
 
-                var vm = ViewModel.Thumbnails[index];
+                var vm = thumbnails[index];
                 if (vm.FilePath != null && !vm.HasThumbnail && !vm.IsThumbnailLoading)
-                    ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, pivot, DispatcherQueue);
+                {
+                    int actualIndex = ViewModel.GetThumbnailIndex(vm);
+                    ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, actualIndex >= 0 ? actualIndex : index, selectedIndex >= 0 ? selectedIndex : pivot, DispatcherQueue);
+                }
             }
         }
 
@@ -475,12 +459,13 @@ namespace MangaViewer.Pages
 
             if (string.IsNullOrEmpty(vm.FilePath) || ViewModel == null) return;
 
-            int index = ViewModel.Thumbnails.IndexOf(vm);
+            int index = ViewModel.GetThumbnailIndex(vm);
             if (index < 0) return;
 
             int pivot = GetCurrentViewportPivot();
-            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
-            ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, pivot, DispatcherQueue);
+            int selectedIndex = ViewModel.GetThumbnailIndex(ViewModel.SelectedThumbnailItem);
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(selectedIndex >= 0 ? selectedIndex : pivot);
+            ThumbnailDecodeScheduler.Instance.Enqueue(vm, vm.FilePath, index, selectedIndex >= 0 ? selectedIndex : pivot, DispatcherQueue);
             KickVisibleThumbnailDecode();
         }
 
@@ -489,7 +474,8 @@ namespace MangaViewer.Pages
             if (ViewModel == null) return;
             if (args.Item is not MangaPageViewModel vm) return;
 
-            int index = sender.IndexFromContainer(args.ItemContainer);
+            int visibleIndex = sender.IndexFromContainer(args.ItemContainer);
+            int index = ViewModel.GetThumbnailIndex(vm);
             if (args.InRecycleQueue)
             {
                 if (index != ViewModel.SelectedThumbnailIndex) vm.UnloadThumbnail();
@@ -498,27 +484,9 @@ namespace MangaViewer.Pages
 
             var path = vm.FilePath ?? string.Empty;
             int pivot = GetCurrentViewportPivot();
-            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(pivot);
-            ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index, pivot, DispatcherQueue);
-        }
-
-        private void BookmarksList_ContainerContentChanging(ListViewBase sender, ContainerContentChangingEventArgs args)
-        {
-            if (args.Item is not MangaPageViewModel vm) return;
-            if (args.InRecycleQueue)
-            {
-                vm.UnloadThumbnail();
-                return;
-            }
-
-            string path = vm.FilePath ?? string.Empty;
-            ThumbnailDecodeScheduler.Instance.EnqueueBookmark(vm, path, DispatcherQueue);
-        }
-
-        private void BookmarksList_ItemClick(object sender, ItemClickEventArgs e)
-        {
-            if (e.ClickedItem is MangaPageViewModel vm && DataContext is MangaViewModel mvm)
-                mvm.NavigateToBookmarkCommand.Execute(vm);
+            int selectedIndex = ViewModel.GetThumbnailIndex(ViewModel.SelectedThumbnailItem);
+            ThumbnailDecodeScheduler.Instance.UpdateSelectedIndex(selectedIndex >= 0 ? selectedIndex : pivot);
+            ThumbnailDecodeScheduler.Instance.Enqueue(vm, path, index >= 0 ? index : visibleIndex, selectedIndex >= 0 ? selectedIndex : pivot, DispatcherQueue);
         }
 
         private void RemoveBookmark_Click(object sender, RoutedEventArgs e)
@@ -591,22 +559,26 @@ namespace MangaViewer.Pages
 
         private void RebuildViewportThumbnailQueue(int radius = 48)
         {
-            if (_isUnloaded || ThumbnailsList == null || ViewModel == null || ViewModel.Thumbnails.Count == 0) return;
+            if (_isUnloaded || ThumbnailsList == null || ViewModel == null) return;
+            var thumbnails = ViewModel.VisibleThumbnails;
+            if (thumbnails.Count == 0) return;
             if (!TryGetRealizedIndexRange(out int minIndex, out int maxIndex)) return;
 
             int pivot = (minIndex + maxIndex) / 2;
+            int selectedIndex = ViewModel.GetThumbnailIndex(ViewModel.SelectedThumbnailItem);
 
             var seeds = new List<(MangaPageViewModel Vm, string Path, int Index)>();
-            int count = ViewModel.Thumbnails.Count;
+            int count = thumbnails.Count;
 
             void TryAdd(int i)
             {
                 if (i < 0 || i >= count) return;
-                var vm = ViewModel.Thumbnails[i];
+                var vm = thumbnails[i];
                 var path = vm.FilePath;
                 if (string.IsNullOrEmpty(path)) return;
                 if (vm.HasThumbnail) return;
-                seeds.Add((vm, path!, i));
+                int actualIndex = ViewModel.GetThumbnailIndex(vm);
+                seeds.Add((vm, path!, actualIndex >= 0 ? actualIndex : i));
             }
 
             // 중심부터 나선형으로 추가
@@ -618,19 +590,7 @@ namespace MangaViewer.Pages
             }
 
             // 대기열 교체(거리 > 200 항목은 스케줄러에서 처리)
-            ThumbnailDecodeScheduler.Instance.ReplacePendingWithViewportFirst(seeds, pivot, DispatcherQueue);
-        }
-
-        private void BookmarkPaneResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
-        {
-            if (BookmarksList?.Parent is Grid g)
-            {
-                double cur = g.ColumnDefinitions[1].Width.Value;
-                double newLen = cur + e.HorizontalChange;
-                newLen = Math.Clamp(newLen, BookmarkPaneMinWidth, BookmarkPaneMaxWidth);
-                g.ColumnDefinitions[1].Width = new GridLength(newLen);
-                try { SettingsProvider.Set("BookmarkPaneWidth", newLen); } catch { }
-            }
+            ThumbnailDecodeScheduler.Instance.ReplacePendingWithViewportFirst(seeds, selectedIndex >= 0 ? selectedIndex : pivot, DispatcherQueue);
         }
 
         private void OnLeftImageSizeChanged(object sender, SizeChangedEventArgs e) => RedrawLeft();
