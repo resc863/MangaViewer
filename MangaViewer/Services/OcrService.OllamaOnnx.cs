@@ -653,15 +653,7 @@ namespace MangaViewer.Services
 
                 try
                 {
-                    var method = session.GetType().GetMethod("GetExecutionProviderNames", Type.EmptyTypes);
-                    if (method?.Invoke(session, null) is IEnumerable<string> names)
-                    {
-                        string epChain = string.Join(" -> ", names.Where(n => !string.IsNullOrWhiteSpace(n)));
-                        Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain: {epChain}");
-                        return;
-                    }
-
-                    Debug.WriteLine("[OcrService][ONNX] Runtime EP execution chain: unavailable (GetExecutionProviderNames API not found)");
+                    Debug.WriteLine($"[OcrService][ONNX] Runtime EP execution chain logging skipped for AOT compatibility. SessionType={session.GetType().FullName}");
                 }
                 catch (Exception ex)
                 {
@@ -1622,7 +1614,7 @@ If no readable text exists, return an empty string.";
                 payload["id_slot"] = requestLease.SlotId;
             }
 
-            string payloadJson = JsonSerializer.Serialize(payload);
+            string payloadJson = SerializeJsonObject(payload);
             Debug.WriteLine($"{requestLogPrefix} Request JSON: {TruncateForDebug(payloadJson)}");
 
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/v1/chat/completions")
@@ -1666,7 +1658,7 @@ If no readable text exists, return an empty string.";
             CancellationToken cancellationToken,
             bool logResponseReceived = false)
         {
-            string payloadJson = JsonSerializer.Serialize(payload);
+            string payloadJson = SerializeJsonObject(payload);
             Debug.WriteLine($"{requestLogPrefix} Request JSON: {TruncateForDebug(payloadJson)}");
 
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/chat")
@@ -1749,6 +1741,80 @@ If no readable text exists, return an empty string.";
                     requestToken,
                     logResponseReceived: true).ConfigureAwait(false);
             }).ConfigureAwait(false);
+        }
+
+        private static string SerializeJsonObject(IReadOnlyDictionary<string, object?> payload)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                WriteObject(writer, payload);
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
+        private static void WriteObject(Utf8JsonWriter writer, IReadOnlyDictionary<string, object?> values)
+        {
+            writer.WriteStartObject();
+            foreach (var pair in values)
+            {
+                writer.WritePropertyName(pair.Key);
+                WriteValue(writer, pair.Value);
+            }
+            writer.WriteEndObject();
+        }
+
+        private static void WriteValue(Utf8JsonWriter writer, object? value)
+        {
+            switch (value)
+            {
+                case null:
+                    writer.WriteNullValue();
+                    return;
+                case string stringValue:
+                    writer.WriteStringValue(stringValue);
+                    return;
+                case bool boolValue:
+                    writer.WriteBooleanValue(boolValue);
+                    return;
+                case int intValue:
+                    writer.WriteNumberValue(intValue);
+                    return;
+                case long longValue:
+                    writer.WriteNumberValue(longValue);
+                    return;
+                case float floatValue:
+                    writer.WriteNumberValue(floatValue);
+                    return;
+                case double doubleValue:
+                    writer.WriteNumberValue(doubleValue);
+                    return;
+                case decimal decimalValue:
+                    writer.WriteNumberValue(decimalValue);
+                    return;
+                case JsonElement jsonElement:
+                    jsonElement.WriteTo(writer);
+                    return;
+                case IEnumerable<string> stringSequence:
+                    writer.WriteStartArray();
+                    foreach (var item in stringSequence)
+                        writer.WriteStringValue(item);
+                    writer.WriteEndArray();
+                    return;
+                case IReadOnlyDictionary<string, object?> objectDictionary:
+                    WriteObject(writer, objectDictionary);
+                    return;
+                case IEnumerable<object?> sequence:
+                    writer.WriteStartArray();
+                    foreach (var item in sequence)
+                        WriteValue(writer, item);
+                    writer.WriteEndArray();
+                    return;
+                default:
+                    writer.WriteStringValue(value.ToString());
+                    return;
+            }
         }
 
         private async Task<OllamaModelCapabilities> GetOllamaModelCapabilitiesAsync(string model, CancellationToken cancellationToken)

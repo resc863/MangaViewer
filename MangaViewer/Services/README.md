@@ -23,7 +23,7 @@ Main areas
   - `TranslationClientFactory`: builds the active `IChatClient` from the active provider descriptor.
   - `TranslationService`: owns translation request orchestration, caching, and JSON normalization for box translation.
   - `DelegatingChatClientBase`: shared provider wrapper base for adapters that delegate to an inner `IChatClient`.
-  - `GoogleGenAIChatClient`, `OpenAIChatClient`, `AnthropicChatClient`, `OllamaChatClient`: provider adapters built on `Microsoft.Extensions.AI`.
+- `GoogleGenAIChatClient`, `OpenAIChatClient`, `AnthropicChatClient`, `OllamaChatClient`: provider adapters built on `Microsoft.Extensions.AI` (`GoogleGenAIChatClient` uses the Gemini REST API directly).
   - `ThinkingLevelHelper`: provider-specific thinking normalization and budget helpers.
 - Remote gallery streaming
   - `EhentaiService`: fetches gallery pages, downloads images concurrently, stores them as `mem:` keys, caches completed/partial galleries, and yields ordered batches for streaming playback.

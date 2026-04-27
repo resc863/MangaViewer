@@ -37,5 +37,17 @@ namespace MangaViewer.Services
                 _ => 0
             };
         }
+
+        public static string? NormalizeGoogle(string? thinkingLevel)
+        {
+            return thinkingLevel switch
+            {
+                "Minimal" => "minimal",
+                "Low" => "low",
+                "Medium" => "medium",
+                "High" => "high",
+                _ => null
+            };
+        }
     }
 }

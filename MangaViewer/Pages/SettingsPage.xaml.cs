@@ -87,6 +87,7 @@ namespace MangaViewer.Pages
 
         public SettingsPage()
         {
+            InitializeComponent();
             BuildUi();
             Loaded += SettingsPage_Loaded;
             Unloaded += SettingsPage_Unloaded;
@@ -629,18 +630,7 @@ namespace MangaViewer.Pages
 
                     googleModelCombo.Items.Clear();
 
-                    var gClient = new Google.GenAI.Client(apiKey: translationSettings.GoogleApiKey);
-                    var pager = await gClient.Models.ListAsync();
-
-                    var modelIds = new List<string>();
-                    await foreach (var model in pager)
-                    {
-                        if (model.Name is not null)
-                        {
-                            var id = model.Name.StartsWith("models/") ? model.Name[7..] : model.Name;
-                            modelIds.Add(id);
-                        }
-                    }
+                    var modelIds = await GoogleGeminiRestApi.ListModelIdsAsync(translationSettings.GoogleApiKey, CancellationToken.None).ConfigureAwait(true);
 
                     modelIds.Sort((a, b) =>
                     {
