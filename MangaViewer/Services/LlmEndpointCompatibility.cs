@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -181,7 +182,7 @@ namespace MangaViewer.Services
                 using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/slots/" + slotId + "?action=erase");
                 string body = string.IsNullOrWhiteSpace(model)
                     ? "{}"
-                    : JsonSerializer.Serialize(new { model });
+                    : BuildModelRequestJson(model);
                 request.Content = new StringContent(body, Encoding.UTF8, "application/json");
                 using var response = await http.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode)
@@ -337,7 +338,7 @@ namespace MangaViewer.Services
 
         private static async Task RequestModelLoadAsync(HttpClient http, string endpoint, string model, CancellationToken cancellationToken)
         {
-            var payload = JsonSerializer.Serialize(new { model });
+            var payload = BuildModelRequestJson(model);
             DebugLog($"RequestModelLoad: endpoint={endpoint}, model={model}, payload={payload}");
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/models/load")
             {
@@ -545,6 +546,19 @@ namespace MangaViewer.Services
             var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
             DebugLog($"HTTP GET success: url={url}, body={Truncate(json)}");
             return JsonDocument.Parse(json);
+        }
+
+        internal static string BuildModelRequestJson(string model)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("model", model);
+                writer.WriteEndObject();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
         }
 
         private static LlmApiFlavor RememberFlavor(string endpoint, LlmApiFlavor flavor)

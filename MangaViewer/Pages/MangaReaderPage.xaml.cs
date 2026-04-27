@@ -190,6 +190,7 @@ namespace MangaViewer.Pages
                 UnhookVm(ViewModel);
 
             ViewModel = vm;
+            Bindings.Update();
 
             ViewModel.PageViewChanged += OnVmRedrawRequested;
             ViewModel.OcrCompleted += OnVmRedrawRequested;

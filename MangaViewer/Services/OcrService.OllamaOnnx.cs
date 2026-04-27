@@ -1785,10 +1785,9 @@ If no readable text exists, return an empty string.";
                 return endpointCapabilities;
             }
 
-            var payload = new { model };
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/show")
             {
-                Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json")
+                Content = new StringContent(LlmEndpointCompatibility.BuildModelRequestJson(model), Encoding.UTF8, "application/json")
             };
 
             using var requestLease = await OllamaRequestLoadCoordinator.AcquireAsync(

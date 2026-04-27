@@ -42,7 +42,7 @@
                     <AppBarToggleButton x:Name="ThumbnailPaneToggle"
                                          x:Uid="ThumbnailPaneToggle"
                                          ToolTipService.ToolTip="썸네일 패널"
-                                         IsChecked="{Binding IsPaneOpen, Mode=TwoWay}">
+                                         IsChecked="{x:Bind ViewModel.IsPaneOpen, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE70e;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
@@ -50,12 +50,12 @@
                     <AppBarToggleButton x:Name="BookmarkPaneToggle"
                                          x:Uid="BookmarkPaneToggle"
                                          ToolTipService.ToolTip="북마크만 보기"
-                                         IsChecked="{Binding IsBookmarkFilterActive, Mode=TwoWay}">
+                                         IsChecked="{x:Bind ViewModel.IsBookmarkFilterActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE735;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
-                    <AppBarButton x:Name="AddBookmarkButton" x:Uid="AddBookmarkButton" Label="북마크 추가" Command="{Binding AddBookmarkCommand}">
+                    <AppBarButton x:Name="AddBookmarkButton" x:Uid="AddBookmarkButton" Label="북마크 추가" Command="{x:Bind ViewModel.AddBookmarkCommand}">
                         <AppBarButton.Icon>
                             <FontIcon Glyph="&#xE141;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarButton.Icon>
@@ -63,39 +63,39 @@
                     <AppBarSeparator/>
                     <AppBarButton x:Name="OpenFolderButton" x:Uid="OpenFolderButton" Label="폴더 열기"
                                   Click="OpenFolder_Click"
-                                  IsEnabled="{Binding IsOpenFolderEnabled}"
+                                  IsEnabled="{x:Bind ViewModel.IsOpenFolderEnabled, Mode=OneWay}"
                                   Visibility="{Binding IsOpenFolderEnabled, Converter={StaticResource BooleanToVisibilityConverter}}">
                         <AppBarButton.Icon>
                             <SymbolIcon Symbol="Folder"/>
                         </AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarSeparator/>
-                    <AppBarButton Label="{Binding DirectionButtonText}"
-                                  Command="{Binding ToggleDirectionCommand}">
+                    <AppBarButton Label="{x:Bind ViewModel.DirectionButtonText, Mode=OneWay}"
+                                  Command="{x:Bind ViewModel.ToggleDirectionCommand}">
                         <AppBarButton.Icon>
                             <FontIcon Glyph="&#xE8AB;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarButton.Icon>
                     </AppBarButton>
-                    <AppBarButton Label="{Binding CoverButtonText}"
-                                  Command="{Binding ToggleCoverCommand}">
+                    <AppBarButton Label="{x:Bind ViewModel.CoverButtonText, Mode=OneWay}"
+                                  Command="{x:Bind ViewModel.ToggleCoverCommand}">
                         <AppBarButton.Icon>
                             <FontIcon Glyph="&#xE170;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarButton.Icon>
                     </AppBarButton>
                     <AppBarSeparator/>
-                    <AppBarToggleButton x:Name="OcrToggle" x:Uid="OcrToggle" Label="OCR" IsEnabled="{Binding IsOcrToggleEnabled}" IsChecked="{Binding IsOcrActive, Mode=TwoWay}">
+                    <AppBarToggleButton x:Name="OcrToggle" x:Uid="OcrToggle" Label="OCR" IsEnabled="{x:Bind ViewModel.IsOcrToggleEnabled, Mode=OneWay}" IsChecked="{x:Bind ViewModel.IsOcrActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE8C3;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
-                    <AppBarToggleButton x:Name="TranslationToggle" x:Uid="TranslationToggle" Label="번역" IsEnabled="{Binding IsTranslationToggleEnabled}" IsChecked="{Binding IsTranslationActive, Mode=TwoWay}">
+                    <AppBarToggleButton x:Name="TranslationToggle" x:Uid="TranslationToggle" Label="번역" IsEnabled="{x:Bind ViewModel.IsTranslationToggleEnabled, Mode=OneWay}" IsChecked="{x:Bind ViewModel.IsTranslationActive, Mode=TwoWay}">
                         <AppBarToggleButton.Icon>
                             <FontIcon Glyph="&#xE8C1;" FontFamily="Segoe MDL2 Assets"/>
                         </AppBarToggleButton.Icon>
                     </AppBarToggleButton>
                     <AppBarButton Label="새로고침"
                                   ToolTipService.ToolTip="현재 페이지 번역 다시 요청"
-                                  Command="{Binding RefreshTranslationCommand}">
+                                  Command="{x:Bind ViewModel.RefreshTranslationCommand}">
                         <AppBarButton.Icon>
                             <SymbolIcon Symbol="Refresh"/>
                         </AppBarButton.Icon>
@@ -108,7 +108,7 @@
 
         <!-- Navigation / content area -->
         <NavigationView Grid.Row="1" x:Name="LeftNav" IsBackButtonVisible="Auto"
-                        IsPaneOpen="{Binding IsNavOpen, Mode=TwoWay}" PaneDisplayMode="Left" OpenPaneLength="240" CompactPaneLength="48"
+                        IsPaneOpen="{x:Bind ViewModel.IsNavOpen, Mode=TwoWay}" PaneDisplayMode="Left" OpenPaneLength="240" CompactPaneLength="48"
                         IsTitleBarAutoPaddingEnabled="False" ItemInvoked="LeftNav_ItemInvoked" IsSettingsVisible="True" BackRequested="LeftNav_BackRequested"
                         Background="Transparent">
             <NavigationView.MenuItems>

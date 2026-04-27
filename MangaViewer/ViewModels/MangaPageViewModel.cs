@@ -24,7 +24,7 @@ namespace MangaViewer.ViewModels
     ///  - Stores both low and high resolution variants; replaces low with high when ready.
     ///  - For memory-backed images (mem: keys) it fetches raw bytes from ImageCacheService.
     /// </summary>
-    public class MangaPageViewModel : BaseViewModel
+    public partial class MangaPageViewModel : BaseViewModel
     {
         private string? _filePath;
         private int _version; // Incremented when FilePath changes; used to discard stale async results.

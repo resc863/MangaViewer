@@ -90,13 +90,7 @@ namespace MangaViewer.Services
             if (!forceRefresh && s_translationCache.TryGetValue(cacheKey, out string? cached))
                 return ParseIndexedTranslations(cached);
 
-            var boxPayload = new
-            {
-                page_text = effectivePageText,
-                boxes = inputs.Select(input => new { index = input.Index, text = input.Text }).ToArray()
-            };
-
-            string jsonPayload = JsonSerializer.Serialize(boxPayload, s_promptJsonSerializerOptions);
+            string jsonPayload = BuildBoxTranslationPayloadJson(effectivePageText, inputs);
             string boxSystemPrompt = string.IsNullOrWhiteSpace(translationClient.SystemPrompt)
                 ? "You are a professional manga translator."
                 : translationClient.SystemPrompt;
@@ -130,6 +124,29 @@ namespace MangaViewer.Services
 
         private static string GetTargetLanguage(TranslationSettingsService settings)
             => string.IsNullOrWhiteSpace(settings.TargetLanguage) ? "Korean" : settings.TargetLanguage.Trim();
+
+        private static string BuildBoxTranslationPayloadJson(string pageText, IReadOnlyList<IndexedTranslationInput> inputs)
+        {
+            using var stream = new System.IO.MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("page_text", pageText);
+                writer.WritePropertyName("boxes");
+                writer.WriteStartArray();
+                foreach (var input in inputs)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteNumber("index", input.Index);
+                    writer.WriteString("text", input.Text);
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            return System.Text.Encoding.UTF8.GetString(stream.ToArray());
+        }
 
         private static IReadOnlyDictionary<int, string> ParseIndexedTranslations(string json)
         {

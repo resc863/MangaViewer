@@ -6,7 +6,6 @@ using System;
 using System.Linq;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media; // VisualTreeHelper
 using MangaViewer.Services.Thumbnails; // moved thumbnail services
 using MangaViewer.Helpers;
@@ -220,13 +219,7 @@ namespace MangaViewer.Pages
 
             _libraryPaths = new ObservableCollection<string>();
             _libraryPathsList = new ListView { Height = 160, SelectionMode = ListViewSelectionMode.Single, ItemsSource = _libraryPaths };
-            _libraryPathsList.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
-<Grid Margin='0,4,0,4' ColumnDefinitions='*,Auto,Auto,Auto'>
-<TextBlock VerticalAlignment='Center' Text='{Binding}' TextTrimming='CharacterEllipsis'/>
-<Button Content='↑' Padding='8,4,8,4' Grid.Column='1' Margin='4,0,0,0'/>
-<Button Content='↓' Padding='8,4,8,4' Grid.Column='2' Margin='4,0,0,0'/>
-<Button Content='제거' Padding='12,4,12,4' Grid.Column='3' Margin='8,0,0,0'/>
-</Grid></DataTemplate>");
+            _libraryPathsList.ItemTemplate = (DataTemplate)Resources["LibraryPathItemTemplate"];
             _libraryPathsList.ContainerContentChanging += LibraryPathsList_ContainerContentChanging;
             stack.Children.Add(_libraryPathsList);
         }
@@ -941,12 +934,7 @@ namespace MangaViewer.Pages
 
             _cacheEntries = new ObservableCollection<CacheEntryView>();
             _cacheList = new ListView { Height = 280, SelectionMode = ListViewSelectionMode.Single, ItemsSource = _cacheEntries };
-            _cacheList.ItemTemplate = (DataTemplate)XamlReader.Load(@"<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'>
-<Grid Margin='0,4,0,4' ColumnDefinitions='*,Auto,Auto'>
-<TextBlock VerticalAlignment='Center' FontFamily='Consolas' Text='{Binding GalleryId}'/>
-<TextBlock VerticalAlignment='Center' Margin='12,0,12,0' Text='{Binding Count}' Grid.Column='1'/>
-<Button Content='삭제' Padding='12,4,12,4' Grid.Column='2'/>
-</Grid></DataTemplate>");
+            _cacheList.ItemTemplate = (DataTemplate)Resources["CacheEntryItemTemplate"];
             _cacheList.ContainerContentChanging += CacheList_ContainerContentChanging;
             stack.Children.Add(_cacheList);
         }
@@ -1214,10 +1202,9 @@ namespace MangaViewer.Pages
                 return (capabilities.Vision, true, capabilities.Thinking);
             }
 
-            var payload = new { model };
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint + "/api/show")
             {
-                Content = new StringContent(JsonSerializer.Serialize(payload), System.Text.Encoding.UTF8, "application/json")
+                Content = new StringContent(LlmEndpointCompatibility.BuildModelRequestJson(model), System.Text.Encoding.UTF8, "application/json")
             };
 
             using var response = await http.SendAsync(request).ConfigureAwait(false);

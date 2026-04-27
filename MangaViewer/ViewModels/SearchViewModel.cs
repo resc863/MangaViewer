@@ -79,7 +79,7 @@ public sealed class EhentaiGalleryDetailParser : IGalleryDetailParser
 /// <summary>
 /// Gallery item view model representing a single search result (metadata + thumbnail).
 /// </summary>
-public class GalleryItemViewModel : BaseViewModel
+public partial class GalleryItemViewModel : BaseViewModel
 {
     private static readonly Regex _cleanTitleRegex = new(@"^(?:[\[(](?>[^\]\)]+)[\])]\s*)+", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -212,7 +212,7 @@ public class GalleryItemViewModel : BaseViewModel
 /// <summary>
 /// SearchViewModel: Executes gallery search, performs pagination, incremental thumbnail loading, and detail HTML fetch.
 /// </summary>
-public class SearchViewModel : BaseViewModel
+public partial class SearchViewModel : BaseViewModel
 {
     private static readonly HttpClient _http = CreateClient();
     private readonly IGalleryDetailParser _detailParser = new EhentaiGalleryDetailParser();

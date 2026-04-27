@@ -6,7 +6,7 @@ using MangaViewer.Helpers;
 
 namespace MangaViewer.ViewModels
 {
-    public class MangaFolderViewModel : BaseViewModel
+    public partial class MangaFolderViewModel : BaseViewModel
     {
         private string _folderPath = string.Empty;
         private string _folderName = string.Empty;

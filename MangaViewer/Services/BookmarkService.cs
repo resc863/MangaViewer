@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace MangaViewer.Services
 {
@@ -30,11 +30,6 @@ namespace MangaViewer.Services
         private static readonly Lazy<BookmarkService> _instance = new(() => new BookmarkService());
         public static BookmarkService Instance => _instance.Value;
 
-        private static readonly JsonSerializerOptions s_options = new()
-        {
-            WriteIndented = true
-        };
-
         private string? _currentFolderPath;
         private readonly HashSet<string> _items = new(StringComparer.OrdinalIgnoreCase);
         private const string FileName = "bookmarks.json";
@@ -57,10 +52,10 @@ namespace MangaViewer.Services
                 var json = File.ReadAllText(filePath);
                 if (string.IsNullOrWhiteSpace(json)) return;
 
-                var data = JsonSerializer.Deserialize<BookmarkData>(json, s_options);
-                if (data?.Bookmarks != null)
+                var bookmarks = DeserializeBookmarks(json);
+                if (bookmarks != null)
                 {
-                    foreach (var item in data.Bookmarks)
+                    foreach (var item in bookmarks)
                     {
                         var fullPath = TryResolveToFullPath(item);
                         if (!string.IsNullOrWhiteSpace(fullPath))
@@ -106,15 +101,11 @@ namespace MangaViewer.Services
             try
             {
                 var filePath = Path.Combine(_currentFolderPath, FileName);
-                var data = new BookmarkData
-                {
-                    Bookmarks = _items
+                var json = SerializeBookmarks(
+                    _items
                         .Select(TryGetRelativePath)
                         .Where(static p => !string.IsNullOrWhiteSpace(p))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList()!
-                };
-                var json = JsonSerializer.Serialize(data, s_options);
+                        .Distinct(StringComparer.OrdinalIgnoreCase)!);
                 File.WriteAllText(filePath, json);
             }
             catch { }
@@ -181,10 +172,50 @@ namespace MangaViewer.Services
             return TryNormalizeToFullPath(storedPath);
         }
 
-        public class BookmarkData
+        private static List<string>? DeserializeBookmarks(string json)
         {
-            [JsonPropertyName("bookmarks")]
-            public List<string> Bookmarks { get; set; } = new();
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("bookmarks", out var bookmarksElement)
+                    || bookmarksElement.ValueKind != JsonValueKind.Array)
+                    return null;
+
+                var result = new List<string>();
+                foreach (var item in bookmarksElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var value = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                            result.Add(value);
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string SerializeBookmarks(IEnumerable<string> bookmarks)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("bookmarks");
+                writer.WriteStartArray();
+                foreach (var bookmark in bookmarks)
+                    writer.WriteStringValue(bookmark);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
         }
     }
 }

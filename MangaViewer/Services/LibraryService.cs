@@ -7,7 +7,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -17,11 +16,6 @@ namespace MangaViewer.Services
     {
         private static readonly string s_folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer");
         private static readonly string s_libraryFile = Path.Combine(s_folder, "library.json");
-        private static readonly JsonSerializerOptions s_options = new() 
-        { 
-            WriteIndented = true
-        };
-
         private static readonly HashSet<string> s_imageExtensions = new(StringComparer.OrdinalIgnoreCase)
             { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".avif", ".gif" };
 
@@ -160,11 +154,11 @@ namespace MangaViewer.Services
                 if (!File.Exists(s_libraryFile)) return;
                 
                 var json = await File.ReadAllTextAsync(s_libraryFile).ConfigureAwait(false);
-                var data = JsonSerializer.Deserialize<LibraryData>(json, s_options);
-                
-                if (data?.Paths != null)
+                var paths = DeserializePaths(json);
+
+                if (paths != null)
                 {
-                    _libraryPaths = data.Paths
+                    _libraryPaths = paths
                         .Where(p => !string.IsNullOrWhiteSpace(p) && Directory.Exists(p))
                         .ToList();
                 }
@@ -180,13 +174,58 @@ namespace MangaViewer.Services
             {
                 Directory.CreateDirectory(s_folder);
                 
-                var data = new LibraryData { Paths = new List<string>(_libraryPaths) };
-                var json = JsonSerializer.Serialize(data, s_options);
+                var json = SerializePaths(_libraryPaths);
                 
                 await File.WriteAllTextAsync(s_libraryFile, json).ConfigureAwait(false);
             }
             catch { }
             finally { _lock.Release(); }
+        }
+
+        private static List<string>? DeserializePaths(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object
+                    || !doc.RootElement.TryGetProperty("Paths", out var pathsElement)
+                    || pathsElement.ValueKind != JsonValueKind.Array)
+                    return null;
+
+                var result = new List<string>();
+                foreach (var item in pathsElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        var value = item.GetString();
+                        if (!string.IsNullOrWhiteSpace(value))
+                            result.Add(value);
+                    }
+                }
+
+                return result;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string SerializePaths(IEnumerable<string> paths)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("Paths");
+                writer.WriteStartArray();
+                foreach (var path in paths)
+                    writer.WriteStringValue(path);
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            return System.Text.Encoding.UTF8.GetString(stream.ToArray());
         }
 
         public class LibraryData

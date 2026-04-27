@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -20,17 +21,91 @@ namespace MangaViewer.Services
     /// </summary>
     public static class SettingsProvider
     {
+        private enum SettingValueKind
+        {
+            Null,
+            String,
+            Boolean,
+            Integer,
+            Number,
+            RawJson
+        }
+
+        private readonly struct SettingValue
+        {
+            public SettingValueKind Kind { get; }
+            public string? StringValue { get; }
+            public bool BooleanValue { get; }
+            public long IntegerValue { get; }
+            public double NumberValue { get; }
+            public string? RawJson { get; }
+
+            private SettingValue(SettingValueKind kind, string? stringValue = null, bool booleanValue = false, long integerValue = 0, double numberValue = 0, string? rawJson = null)
+            {
+                Kind = kind;
+                StringValue = stringValue;
+                BooleanValue = booleanValue;
+                IntegerValue = integerValue;
+                NumberValue = numberValue;
+                RawJson = rawJson;
+            }
+
+            public static SettingValue FromString(string? value) => new(SettingValueKind.String, stringValue: value ?? string.Empty);
+            public static SettingValue FromBoolean(bool value) => new(SettingValueKind.Boolean, booleanValue: value);
+            public static SettingValue FromInteger(long value) => new(SettingValueKind.Integer, integerValue: value);
+            public static SettingValue FromNumber(double value) => new(SettingValueKind.Number, numberValue: value);
+            public static SettingValue FromNull() => new(SettingValueKind.Null);
+            public static SettingValue FromRawJson(string rawJson) => new(SettingValueKind.RawJson, rawJson: rawJson);
+
+            public static SettingValue FromJsonElement(JsonElement element)
+            {
+                return element.ValueKind switch
+                {
+                    JsonValueKind.String => FromString(element.GetString()),
+                    JsonValueKind.True => FromBoolean(true),
+                    JsonValueKind.False => FromBoolean(false),
+                    JsonValueKind.Number => element.TryGetInt64(out var integerValue)
+                        ? FromInteger(integerValue)
+                        : (element.TryGetDouble(out var numberValue)
+                            ? FromNumber(numberValue)
+                            : FromRawJson(element.GetRawText())),
+                    JsonValueKind.Null => FromNull(),
+                    _ => FromRawJson(element.GetRawText())
+                };
+            }
+
+            public void Write(Utf8JsonWriter writer, string key)
+            {
+                writer.WritePropertyName(key);
+                switch (Kind)
+                {
+                    case SettingValueKind.String:
+                        writer.WriteStringValue(StringValue);
+                        break;
+                    case SettingValueKind.Boolean:
+                        writer.WriteBooleanValue(BooleanValue);
+                        break;
+                    case SettingValueKind.Integer:
+                        writer.WriteNumberValue(IntegerValue);
+                        break;
+                    case SettingValueKind.Number:
+                        writer.WriteNumberValue(NumberValue);
+                        break;
+                    case SettingValueKind.RawJson:
+                        writer.WriteRawValue(RawJson ?? "null");
+                        break;
+                    default:
+                        writer.WriteNullValue();
+                        break;
+                }
+            }
+        }
+
         private static readonly string s_folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MangaViewer");
         private static readonly string s_file = Path.Combine(s_folder, "settings.json");
         private static readonly ReaderWriterLockSlim s_lock = new(LockRecursionPolicy.NoRecursion);
-        private static readonly JsonSerializerOptions s_options = new() 
-        { 
-            WriteIndented = false,
-            PropertyNameCaseInsensitive = true,
-            AllowTrailingCommas = true
-        };
-        
-        private static Dictionary<string, object?> s_cache = new(StringComparer.OrdinalIgnoreCase);
+
+        private static Dictionary<string, SettingValue> s_cache = new(StringComparer.OrdinalIgnoreCase);
         private static bool s_loaded;
 
         private static void EnsureLoaded()
@@ -49,13 +124,13 @@ namespace MangaViewer.Services
                         var json = File.ReadAllText(s_file);
                         if (!string.IsNullOrWhiteSpace(json))
                         {
-                            var dict = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(json, s_options);
-                            if (dict != null)
+                            using var document = JsonDocument.Parse(json);
+                            if (document.RootElement.ValueKind == JsonValueKind.Object)
                             {
-                                var typedCache = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                                foreach (var kvp in dict)
+                                var typedCache = new Dictionary<string, SettingValue>(StringComparer.OrdinalIgnoreCase);
+                                foreach (var property in document.RootElement.EnumerateObject())
                                 {
-                                    typedCache[kvp.Key] = kvp.Value;
+                                    typedCache[property.Name] = SettingValue.FromJsonElement(property.Value);
                                 }
                                 s_cache = typedCache;
                             }
@@ -72,37 +147,28 @@ namespace MangaViewer.Services
         {
             try
             {
-                Dictionary<string, object?> toSerialize;
+                Dictionary<string, SettingValue> toSerialize;
                 
                 s_lock.EnterReadLock();
                 try
                 {
-                    toSerialize = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var kvp in s_cache)
-                    {
-                        if (kvp.Value is JsonElement element)
-                        {
-                            toSerialize[kvp.Key] = element.ValueKind switch
-                            {
-                                JsonValueKind.String => element.GetString(),
-                                JsonValueKind.Number => element.TryGetDouble(out var d) ? d : 0.0,
-                                JsonValueKind.True => true,
-                                JsonValueKind.False => false,
-                                JsonValueKind.Null => null,
-                                _ => kvp.Value
-                            };
-                        }
-                        else
-                        {
-                            toSerialize[kvp.Key] = kvp.Value;
-                        }
-                    }
+                    toSerialize = new Dictionary<string, SettingValue>(s_cache, StringComparer.OrdinalIgnoreCase);
                 }
                 finally { s_lock.ExitReadLock(); }
-                
-                var json = JsonSerializer.Serialize(toSerialize, s_options);
+
                 Directory.CreateDirectory(s_folder);
-                File.WriteAllText(s_file, json);
+                using var stream = new MemoryStream();
+                using (var writer = new Utf8JsonWriter(stream))
+                {
+                    writer.WriteStartObject();
+                    foreach (var kvp in s_cache)
+                    {
+                        kvp.Value.Write(writer, kvp.Key);
+                    }
+                    writer.WriteEndObject();
+                }
+
+                File.WriteAllText(s_file, Encoding.UTF8.GetString(stream.ToArray()));
             }
             catch { }
         }
@@ -120,32 +186,40 @@ namespace MangaViewer.Services
                 if (!s_cache.TryGetValue(key, out var value))
                     return @default;
 
-                if (value is T typedValue)
-                    return typedValue;
+                Type targetType = Nullable.GetUnderlyingType(typeof(T)) ?? typeof(T);
 
-                if (value is JsonElement element)
+                if (targetType == typeof(string))
+                    return (T)(object)GetStringValue(value, @default?.ToString() ?? string.Empty);
+
+                if (targetType == typeof(bool) && TryGetBooleanValue(value, out bool boolValue))
+                    return (T)(object)boolValue;
+
+                if (targetType == typeof(int) && TryGetInt32Value(value, out int intValue))
+                    return (T)(object)intValue;
+
+                if (targetType == typeof(long) && TryGetInt64Value(value, out long longValue))
+                    return (T)(object)longValue;
+
+                if (targetType == typeof(double) && TryGetDoubleValue(value, out double doubleValue))
+                    return (T)(object)doubleValue;
+
+                if (targetType == typeof(float) && TryGetDoubleValue(value, out double floatSource))
+                    return (T)(object)(float)floatSource;
+
+                if (targetType.IsEnum)
                 {
-                    try 
-                    { 
-                        return JsonSerializer.Deserialize<T>(element.GetRawText(), s_options) ?? @default; 
+                    if (TryGetStringOrNumericValue(value, out string? enumText))
+                    {
+                        try
+                        {
+                            object enumValue = Enum.Parse(targetType, enumText, ignoreCase: true);
+                            return (T)enumValue;
+                        }
+                        catch
+                        {
+                        }
                     }
-                    catch { return @default; }
                 }
-
-                try
-                {
-                    if (typeof(T) == typeof(double) && value != null)
-                        return (T)(object)Convert.ToDouble(value);
-                    if (typeof(T) == typeof(int) && value != null)
-                        return (T)(object)Convert.ToInt32(value);
-                    if (typeof(T) == typeof(long) && value != null)
-                        return (T)(object)Convert.ToInt64(value);
-                    if (typeof(T) == typeof(bool) && value != null)
-                        return (T)(object)Convert.ToBoolean(value);
-                    if (typeof(T) == typeof(string))
-                        return (T)(object)(value?.ToString() ?? string.Empty);
-                }
-                catch { }
 
                 return @default;
             }
@@ -162,7 +236,7 @@ namespace MangaViewer.Services
             s_lock.EnterWriteLock();
             try
             {
-                s_cache[key] = value;
+                s_cache[key] = CreateSettingValue(value);
             }
             finally { s_lock.ExitWriteLock(); }
             
@@ -253,6 +327,134 @@ namespace MangaViewer.Services
             {
                 Set(key, value);
             }
+        }
+
+        private static string GetStringValue(SettingValue value, string defaultValue)
+        {
+            return value.Kind switch
+            {
+                SettingValueKind.String => value.StringValue ?? string.Empty,
+                SettingValueKind.Boolean => value.BooleanValue ? bool.TrueString : bool.FalseString,
+                SettingValueKind.Integer => value.IntegerValue.ToString(CultureInfo.InvariantCulture),
+                SettingValueKind.Number => value.NumberValue.ToString("R", CultureInfo.InvariantCulture),
+                SettingValueKind.RawJson => value.RawJson ?? defaultValue,
+                _ => defaultValue
+            };
+        }
+
+        private static bool TryGetBooleanValue(SettingValue value, out bool result)
+        {
+            switch (value.Kind)
+            {
+                case SettingValueKind.Boolean:
+                    result = value.BooleanValue;
+                    return true;
+                case SettingValueKind.String:
+                    return bool.TryParse(value.StringValue, out result);
+                case SettingValueKind.Integer:
+                    result = value.IntegerValue != 0;
+                    return true;
+                case SettingValueKind.Number:
+                    result = Math.Abs(value.NumberValue) > double.Epsilon;
+                    return true;
+                default:
+                    result = default;
+                    return false;
+            }
+        }
+
+        private static bool TryGetInt32Value(SettingValue value, out int result)
+        {
+            if (TryGetInt64Value(value, out long longResult) && longResult >= int.MinValue && longResult <= int.MaxValue)
+            {
+                result = (int)longResult;
+                return true;
+            }
+
+            result = default;
+            return false;
+        }
+
+        private static bool TryGetInt64Value(SettingValue value, out long result)
+        {
+            switch (value.Kind)
+            {
+                case SettingValueKind.Integer:
+                    result = value.IntegerValue;
+                    return true;
+                case SettingValueKind.Number:
+                    if (Math.Abs(value.NumberValue % 1) < double.Epsilon && value.NumberValue >= long.MinValue && value.NumberValue <= long.MaxValue)
+                    {
+                        result = (long)value.NumberValue;
+                        return true;
+                    }
+                    break;
+                case SettingValueKind.String:
+                    return long.TryParse(value.StringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out result);
+            }
+
+            result = default;
+            return false;
+        }
+
+        private static bool TryGetDoubleValue(SettingValue value, out double result)
+        {
+            switch (value.Kind)
+            {
+                case SettingValueKind.Integer:
+                    result = value.IntegerValue;
+                    return true;
+                case SettingValueKind.Number:
+                    result = value.NumberValue;
+                    return true;
+                case SettingValueKind.String:
+                    return double.TryParse(value.StringValue, NumberStyles.Float | NumberStyles.AllowThousands, CultureInfo.InvariantCulture, out result);
+            }
+
+            result = default;
+            return false;
+        }
+
+        private static bool TryGetStringOrNumericValue(SettingValue value, out string? result)
+        {
+            switch (value.Kind)
+            {
+                case SettingValueKind.String:
+                    result = value.StringValue;
+                    return !string.IsNullOrWhiteSpace(result);
+                case SettingValueKind.Integer:
+                    result = value.IntegerValue.ToString(CultureInfo.InvariantCulture);
+                    return true;
+                case SettingValueKind.Number:
+                    result = value.NumberValue.ToString("R", CultureInfo.InvariantCulture);
+                    return true;
+                default:
+                    result = null;
+                    return false;
+            }
+        }
+
+        private static SettingValue CreateSettingValue<T>(T value)
+        {
+            if (value == null)
+                return SettingValue.FromNull();
+
+            object boxed = value;
+            return boxed switch
+            {
+                string stringValue => SettingValue.FromString(stringValue),
+                bool boolValue => SettingValue.FromBoolean(boolValue),
+                int intValue => SettingValue.FromInteger(intValue),
+                long longValue => SettingValue.FromInteger(longValue),
+                short shortValue => SettingValue.FromInteger(shortValue),
+                byte byteValue => SettingValue.FromInteger(byteValue),
+                double doubleValue => SettingValue.FromNumber(doubleValue),
+                float floatValue => SettingValue.FromNumber(floatValue),
+                decimal decimalValue => SettingValue.FromNumber((double)decimalValue),
+                Enum enumValue => SettingValue.FromInteger(Convert.ToInt64(enumValue, CultureInfo.InvariantCulture)),
+                IFormattable formattable => SettingValue.FromString(formattable.ToString(null, CultureInfo.InvariantCulture)),
+                _ => SettingValue.FromString(boxed.ToString())
+            };
         }
     }
 }

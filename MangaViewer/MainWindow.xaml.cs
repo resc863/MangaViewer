@@ -19,7 +19,7 @@ namespace MangaViewer
 {
     public sealed partial class MainWindow : Window
     {
-        public MangaViewModel ViewModel { get; }
+        public MangaViewModel ViewModel { get; } = new();
         public static Frame? RootFrame { get; private set; }
         public static MangaViewModel? RootViewModel { get; private set; }
 
@@ -34,7 +34,6 @@ namespace MangaViewer
             // Use only the right-side transparent DragRegion as the draggable title bar area
             SetTitleBar(DragRegion);
 
-            ViewModel = new MangaViewModel();
             RootViewModel = ViewModel;
             RootGrid.DataContext = ViewModel;
             RootGrid.KeyDown += OnRootGridKeyDown;

@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace MangaViewer.ViewModels
 {
-    public class LibraryViewModel : BaseViewModel
+    public partial class LibraryViewModel : BaseViewModel
     {
         private readonly LibraryService _libraryService;
         private bool _isLoading;
