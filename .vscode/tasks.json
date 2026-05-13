@@ -22,7 +22,7 @@
 				"-c",
 				"Debug",
 				"-f",
-				"net9.0-windows10.0.26100.0",
+				"net10.0-windows10.0.26100.0",
 				"-p:Platform=x64"
 			],
 			"problemMatcher": "$msCompile",
@@ -42,7 +42,7 @@
 				"-c",
 				"Debug",
 				"-f",
-				"net9.0-windows10.0.26100.0",
+				"net10.0-windows10.0.26100.0",
 				"-p:Platform=x86"
 			],
 			"problemMatcher": "$msCompile",
@@ -62,7 +62,7 @@
 				"-c",
 				"Debug",
 				"-f",
-				"net9.0-windows10.0.26100.0",
+				"net10.0-windows10.0.26100.0",
 				"-p:Platform=ARM64"
 			],
 			"problemMatcher": "$msCompile",
@@ -71,6 +71,26 @@
 				"restore"
 			],
 			"detail": "Build WinUI3 app (ARM64 Debug)"
+		},
+		{
+			"label": "run Debug x64 with winapp",
+			"command": "pwsh",
+			"type": "process",
+			"args": [
+				"-NoProfile",
+				"-ExecutionPolicy",
+				"Bypass",
+				"-File",
+				"${workspaceFolder}/run_winapp.ps1",
+				"-NoBuild",
+				"-Detach"
+			],
+			"problemMatcher": "$msCompile",
+			"group": "test",
+			"dependsOn": [
+				"build Debug x64"
+			],
+			"detail": "Run WinUI3 app through winapp CLI debug identity"
 		}
 	]
 }

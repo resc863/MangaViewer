@@ -96,15 +96,19 @@ A WinUI 3 manga/image reader for Windows with local folder reading, library mana
 - SDK/Tooling
   - .NET SDK 10.0+
   - Windows 11 SDK 10.0.26100.x
-  - Windows App SDK 1.8.x (via NuGet)
+  - Windows App SDK 2.0.x (via NuGet)
+  - Windows App Development CLI (`winapp`) for package-identity debug runs without Visual Studio
 
 ## Build & Run
 
-VS Code tasks (updated):
+CLI-only development is supported. Visual Studio is not required for restore, build, or local package-identity runs.
+
+VS Code tasks:
 - `restore`
 - `build Debug x64` / `x86` / `ARM64` targeting `net10.0-windows10.0.26100.0`
+- `run Debug x64 with winapp`
 
-PowerShell (pwsh) manual commands:
+PowerShell (pwsh) with `dotnet`:
 
 ```pwsh
 # Restore
@@ -113,9 +117,27 @@ dotnet restore .\MangaViewer\MangaViewer.csproj
 # Build (x64 Debug)
 dotnet build .\MangaViewer\MangaViewer.csproj -c Debug -f net10.0-windows10.0.26100.0 -p:Platform=x64
 
-# Run (x64 Debug)
-dotnet run --project .\MangaViewer\MangaViewer.csproj -c Debug -p:Platform=x64
+# Run (x64 Debug, package identity via winapp integration)
+dotnet run --project .\MangaViewer\MangaViewer.csproj -c Debug -f net10.0-windows10.0.26100.0 -p:Platform=x64
 ```
+
+Visual Studio-free `winapp` loop:
+
+```pwsh
+# Build with dotnet
+.\build_winapp.ps1
+
+# Build, create a debug package identity, and run with winapp
+.\run_winapp.ps1
+
+# Launch and return immediately
+.\run_winapp.ps1 -NoBuild -Detach
+
+# Re-run an existing build with first-chance exception/debug output
+.\run_winapp.ps1 -NoBuild -DebugOutput
+```
+
+The project references `Microsoft.Windows.SDK.BuildTools.WinApp` so `dotnet run` can invoke the `winapp` package-identity flow, and sets `WindowsAppSDKSelfContained=true` so Windows App SDK runtime files are copied into the build output for CLI-only local runs.
 
 ## Usage
 
