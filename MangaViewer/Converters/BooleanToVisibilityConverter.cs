@@ -5,7 +5,7 @@ using System;
 namespace MangaViewer.Converters
 {
     /// <summary>
-    /// bool -> Visibility º¯È¯. parameter="Reversed" ½Ã ¹ÝÀü.
+    /// bool -> Visibility ë³€í™˜. parameter="Reversed" ì‹œ ë°˜ì „.
     /// </summary>
     public class BooleanToVisibilityConverter : IValueConverter
     {

@@ -29,7 +29,7 @@ namespace MangaViewer.Pages
         }
 
         private void OnTagFontSizeChanged(object? sender, EventArgs e) =>
-            TagFontSize = TagSettingsService.Instance.TagFontSize; // DP ¾÷µ¥ÀÌÆ®·Î ¹ÙÀÎµù ÀÚµ¿ ¹İ¿µ
+            TagFontSize = TagSettingsService.Instance.TagFontSize; // DP ì—…ë°ì´íŠ¸ë¡œ ë°”ì¸ë”© ìë™ ë°˜ì˜
 
         protected override void OnNavigatedTo(NavigationEventArgs e)
         {
@@ -95,7 +95,7 @@ namespace MangaViewer.Pages
 
         private static string BuildEhSearchQuery(string? prefix, string raw)
         {
-            // µû¿ÈÇ¥ Æ÷ÇÔ ÅÂ±× ÀÌ½ºÄÉÀÌÇÁ, artist/group µîÀº artist:"name$" ÇüÅÂ
+            // ë”°ì˜´í‘œ í¬í•¨ íƒœê·¸ ì´ìŠ¤ì¼€ì´í”„, artist/group ë“±ì€ artist:"name$" í˜•íƒœ
             string escaped = raw.Replace("\"", "\\\"");
             if (!string.IsNullOrEmpty(prefix))
                 return $"{prefix}:\"{escaped}$\""; // suffix exact match

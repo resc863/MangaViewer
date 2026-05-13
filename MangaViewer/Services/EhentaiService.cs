@@ -305,7 +305,7 @@ public class EhentaiService
                     session.LastYieldCount = ordered.Count;
                     if (delta.Count > 0)
                     {
-                        progress?.Invoke($"�ٿ�ε� {ordered.Count}/{session.Total}");
+                        progress?.Invoke($"다운로드 {ordered.Count}/{session.Total}");
                         if (VerboseDebug) Debug.WriteLine($"[EH][YIELD] url={galleryUrl} delta={delta.Count} total={ordered.Count}/{session.Total} inflight={Volatile.Read(ref _inFlightFetches)}");
                         yield return new GalleryBatch(delta, ordered.Count, session.Total);
                     }

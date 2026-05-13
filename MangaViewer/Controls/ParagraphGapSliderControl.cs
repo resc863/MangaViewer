@@ -18,8 +18,8 @@ namespace MangaViewer.Controls
         {
             Orientation = Orientation.Horizontal;
             Spacing = 8;
-            Children.Add(new TextBlock { Text = "¹®´Ü °£°Ý", VerticalAlignment = VerticalAlignment.Center });
-            _verticalToggle = new ToggleSwitch { Header = "¹æÇâ", IsOn = false, OffContent = "°¡·Î", OnContent = "¼¼·Î", MinWidth = 84 };
+            Children.Add(new TextBlock { Text = "ë¬¸ë‹¨ ê°„ê²©", VerticalAlignment = VerticalAlignment.Center });
+            _verticalToggle = new ToggleSwitch { Header = "ë°©í–¥", IsOn = false, OffContent = "ê°€ë¡œ", OnContent = "ì„¸ë¡œ", MinWidth = 84 };
             _verticalToggle.Toggled += (_,__) => Refresh();
             _slider = new Slider { Minimum = 0.1, Maximum = 3.0, StepFrequency = 0.05, Width = 180 };
             _slider.ValueChanged += Slider_ValueChanged;

@@ -5,11 +5,11 @@ using System;
 namespace MangaViewer.Converters
 {
     /// <summary>
-    /// bool -> Brush º¯È¯ (true=Green, false=Red, null/±âÅ¸=Gray)
+    /// bool -> Brush ë³€í™˜ (true=Green, false=Red, null/ê¸°íƒ€=Gray)
     /// </summary>
     public class BooleanToBrushConverter : IValueConverter
     {
-        // µ¿ÀÏ Brush Àç»ç¿ë (SolidColorBrush ºÒº¯ °¡Á¤)
+        // ë™ì¼ Brush ì¬ì‚¬ìš© (SolidColorBrush ë¶ˆë³€ ê°€ì •)
         private static readonly SolidColorBrush GreenBrush = new(Microsoft.UI.Colors.Green);
         private static readonly SolidColorBrush RedBrush = new(Microsoft.UI.Colors.Red);
         private static readonly SolidColorBrush GrayBrush = new(Microsoft.UI.Colors.Gray);

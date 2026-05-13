@@ -24,10 +24,10 @@
             <TextBlock x:Name="LibraryHeaderTitle" x:Uid="LibraryHeaderTitle" Grid.Column="0" Text="만화 라이브러리" 
                        Style="{StaticResource TitleTextBlockStyle}"/>
             
-             <Button x:Name="LibraryRefreshButton" x:Uid="LibraryRefreshButton" Grid.Column="1" 
-                    Content="새로고침" 
-                    Command="{x:Bind ViewModel.RefreshCommand}"
-                    Style="{StaticResource AccentButtonStyle}"/>
+              <Button x:Name="LibraryRefreshButton" x:Uid="LibraryRefreshButton" Grid.Column="1" 
+                     Content="새로고침" 
+                     Command="{Binding RefreshCommand}"
+                     Style="{StaticResource AccentButtonStyle}"/>
         </Grid>
 
         <!-- Content area with ScrollViewer -->
@@ -37,7 +37,7 @@
                       HorizontalScrollBarVisibility="Disabled">
             <Grid x:Name="ContentGrid">
                 <!-- Loading indicator -->
-                 <ProgressRing IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
+                 <ProgressRing IsActive="{Binding IsLoading, Mode=OneWay}"
                               Width="50" Height="50"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center"
@@ -45,7 +45,7 @@
 
                 <!-- Manga folders grid -->
                  <GridView x:Name="MangaGridView"
-                           ItemsSource="{x:Bind ViewModel.MangaFolders, Mode=OneWay}"
+                           ItemsSource="{Binding MangaFolders, Mode=OneWay}"
                           Padding="24,8,24,24"
                           SelectionMode="Single"
                           IsItemClickEnabled="True"

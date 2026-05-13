@@ -196,7 +196,7 @@ public partial class GalleryItemViewModel : BaseViewModel
     /// </summary>
     public IEnumerable<Section> GetSections()
     {
-        string HeaderFor(string key) => key switch { "artist" => "ÀÛ°¡", "group" => "±×·ì", "parody" => "ÆÐ·¯µð", "language" => "¾ð¾î", "male" => "Male ÅÂ±×", "female" => "Female ÅÂ±×", _ => key + " ÅÂ±×" };
+        string HeaderFor(string key) => key switch { "artist" => "ìž‘ê°€", "group" => "ê·¸ë£¹", "parody" => "íŒ¨ëŸ¬ë””", "language" => "ì–¸ì–´", "male" => "Male íƒœê·¸", "female" => "Female íƒœê·¸", _ => key + " íƒœê·¸" };
         string? PrefixFor(string key) => key switch { "artist" => "artist:", "group" => "group:", "parody" => "parody:", "male" => "male:", "female" => "female:", _ => null };
         int OrderFor(string key) => key switch { "artist" => 0, "group" => 1, "parody" => 2, "language" => 3, "female" => 4, "male" => 5, "misc" => 9, _ => 10 };
         foreach (var kv in _categoryMap)
@@ -205,7 +205,7 @@ public partial class GalleryItemViewModel : BaseViewModel
             yield return new Section(kv.Key, HeaderFor(kv.Key), kv.Value.ToList(), PrefixFor(kv.Key), OrderFor(kv.Key));
         }
         var misc = SearchableTags.ToList();
-        if (misc.Count > 0) yield return new Section("misc", "±âÅ¸ ÅÂ±×", misc, null, 9);
+        if (misc.Count > 0) yield return new Section("misc", "ê¸°íƒ€ íƒœê·¸", misc, null, 9);
     }
 }
 

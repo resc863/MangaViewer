@@ -9,7 +9,9 @@ using Microsoft.UI.Dispatching;
 using MangaViewer.Services;
 using System;
 using System.Globalization;
+using System.Linq;
 using Windows.Globalization;
+using Windows.System.UserProfile;
 
 namespace MangaViewer
 {
@@ -22,6 +24,7 @@ namespace MangaViewer
         public MainWindow? MainWindow => _window as MainWindow;
 
         public static ILoggerFactory LoggerFactory { get; private set; } = null!;
+        private static readonly string[] SupportedLanguageTags = ["ko-KR", "en-US", "ja-JP"];
 
         public App()
         {
@@ -33,12 +36,12 @@ namespace MangaViewer
             this.UnhandledException += OnUnhandledException;
         }
 
-        private static void ApplyAppLanguage()
+        public static string ApplyAppLanguage()
         {
             var selected = SettingsProvider.Get("AppLanguage", "auto");
             if (string.IsNullOrWhiteSpace(selected) || string.Equals(selected, "auto", StringComparison.OrdinalIgnoreCase))
             {
-                ApplicationLanguages.PrimaryLanguageOverride = string.Empty;
+                ApplicationLanguages.PrimaryLanguageOverride = ResolveSystemLanguageOverride();
             }
             else
             {
@@ -46,7 +49,7 @@ namespace MangaViewer
             }
 
             var cultureName = string.IsNullOrWhiteSpace(ApplicationLanguages.PrimaryLanguageOverride)
-                ? CultureInfo.CurrentUICulture.Name
+                ? (ApplicationLanguages.Languages.FirstOrDefault() ?? CultureInfo.CurrentUICulture.Name)
                 : ApplicationLanguages.PrimaryLanguageOverride;
 
             try
@@ -58,6 +61,29 @@ namespace MangaViewer
             catch
             {
             }
+
+            return cultureName;
+        }
+
+        private static string ResolveSystemLanguageOverride()
+        {
+            foreach (var language in GlobalizationPreferences.Languages)
+            {
+                var match = SupportedLanguageTags.FirstOrDefault(tag =>
+                    string.Equals(tag, language, StringComparison.OrdinalIgnoreCase) ||
+                    tag.StartsWith(language + "-", StringComparison.OrdinalIgnoreCase) ||
+                    language.StartsWith(tag + "-", StringComparison.OrdinalIgnoreCase));
+
+                if (!string.IsNullOrWhiteSpace(match))
+                    return match;
+            }
+
+            var cultureName = CultureInfo.CurrentUICulture.Name;
+            var cultureMatch = SupportedLanguageTags.FirstOrDefault(tag =>
+                string.Equals(tag, cultureName, StringComparison.OrdinalIgnoreCase) ||
+                tag.StartsWith(CultureInfo.CurrentUICulture.TwoLetterISOLanguageName + "-", StringComparison.OrdinalIgnoreCase));
+
+            return cultureMatch ?? "en-US";
         }
 
         private static void ConfigureLogging()

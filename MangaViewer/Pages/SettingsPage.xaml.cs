@@ -14,8 +14,6 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Globalization;
-using Windows.Globalization;
 
 namespace MangaViewer.Pages
 {
@@ -194,26 +192,26 @@ namespace MangaViewer.Pages
         {
             stack.Children.Add(new TextBlock
             {
-                Text = LocalizationHelper.GetString("Settings.General.Header", "¾Û ¼³Á¤"),
+                Text = LocalizationHelper.GetString("Settings.General.Header", "ì•± ì„¤ì •"),
                 FontSize = 20,
                 FontWeight = Microsoft.UI.Text.FontWeights.SemiBold
             });
 
             _appLanguageCombo = new ComboBox { Width = 180 };
-            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Auto", "½Ã½ºÅÛ ±âº»°ª"), Tag = "auto" });
-            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Korean", "ÇÑ±¹¾î"), Tag = "ko-KR" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Auto", "ì‹œìŠ¤í…œ ê¸°ë³¸ê°’"), Tag = "auto" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Korean", "í•œêµ­ì–´"), Tag = "ko-KR" });
             _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.English", "English"), Tag = "en-US" });
-            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Japanese", "ìíÜâåŞ"), Tag = "ja-JP" });
+            _appLanguageCombo.Items.Add(new ComboBoxItem { Content = LocalizationHelper.GetString("Settings.AppLanguage.Japanese", "æ—¥æœ¬èª"), Tag = "ja-JP" });
             _appLanguageCombo.SelectionChanged += AppLanguageCombo_SelectionChanged;
-            stack.Children.Add(Row(LocalizationHelper.GetString("Settings.AppLanguage.Label", "UI ¾ğ¾î:"), _appLanguageCombo));
+            stack.Children.Add(Row(LocalizationHelper.GetString("Settings.AppLanguage.Label", "UI ì–¸ì–´:"), _appLanguageCombo));
         }
 
         private void BuildLibrarySettingsSection(StackPanel stack)
         {
-            stack.Children.Add(new TextBlock { Text = L("Settings.Library.Header", "¸¸È­ ¶óÀÌºê·¯¸®"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Library.Header", "ë§Œí™” ë¼ì´ë¸ŒëŸ¬ë¦¬"), FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             var libraryBtnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var addLibBtn = new Button { Content = L("Settings.Library.AddFolder", "¶óÀÌºê·¯¸® Æú´õ Ãß°¡") };
+            var addLibBtn = new Button { Content = L("Settings.Library.AddFolder", "ë¼ì´ë¸ŒëŸ¬ë¦¬ í´ë” ì¶”ê°€") };
             addLibBtn.Click += AddLibraryFolder_Click;
             libraryBtnRow.Children.Add(addLibBtn);
             stack.Children.Add(libraryBtnRow);
@@ -227,38 +225,38 @@ namespace MangaViewer.Pages
 
         private void BuildOcrSettingsSection(StackPanel stack)
         {
-            stack.Children.Add(new TextBlock { Text = L("Settings.Ocr.Header", "OCR ¼³Á¤"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Ocr.Header", "OCR ì„¤ì •"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _ocrBackendCombo = new ComboBox { Width = 220 };
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "Hybrid (DocLayout + glm-ocr)", Tag = "hybrid" });
             _ocrBackendCombo.Items.Add(new ComboBoxItem { Content = "VLM (Full image)", Tag = "vlm" });
             _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
-            stack.Children.Add(Row(L("Settings.Ocr.Engine", "OCR ¿£Áø:"), _ocrBackendCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Engine", "OCR ì—”ì§„:"), _ocrBackendCombo));
 
             _ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
             _ollamaEndpointBox.LostFocus += OllamaEndpointBox_LostFocus;
             _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
-            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OllamaEndpoint", "Ollama ÁÖ¼Ò:"), _ollamaEndpointBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OllamaEndpoint", "Ollama ì£¼ì†Œ:"), _ollamaEndpointBox));
 
             _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "VLM model" };
             _ocrOllamaModelCombo.SelectionChanged += OcrOllamaModelCombo_SelectionChanged;
-            var fetchOcrOllamaModelsBtn = new Button { Content = L("Settings.Ocr.LoadModels", "¸ğµ¨ ºÒ·¯¿À±â"), Margin = new Thickness(8, 0, 0, 0) };
+            var fetchOcrOllamaModelsBtn = new Button { Content = L("Settings.Ocr.LoadModels", "ëª¨ë¸ ë¶ˆëŸ¬ì˜¤ê¸°"), Margin = new Thickness(8, 0, 0, 0) };
             _ocrOllamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var ocrModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             ocrModelInner.Children.Add(_ocrOllamaModelCombo);
             ocrModelInner.Children.Add(fetchOcrOllamaModelsBtn);
             ocrModelInner.Children.Add(_ocrOllamaModelStatus);
-            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.Model", "OCR ¸ğµ¨:"), ocrModelInner));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.Model", "OCR ëª¨ë¸:"), ocrModelInner));
 
             _ocrThinkingLevelCombo = new ComboBox { Width = 180 };
-            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "²¨Áü"), Tag = "Off" });
-            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "ÄÑÁü"), Tag = "On" });
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "êº¼ì§"), Tag = "Off" });
+            _ocrThinkingLevelCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "ì¼œì§"), Tag = "On" });
             _ocrThinkingLevelCombo.SelectionChanged += OcrThinkingLevelCombo_SelectionChanged;
             _ollamaSettingsPanel.Children.Add(Row("Thinking:", _ocrThinkingLevelCombo));
 
-            _ocrStructuredOutputToggle = new ToggleSwitch { OnContent = L("Settings.Ocr.Output.Json", "JSON(¹Ú½º Æ÷ÇÔ)"), OffContent = L("Settings.Ocr.Output.Text", "ÀÏ¹İ ÅØ½ºÆ®") };
+            _ocrStructuredOutputToggle = new ToggleSwitch { OnContent = L("Settings.Ocr.Output.Json", "JSON(ë°•ìŠ¤ í¬í•¨)"), OffContent = L("Settings.Ocr.Output.Text", "ì¼ë°˜ í…ìŠ¤íŠ¸") };
             _ocrStructuredOutputToggle.Toggled += OcrStructuredOutputToggle_Toggled;
-            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OutputFormat", "Ãâ·Â Çü½Ä:"), _ocrStructuredOutputToggle));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OutputFormat", "ì¶œë ¥ í˜•ì‹:"), _ocrStructuredOutputToggle));
 
             _ocrOllamaTemperatureBox = new NumberBox
             {
@@ -436,34 +434,34 @@ namespace MangaViewer.Pages
             stack.Children.Add(_ollamaSettingsPanel);
 
             _langCombo = new ComboBox { Width = 160 };
-            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "ÀÚµ¿"), Tag = "auto" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Japanese", "ÀÏº»¾î"), Tag = "ja" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Korean", "ÇÑ±¹¾î"), Tag = "ko" });
-            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.English", "¿µ¾î"), Tag = "en" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "ìë™"), Tag = "auto" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Japanese", "ì¼ë³¸ì–´"), Tag = "ja" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.Korean", "í•œêµ­ì–´"), Tag = "ko" });
+            _langCombo.Items.Add(new ComboBoxItem { Content = L("Settings.AppLanguage.English", "ì˜ì–´"), Tag = "en" });
             _langCombo.SelectionChanged += LangCombo_SelectionChanged;
-            stack.Children.Add(Row(L("Settings.Ocr.Language", "¾ğ¾î:"), _langCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Language", "ì–¸ì–´:"), _langCombo));
 
             _groupCombo = new ComboBox { Width = 160 };
-            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Word", "´Ü¾î"), Tag = OcrService.OcrGrouping.Word.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Line", "ÁÙ"), Tag = OcrService.OcrGrouping.Line.ToString() });
-            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Paragraph", "¹®´Ü"), Tag = OcrService.OcrGrouping.Paragraph.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Word", "ë‹¨ì–´"), Tag = OcrService.OcrGrouping.Word.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Line", "ì¤„"), Tag = OcrService.OcrGrouping.Line.ToString() });
+            _groupCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Group.Paragraph", "ë¬¸ë‹¨"), Tag = OcrService.OcrGrouping.Paragraph.ToString() });
             _groupCombo.SelectionChanged += GroupCombo_SelectionChanged;
-            stack.Children.Add(Row(L("Settings.Ocr.Group.Label", "±×·ì:"), _groupCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Group.Label", "ê·¸ë£¹:"), _groupCombo));
 
             _writingCombo = new ComboBox { Width = 160 };
-            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "ÀÚµ¿"), Tag = OcrService.WritingMode.Auto.ToString() });
-            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Horizontal", "°¡·Î"), Tag = OcrService.WritingMode.Horizontal.ToString() });
-            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Vertical", "¼¼·Î"), Tag = OcrService.WritingMode.Vertical.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Auto", "ìë™"), Tag = OcrService.WritingMode.Auto.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Horizontal", "ê°€ë¡œ"), Tag = OcrService.WritingMode.Horizontal.ToString() });
+            _writingCombo.Items.Add(new ComboBoxItem { Content = L("Settings.Ocr.Writing.Vertical", "ì„¸ë¡œ"), Tag = OcrService.WritingMode.Vertical.ToString() });
             _writingCombo.SelectionChanged += WritingCombo_SelectionChanged;
-            stack.Children.Add(Row(L("Settings.Ocr.Writing.Label", "ÅØ½ºÆ® ¹æÇâ:"), _writingCombo));
+            stack.Children.Add(Row(L("Settings.Ocr.Writing.Label", "í…ìŠ¤íŠ¸ ë°©í–¥:"), _writingCombo));
 
-            _ocrAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "»ç¿ë"), OffContent = L("Settings.Common.NotUse", "»ç¿ë ¾È ÇÔ") };
+            _ocrAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "ì‚¬ìš©"), OffContent = L("Settings.Common.NotUse", "ì‚¬ìš© ì•ˆ í•¨") };
             _ocrAdjacentPrefetchToggle.Toggled += (s, e) =>
             {
                 _ocr.SetPrefetchAdjacentPagesEnabled(_ocrAdjacentPrefetchToggle.IsOn);
                 _ocrAdjacentPrefetchCountBox.IsEnabled = _ocrAdjacentPrefetchToggle.IsOn;
             };
-            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCache", "ÀÎÁ¢ ÆäÀÌÁö OCR Ä³½Ã:"), _ocrAdjacentPrefetchToggle));
+            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCache", "ì¸ì ‘ í˜ì´ì§€ OCR ìºì‹œ:"), _ocrAdjacentPrefetchToggle));
 
             _ocrAdjacentPrefetchCountBox = new NumberBox
             {
@@ -478,7 +476,7 @@ namespace MangaViewer.Pages
                 int count = (int)Math.Clamp(Math.Round(_ocrAdjacentPrefetchCountBox.Value), 0, 10);
                 _ocr.SetPrefetchAdjacentPageCount(count);
             };
-            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCount", "OCR ÀÎÁ¢ ÆäÀÌÁö ¼ö:"), _ocrAdjacentPrefetchCountBox));
+            stack.Children.Add(Row(L("Settings.Ocr.AdjacentCount", "OCR ì¸ì ‘ í˜ì´ì§€ ìˆ˜:"), _ocrAdjacentPrefetchCountBox));
 
             stack.Children.Add(new Controls.ParagraphGapSliderControl());
         }
@@ -487,41 +485,41 @@ namespace MangaViewer.Pages
         {
             var translationSettings = TranslationSettingsService.Instance;
 
-            stack.Children.Add(new TextBlock { Text = L("Settings.Translation.Header", "¹ø¿ª ¼³Á¤"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Translation.Header", "ë²ˆì—­ ì„¤ì •"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             var translationProviderCombo = CreateTranslationProviderCombo();
             var translationApiKeyBox = new PasswordBox { Width = 260 };
-            var apiKeyRow = Row(L("Settings.Translation.ApiKey", "API Å°:"), translationApiKeyBox);
+            var apiKeyRow = Row(L("Settings.Translation.ApiKey", "API í‚¤:"), translationApiKeyBox);
             var translationTargetLanguageBox = new TextBox
             {
                 Width = 220,
                 PlaceholderText = "Korean"
             };
-            var translationTargetLanguageRow = Row(L("Settings.Translation.TargetLanguage", "Å¸°Ù ¾ğ¾î:"), translationTargetLanguageBox);
+            var translationTargetLanguageRow = Row(L("Settings.Translation.TargetLanguage", "íƒ€ê²Ÿ ì–¸ì–´:"), translationTargetLanguageBox);
 
             var translationModelBox = new TextBox { Width = 260 };
 
-            var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "¸ğµ¨À» ¼±ÅÃÇÏ¼¼¿ä") };
-            var fetchGoogleModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "¸ñ·Ï °¡Á®¿À±â"), Margin = new Thickness(8, 0, 0, 0) };
+            var googleModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "ëª¨ë¸ì„ ì„ íƒí•˜ì„¸ìš”") };
+            var fetchGoogleModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "ëª©ë¡ ê°€ì ¸ì˜¤ê¸°"), Margin = new Thickness(8, 0, 0, 0) };
             var googleModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var googleModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             googleModelInner.Children.Add(googleModelCombo);
             googleModelInner.Children.Add(fetchGoogleModelsBtn);
             googleModelInner.Children.Add(googleModelStatus);
 
-            var textModelRow = Row(L("Settings.Translation.Model", "¸ğµ¨:"), translationModelBox);
-            var googleModelRow = Row(L("Settings.Translation.Model", "¸ğµ¨:"), googleModelInner);
+            var textModelRow = Row(L("Settings.Translation.Model", "ëª¨ë¸:"), translationModelBox);
+            var googleModelRow = Row(L("Settings.Translation.Model", "ëª¨ë¸:"), googleModelInner);
             var ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
             var ollamaEndpointRow = Row("Ollama / llama-server URL:", ollamaEndpointBox);
 
-            var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "¸ğµ¨À» ¼±ÅÃÇÏ¼¼¿ä") };
-            var fetchOllamaModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "¸ñ·Ï °¡Á®¿À±â"), Margin = new Thickness(8, 0, 0, 0) };
+            var ollamaModelCombo = new ComboBox { Width = 200, PlaceholderText = L("Settings.Translation.SelectModel", "ëª¨ë¸ì„ ì„ íƒí•˜ì„¸ìš”") };
+            var fetchOllamaModelsBtn = new Button { Content = L("Settings.Translation.FetchModelList", "ëª©ë¡ ê°€ì ¸ì˜¤ê¸°"), Margin = new Thickness(8, 0, 0, 0) };
             var ollamaModelStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), Opacity = 0.6, FontSize = 12 };
             var ollamaModelInner = new StackPanel { Orientation = Orientation.Horizontal };
             ollamaModelInner.Children.Add(ollamaModelCombo);
             ollamaModelInner.Children.Add(fetchOllamaModelsBtn);
             ollamaModelInner.Children.Add(ollamaModelStatus);
-            var ollamaModelRow = Row(L("Settings.Translation.Model", "¸ğµ¨:"), ollamaModelInner);
+            var ollamaModelRow = Row(L("Settings.Translation.Model", "ëª¨ë¸:"), ollamaModelInner);
 
             AddSavedTranslationModels(translationSettings, googleModelCombo, ollamaModelCombo);
 
@@ -546,7 +544,7 @@ namespace MangaViewer.Pages
                 Height = 80,
                 AcceptsReturn = true,
                 TextWrapping = TextWrapping.Wrap,
-                PlaceholderText = L("Settings.Translation.SystemPromptPlaceholder", "½Ã½ºÅÛ ÇÁ·ÒÇÁÆ®")
+                PlaceholderText = L("Settings.Translation.SystemPromptPlaceholder", "ì‹œìŠ¤í…œ í”„ë¡¬í”„íŠ¸")
             };
 
             Action updateSystemPromptBox = () =>
@@ -615,12 +613,12 @@ namespace MangaViewer.Pages
 
                 if (string.IsNullOrWhiteSpace(translationSettings.GoogleApiKey))
                 {
-                    googleModelStatus.Text = L("Settings.Translation.EnterApiKeyFirst", "API Å°¸¦ ¸ÕÀú ÀÔ·ÂÇÏ¼¼¿ä");
+                    googleModelStatus.Text = L("Settings.Translation.EnterApiKeyFirst", "API í‚¤ë¥¼ ë¨¼ì € ì…ë ¥í•˜ì„¸ìš”");
                     return;
                 }
 
                 fetchGoogleModelsBtn.IsEnabled = false;
-                googleModelStatus.Text = L("Settings.Common.Loading", "°¡Á®¿À´Â Áß...");
+                googleModelStatus.Text = L("Settings.Common.Loading", "ê°€ì ¸ì˜¤ëŠ” ì¤‘...");
 
                 try
                 {
@@ -644,7 +642,7 @@ namespace MangaViewer.Pages
                         googleModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
 
                     RestoreTranslationModelSelection(googleModelCombo, savedSelection);
-                    googleModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}°³"), modelIds.Count);
+                    googleModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}ê°œ"), modelIds.Count);
                 }
                 catch (Exception ex)
                 {
@@ -659,7 +657,7 @@ namespace MangaViewer.Pages
             fetchOllamaModelsBtn.Click += async (s, e) =>
             {
                 fetchOllamaModelsBtn.IsEnabled = false;
-                ollamaModelStatus.Text = L("Settings.Common.Loading", "°¡Á®¿À´Â Áß...");
+                ollamaModelStatus.Text = L("Settings.Common.Loading", "ê°€ì ¸ì˜¤ëŠ” ì¤‘...");
 
                 try
                 {
@@ -679,7 +677,7 @@ namespace MangaViewer.Pages
                         ollamaModelCombo.Items.Add(new ComboBoxItem { Content = id, Tag = id });
 
                     RestoreTranslationModelSelection(ollamaModelCombo, savedSelection);
-                    ollamaModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}°³"), modelIds.Count);
+                    ollamaModelStatus.Text = string.Format(L("Settings.Common.CountUnit", "{0}ê°œ"), modelIds.Count);
                 }
                 catch (Exception ex)
                 {
@@ -704,22 +702,22 @@ namespace MangaViewer.Pages
                     translationTargetLanguageBox.Text = translationSettings.TargetLanguage;
             };
 
-            stack.Children.Add(Row(L("Settings.Translation.Provider", "°ø±ŞÀÚ:"), translationProviderCombo));
+            stack.Children.Add(Row(L("Settings.Translation.Provider", "ê³µê¸‰ì:"), translationProviderCombo));
             stack.Children.Add(textModelRow);
             stack.Children.Add(googleModelRow);
             stack.Children.Add(ollamaEndpointRow);
             stack.Children.Add(ollamaModelRow);
             stack.Children.Add(translationTargetLanguageRow);
-            stack.Children.Add(Row(L("Settings.Translation.SystemPrompt", "½Ã½ºÅÛ ÇÁ·ÒÇÁÆ®:"), systemPromptBox));
+            stack.Children.Add(Row(L("Settings.Translation.SystemPrompt", "ì‹œìŠ¤í…œ í”„ë¡¬í”„íŠ¸:"), systemPromptBox));
             stack.Children.Add(apiKeyRow);
 
-            _translationAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "»ç¿ë"), OffContent = L("Settings.Common.NotUse", "»ç¿ë ¾È ÇÔ") };
+            _translationAdjacentPrefetchToggle = new ToggleSwitch { OnContent = L("Settings.Common.Use", "ì‚¬ìš©"), OffContent = L("Settings.Common.NotUse", "ì‚¬ìš© ì•ˆ í•¨") };
             _translationAdjacentPrefetchToggle.Toggled += (s, e) =>
             {
                 translationSettings.PrefetchAdjacentPagesEnabled = _translationAdjacentPrefetchToggle.IsOn;
                 _translationAdjacentPrefetchCountBox.IsEnabled = _translationAdjacentPrefetchToggle.IsOn;
             };
-            stack.Children.Add(Row(L("Settings.Translation.AdjacentCache", "ÀÎÁ¢ ÆäÀÌÁö ¹ø¿ª Ä³½Ã:"), _translationAdjacentPrefetchToggle));
+            stack.Children.Add(Row(L("Settings.Translation.AdjacentCache", "ì¸ì ‘ í˜ì´ì§€ ë²ˆì—­ ìºì‹œ:"), _translationAdjacentPrefetchToggle));
 
             _translationAdjacentPrefetchCountBox = new NumberBox
             {
@@ -734,7 +732,7 @@ namespace MangaViewer.Pages
                 int count = (int)Math.Clamp(Math.Round(_translationAdjacentPrefetchCountBox.Value), 0, 10);
                 translationSettings.PrefetchAdjacentPageCount = count;
             };
-            stack.Children.Add(Row(L("Settings.Translation.AdjacentCount", "¹ø¿ª ÀÎÁ¢ ÆäÀÌÁö ¼ö:"), _translationAdjacentPrefetchCountBox));
+            stack.Children.Add(Row(L("Settings.Translation.AdjacentCount", "ë²ˆì—­ ì¸ì ‘ í˜ì´ì§€ ìˆ˜:"), _translationAdjacentPrefetchCountBox));
 
             _translationOverlayFontSlider = new Slider
             {
@@ -746,7 +744,7 @@ namespace MangaViewer.Pages
             _translationOverlayFontSlider.ValueChanged += TranslationOverlayFontSlider_ValueChanged;
             _translationOverlayFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayFontValue();
-            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayFontSize", "¹ø¿ª ¹Ù¿îµù ¹Ú½º ±ÛÀÚ Å©±â:"), _translationOverlayFontSlider, _translationOverlayFontValue));
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayFontSize", "ë²ˆì—­ ë°”ìš´ë”© ë°•ìŠ¤ ê¸€ì í¬ê¸°:"), _translationOverlayFontSlider, _translationOverlayFontValue));
 
             _translationOverlayBoxScaleHorizontalSlider = new Slider
             {
@@ -759,7 +757,7 @@ namespace MangaViewer.Pages
             _translationOverlayBoxScaleHorizontalSlider.ValueChanged += TranslationOverlayBoxScaleHorizontalSlider_ValueChanged;
             _translationOverlayBoxScaleHorizontalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayBoxScaleHorizontalValue();
-            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxHorizontal", "¹ø¿ª ¹Ù¿îµù ¹Ú½º °¡·Î Å©±â:"), _translationOverlayBoxScaleHorizontalSlider, _translationOverlayBoxScaleHorizontalValue));
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxHorizontal", "ë²ˆì—­ ë°”ìš´ë”© ë°•ìŠ¤ ê°€ë¡œ í¬ê¸°:"), _translationOverlayBoxScaleHorizontalSlider, _translationOverlayBoxScaleHorizontalValue));
 
             _translationOverlayBoxScaleVerticalSlider = new Slider
             {
@@ -772,7 +770,7 @@ namespace MangaViewer.Pages
             _translationOverlayBoxScaleVerticalSlider.ValueChanged += TranslationOverlayBoxScaleVerticalSlider_ValueChanged;
             _translationOverlayBoxScaleVerticalValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTranslationOverlayBoxScaleVerticalValue();
-            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxVertical", "¹ø¿ª ¹Ù¿îµù ¹Ú½º ¼¼·Î Å©±â:"), _translationOverlayBoxScaleVerticalSlider, _translationOverlayBoxScaleVerticalValue));
+            stack.Children.Add(CreateTranslationSliderRow(L("Settings.Translation.OverlayBoxVertical", "ë²ˆì—­ ë°”ìš´ë”© ë°•ìŠ¤ ì„¸ë¡œ í¬ê¸°:"), _translationOverlayBoxScaleVerticalSlider, _translationOverlayBoxScaleVerticalValue));
 
             PopulateTranslationThinkingLevels(currentProvider, thinkingLevelCombo, translationSettings);
             thinkingLevelCombo.SelectionChanged += (s, e) =>
@@ -834,8 +832,8 @@ namespace MangaViewer.Pages
             combo.Items.Clear();
             if (provider == TranslationProviderKind.Ollama)
             {
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "²¨Áü"), Tag = "Off" });
-                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "ÄÑÁü"), Tag = "On" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "êº¼ì§"), Tag = "Off" });
+                combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.On", "ì¼œì§"), Tag = "On" });
 
                 string normalized = ThinkingLevelHelper.NormalizeOllama(translationSettings.ThinkingLevel);
                 var selected = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == normalized)
@@ -847,11 +845,11 @@ namespace MangaViewer.Pages
                 return;
             }
 
-            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "²¨Áü"), Tag = "Off" });
-            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Minimal", "ÃÖ¼Ò"), Tag = "Minimal" });
-            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Low", "³·À½"), Tag = "Low" });
-            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Medium", "º¸Åë"), Tag = "Medium" });
-            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.High", "³ôÀ½"), Tag = "High" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Common.Off", "êº¼ì§"), Tag = "Off" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Minimal", "ìµœì†Œ"), Tag = "Minimal" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Low", "ë‚®ìŒ"), Tag = "Low" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.Medium", "ë³´í†µ"), Tag = "Medium" });
+            combo.Items.Add(new ComboBoxItem { Content = L("Settings.Thinking.High", "ë†’ìŒ"), Tag = "High" });
 
             var saved = translationSettings.ThinkingLevel;
             var selectedNonOllama = combo.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == saved)
@@ -870,14 +868,14 @@ namespace MangaViewer.Pages
 
         private void BuildTagSettingsSection(StackPanel stack)
         {
-            stack.Children.Add(new TextBlock { Text = L("Settings.Tag.Header", "ÅÂ±× Ç¥½Ã"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Tag.Header", "íƒœê·¸ í‘œì‹œ"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
 
             _tagFontSlider = new Slider { Minimum = 8, Maximum = 32, Width = 220, Value = _tagSettings.TagFontSize };
             _tagFontSlider.ValueChanged += TagFontSlider_ValueChanged;
             _tagFontValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateTagFontValue();
             var fontRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            fontRow.Children.Add(new TextBlock { Text = L("Settings.Tag.FontSize", "ÅÂ±× ÆùÆ® Å©±â:"), VerticalAlignment = VerticalAlignment.Center });
+            fontRow.Children.Add(new TextBlock { Text = L("Settings.Tag.FontSize", "íƒœê·¸ í°íŠ¸ í¬ê¸°:"), VerticalAlignment = VerticalAlignment.Center });
             fontRow.Children.Add(_tagFontSlider);
             fontRow.Children.Add(_tagFontValue);
             stack.Children.Add(fontRow);
@@ -885,13 +883,13 @@ namespace MangaViewer.Pages
 
         private void BuildThumbnailSettingsSection(StackPanel stack)
         {
-            stack.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.Header", "½æ³×ÀÏ ¼³Á¤"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.Header", "ì¸ë„¤ì¼ ì„¤ì •"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             var thumbRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
             _thumbWidthSlider = new Slider { Minimum = 64, Maximum = 512, Width = 220, Value = _thumbSettings.DecodeWidth };
             _thumbWidthSlider.ValueChanged += ThumbWidthSlider_ValueChanged;
             _thumbWidthValue = new TextBlock { VerticalAlignment = VerticalAlignment.Center };
             UpdateThumbWidthValue();
-            thumbRow.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.DecodeWidth", "µğÄÚµå Æø(px):"), VerticalAlignment = VerticalAlignment.Center });
+            thumbRow.Children.Add(new TextBlock { Text = L("Settings.Thumbnail.DecodeWidth", "ë””ì½”ë“œ í­(px):"), VerticalAlignment = VerticalAlignment.Center });
             thumbRow.Children.Add(_thumbWidthSlider);
             thumbRow.Children.Add(_thumbWidthValue);
             stack.Children.Add(thumbRow);
@@ -899,14 +897,14 @@ namespace MangaViewer.Pages
 
         private void BuildCacheSettingsSection(StackPanel stack)
         {
-            stack.Children.Add(new TextBlock { Text = L("Settings.Cache.Header", "ÀÌ¹ÌÁö Ä³½Ã"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+            stack.Children.Add(new TextBlock { Text = L("Settings.Cache.Header", "ì´ë¯¸ì§€ ìºì‹œ"), FontSize = 20, Margin = new Thickness(0, 24, 0, 0), FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
             _cacheSummary = new TextBlock { Text = string.Empty, Margin = new Thickness(0, 0, 0, 8) };
             stack.Children.Add(_cacheSummary);
 
             var limitsPanel = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            _cacheMaxCountBox = new NumberBox { Header = L("Settings.Cache.MaxImageCount", "ÃÖ´ë ÀÌ¹ÌÁö ¼ö"), Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
-            _cacheMaxBytesBox = new NumberBox { Header = L("Settings.Cache.MaxSizeGb", "ÃÖ´ë ¿ë·®(GB)"), Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
-            var applyBtn = new Button { Content = L("Settings.Common.Apply", "Àû¿ë") };
+            _cacheMaxCountBox = new NumberBox { Header = L("Settings.Cache.MaxImageCount", "ìµœëŒ€ ì´ë¯¸ì§€ ìˆ˜"), Width = 140, Minimum = 100, Maximum = 50000, Value = ImageCacheService.Instance.MaxMemoryImageCount };
+            _cacheMaxBytesBox = new NumberBox { Header = L("Settings.Cache.MaxSizeGb", "ìµœëŒ€ ìš©ëŸ‰(GB)"), Width = 140, Minimum = 1, Maximum = 32, Value = Math.Round(ImageCacheService.Instance.MaxMemoryImageBytes / 1024d / 1024d / 1024d) };
+            var applyBtn = new Button { Content = L("Settings.Common.Apply", "ì ìš©") };
             applyBtn.Click += ApplyCacheLimit_Click;
             limitsPanel.Children.Add(_cacheMaxCountBox);
             limitsPanel.Children.Add(_cacheMaxBytesBox);
@@ -914,9 +912,9 @@ namespace MangaViewer.Pages
             stack.Children.Add(limitsPanel);
 
             var btnRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
-            var refreshBtn = new Button { Content = L("Settings.Common.Refresh", "»õ·Î°íÄ§") };
+            var refreshBtn = new Button { Content = L("Settings.Common.Refresh", "ìƒˆë¡œê³ ì¹¨") };
             refreshBtn.Click += (s, e) => RefreshCacheView();
-            var clearAllBtn = new Button { Content = L("Settings.Cache.ClearAll", "Ä³½Ã ÀüÃ¼ »èÁ¦") };
+            var clearAllBtn = new Button { Content = L("Settings.Cache.ClearAll", "ìºì‹œ ì „ì²´ ì‚­ì œ") };
             clearAllBtn.Click += (s, e) => { ImageCacheService.Instance.ClearMemoryImages(); RefreshCacheView(); };
             btnRow.Children.Add(refreshBtn);
             btnRow.Children.Add(clearAllBtn);
@@ -1133,7 +1131,7 @@ namespace MangaViewer.Pages
             var per = ImageCacheService.Instance.GetPerGalleryCounts().OrderByDescending(k=>k.Value).ToList();
             foreach (var kv in per) _cacheEntries.Add(new CacheEntryView { GalleryId = kv.Key, Count = kv.Value });
             var (cnt, bytes) = ImageCacheService.Instance.GetMemoryUsage();
-            _cacheSummary.Text = string.Format(L("Settings.Cache.Summary", "ÇÕ°è: {0} images, {1:F1} MB"), cnt, (bytes / 1024d / 1024d));
+            _cacheSummary.Text = string.Format(L("Settings.Cache.Summary", "í•©ê³„: {0} images, {1:F1} MB"), cnt, (bytes / 1024d / 1024d));
         }
 
         private void UpdateTagFontValue() => _tagFontValue.Text = Math.Round(_tagFontSlider.Value).ToString();
@@ -1494,8 +1492,8 @@ namespace MangaViewer.Pages
             {
                 _ocrThinkingLevelCombo.IsEnabled = supportsThinking;
                 _ocrOllamaModelStatus.Text = supportsThinking
-                    ? L("Settings.Ocr.Thinking.Supported", "¼±ÅÃ ¸ğµ¨: Thinking Áö¿ø")
-                    : L("Settings.Ocr.Thinking.NotSupported", "¼±ÅÃ ¸ğµ¨: Thinking ¹ÌÁö¿ø");
+                    ? L("Settings.Ocr.Thinking.Supported", "ì„ íƒ ëª¨ë¸: Thinking ì§€ì›")
+                    : L("Settings.Ocr.Thinking.NotSupported", "ì„ íƒ ëª¨ë¸: Thinking ë¯¸ì§€ì›");
                 return;
             }
 
@@ -1505,7 +1503,7 @@ namespace MangaViewer.Pages
         private async Task RefreshOcrOllamaModelsAsync(Button triggerButton)
         {
             triggerButton.IsEnabled = false;
-            _ocrOllamaModelStatus.Text = L("Settings.Ocr.LoadingModels", "¸ğµ¨ Á¶È¸ Áß...");
+            _ocrOllamaModelStatus.Text = L("Settings.Ocr.LoadingModels", "ëª¨ë¸ ì¡°íšŒ ì¤‘...");
 
             try
             {
@@ -1535,7 +1533,7 @@ namespace MangaViewer.Pages
                 else if (_ocrOllamaModelCombo.Items.Count > 0)
                     _ocrOllamaModelCombo.SelectedIndex = 0;
 
-                _ocrOllamaModelStatus.Text = string.Format(L("Settings.Ocr.ModelsCountVisionTool", "{0}°³ (Vision+Tool)"), models.Count);
+                _ocrOllamaModelStatus.Text = string.Format(L("Settings.Ocr.ModelsCountVisionTool", "{0}ê°œ (Vision+Tool)"), models.Count);
                 UpdateOcrThinkingComboAvailability();
                 await RefreshLlamaServerParallelismBoundsAsync().ConfigureAwait(true);
             }
@@ -1591,24 +1589,7 @@ namespace MangaViewer.Pages
 
             SettingsProvider.Set("AppLanguage", tag);
 
-            if (string.Equals(tag, "auto", StringComparison.OrdinalIgnoreCase))
-                ApplicationLanguages.PrimaryLanguageOverride = string.Empty;
-            else
-                ApplicationLanguages.PrimaryLanguageOverride = tag;
-
-            var cultureName = string.IsNullOrWhiteSpace(ApplicationLanguages.PrimaryLanguageOverride)
-                ? CultureInfo.CurrentUICulture.Name
-                : ApplicationLanguages.PrimaryLanguageOverride;
-
-            try
-            {
-                var culture = new CultureInfo(cultureName);
-                CultureInfo.DefaultThreadCurrentCulture = culture;
-                CultureInfo.DefaultThreadCurrentUICulture = culture;
-            }
-            catch
-            {
-            }
+            App.ApplyAppLanguage();
 
             if (MainWindow.RootViewModel != null)
                 MainWindow.RootViewModel.RefreshLocalizedTexts();
@@ -1618,8 +1599,8 @@ namespace MangaViewer.Pages
 
             var dialog = new ContentDialog
             {
-                Title = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Title", "¾ğ¾î º¯°æ"),
-                Content = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Message", "ÀÏºÎ UI´Â ¾ÛÀ» ´Ù½Ã ½ÃÀÛÇÏ¸é ¿ÏÀüÈ÷ Àû¿ëµË´Ï´Ù."),
+                Title = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Title", "ì–¸ì–´ ë³€ê²½"),
+                Content = LocalizationHelper.GetString("Settings.AppLanguage.Restart.Message", "ì¼ë¶€ UIëŠ” ì•±ì„ ë‹¤ì‹œ ì‹œì‘í•˜ë©´ ì™„ì „íˆ ì ìš©ë©ë‹ˆë‹¤."),
                 PrimaryButtonText = L("Settings.Common.Ok", "OK"),
                 XamlRoot = this.XamlRoot
             };

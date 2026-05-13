@@ -34,7 +34,7 @@ namespace MangaViewer.Pages
             public double LastHeight;
         }
 
-        internal static SearchPage? LastInstance; // √÷±Ÿ ¿ŒΩ∫≈œΩ∫
+        internal static SearchPage? LastInstance; // ÏµúÍ∑º Ïù∏Ïä§ÌÑ¥Ïä§
 
         public SearchViewModel ViewModel { get; } = new();
         private MangaViewModel? _mangaViewModel;
