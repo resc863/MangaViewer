@@ -8,7 +8,7 @@ namespace MangaViewer.Controls
     /// <summary>
     /// Lightweight wrap panel (no virtualization). Set ForceWidth from parent to guarantee correct wrapping.
     /// </summary>
-    public sealed class TagWrapPanel : Panel
+    public sealed partial class TagWrapPanel : Panel
     {
         public double HorizontalSpacing { get => (double)GetValue(HorizontalSpacingProperty); set => SetValue(HorizontalSpacingProperty, value); }
         public static readonly DependencyProperty HorizontalSpacingProperty = DependencyProperty.Register(nameof(HorizontalSpacing), typeof(double), typeof(TagWrapPanel), new PropertyMetadata(4.0, OnLayoutChanged));

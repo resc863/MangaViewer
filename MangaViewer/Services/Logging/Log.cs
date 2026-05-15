@@ -1,22 +1,26 @@
 // Project: MangaViewer
 // File: Services/Logging/Log.cs
-// Purpose: Centralized logging helper that wraps App.LoggerFactory to obtain an ILogger and
-//          exposes simple static methods for common log levels. Keeps call sites concise.
+// Purpose: Centralized logging helper for Debug output. Keeps call sites concise without
+//          requiring an external logging package.
 
 using System;
-using Microsoft.Extensions.Logging;
+using DiagnosticsDebug = System.Diagnostics.Debug;
 
 namespace MangaViewer.Services.Logging
 {
     public static class Log
     {
-        private static ILogger? _logger;
-        private static ILogger Logger => _logger ??= App.LoggerFactory.CreateLogger("MangaViewer");
+        private const string Category = "MangaViewer";
 
-        public static void Info(string message) => Logger.LogInformation(message);
-        public static void Error(string message) => Logger.LogError(message);
-        public static void Error(Exception ex, string message) => Logger.LogError(ex, message);
-        public static void Warn(string message) => Logger.LogWarning(message);
-        public static void Debug(string message) => Logger.LogDebug(message);
+        public static void Info(string message) => Write("INFO", message);
+        public static void Error(string message) => Write("ERROR", message);
+        public static void Error(Exception ex, string message) => Write("ERROR", $"{message}{Environment.NewLine}{ex}");
+        public static void Warn(string message) => Write("WARN", message);
+        public static void Debug(string message) => Write("DEBUG", message);
+
+        private static void Write(string level, string message)
+        {
+            DiagnosticsDebug.WriteLine($"[{Category}][{level}] {message}");
+        }
     }
 }

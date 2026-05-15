@@ -9,7 +9,7 @@ using Windows.Foundation;
 namespace MangaViewer.Controls
 {
     // Wrap panel that cooperates with implicit Offset animations on container visuals
-    public sealed class AnimatedWrapPanel : Panel
+    public sealed partial class AnimatedWrapPanel : Panel
     {
         public double HorizontalSpacing
         {

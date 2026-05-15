@@ -2,7 +2,7 @@
 
 Overview
 - Logging is centralized through the static `Log` helper in this folder.
-- `Log` resolves its `ILogger` from `App.LoggerFactory`, so logger configuration stays in app startup.
+- `Log` writes diagnostics directly to the Debug output stream.
 - Current call sites primarily use it for OCR, folder loading, and translation-related diagnostics.
 
 Available helpers
@@ -15,4 +15,4 @@ Available helpers
 Usage notes
 - Keep messages concise and structured enough to correlate reader, OCR, and streaming flows.
 - In hot paths, avoid heavy string formatting before the logger call.
-- If new sinks or filtering rules are added, update `App.LoggerFactory` instead of bypassing `Log` at call sites.
+- If new sinks or filtering rules are needed later, add them behind `Log` so call sites stay stable.

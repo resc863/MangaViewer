@@ -4,6 +4,7 @@
 
 using MangaViewer.Helpers;
 using MangaViewer.Services;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Threading.Tasks;
 
@@ -66,7 +67,7 @@ namespace MangaViewer.ViewModels
             {
                 MangaFolders.Clear();
 
-                var folders = await _libraryService.ScanLibraryAsync();
+                List<MangaFolderInfo> folders = await _libraryService.ScanLibraryAsync();
 
                 foreach (var folder in folders)
                 {

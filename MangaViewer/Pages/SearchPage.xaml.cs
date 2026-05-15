@@ -284,7 +284,7 @@ namespace MangaViewer.Pages
             catch (Exception ex) { Debug.WriteLine("[SearchPage] Details navigate error: " + ex.Message); }
         }
 
-        private sealed class WrapPanelSimple : Panel
+        private sealed partial class WrapPanelSimple : Panel
         {
             protected override Size MeasureOverride(Size availableSize)
             {

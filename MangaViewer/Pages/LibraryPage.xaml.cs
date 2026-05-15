@@ -11,7 +11,8 @@ namespace MangaViewer.Pages
 {
     public sealed partial class LibraryPage : Page
     {
-        public LibraryViewModel? ViewModel { get; private set; }
+        public LibraryViewModel ViewModel { get; private set; } =
+            MainWindow.RootViewModel?.LibraryViewModel ?? new LibraryViewModel(new Services.LibraryService());
 
         private double _savedScrollPosition;
 
@@ -44,6 +45,7 @@ namespace MangaViewer.Pages
 
                     ViewModel = vm;
                     DataContext = ViewModel;
+                    Bindings.Update();
                     ViewModel.PropertyChanged += ViewModel_PropertyChanged;
                     ViewModel.MangaFolders.CollectionChanged += MangaFolders_CollectionChanged;
                 }
@@ -95,6 +97,8 @@ namespace MangaViewer.Pages
             bool isEmpty = !ViewModel.IsLoading && ViewModel.MangaFolders.Count == 0;
             bool hasItems = ViewModel.MangaFolders.Count > 0;
             
+            LoadingRing.IsActive = ViewModel.IsLoading;
+            LoadingRing.Visibility = ViewModel.IsLoading ? Visibility.Visible : Visibility.Collapsed;
             EmptyState.Visibility = isEmpty ? Visibility.Visible : Visibility.Collapsed;
             MangaGridView.Visibility = hasItems ? Visibility.Visible : Visibility.Collapsed;
         }

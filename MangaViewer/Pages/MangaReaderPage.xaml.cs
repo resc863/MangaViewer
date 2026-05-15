@@ -25,21 +25,24 @@ namespace MangaViewer.Pages
         public MangaViewModel ViewModel { get; private set; } = null!;
         private Storyboard? _pageSlideStoryboard;
         private Microsoft.UI.Dispatching.DispatcherQueueTimer? _thumbRefreshUiTimer;
+        private Microsoft.UI.Dispatching.DispatcherQueueTimer? _thumbnailItemsSyncTimer;
         private bool _isUnloaded;
+        private bool _isVmHooked;
         private ScrollViewer? _thumbScrollViewer;
         private bool? _preferredPaneOpen; // persisted preferred state
         private DispatcherTimer? _resizeDebounceTimer; // debounce resize
         private bool _suppressPersistDuringResize; // suppress persisting IsPaneOpen while resizing
         private const double PaneMinWidth = 120;
         private const double PaneMaxWidth = 420;
+        private double _readerPaneLength = 160;
 
         private int _prefetchRadius = 24;
         private int _prefetchRadiusIdle = 48;
         private DateTime _lastScrollTime = DateTime.MinValue;
 
-        private readonly Queue<Rectangle> _rectPool = new();
+        private readonly Queue<Rectangle> _rectPool;
 
-        private readonly ClipboardService _clipboard = ClipboardService.Instance;
+        private readonly ClipboardService _clipboard;
         private Microsoft.UI.Dispatching.DispatcherQueueTimer? _viewportRedecodeTimer;
 
         private SolidColorBrush? _ocrLeftStrokeBrush;
@@ -54,7 +57,11 @@ namespace MangaViewer.Pages
 
         public MangaReaderPage()
         {
+            ViewModel = MainWindow.RootViewModel ?? new MangaViewModel();
+            _rectPool = new Queue<Rectangle>();
+            _clipboard = ClipboardService.Instance;
             InitializeComponent();
+            DataContext = ViewModel;
             Loaded += MangaReaderPage_Loaded;
             Unloaded += MangaReaderPage_Unloaded;
             TranslationSettingsService.Instance.SettingsChanged += OnTranslationSettingsChanged;
@@ -79,6 +86,16 @@ namespace MangaViewer.Pages
                 if (_isUnloaded || ViewModel == null) return;
                 try { await ViewModel.RefreshCurrentPageImagesForViewportAsync(); } catch { }
             };
+
+            _thumbnailItemsSyncTimer = DispatcherQueue.CreateTimer();
+            _thumbnailItemsSyncTimer.Interval = TimeSpan.FromMilliseconds(120);
+            _thumbnailItemsSyncTimer.IsRepeating = false;
+            _thumbnailItemsSyncTimer.Tick += (_, __) =>
+            {
+                if (_isUnloaded || ViewModel == null) return;
+                UpdateReaderSurfaceBindings();
+                RebuildViewportThumbnailQueue(radius: 48);
+            };
         }
 
         private Grid SingleWrapperGrid => SingleWrapper;
@@ -92,6 +109,7 @@ namespace MangaViewer.Pages
 
         private void MangaReaderPage_Loaded(object sender, RoutedEventArgs e)
         {
+            _isUnloaded = false;
             if (DataContext is MangaViewModel vm)
                 HookVm(vm);
 
@@ -101,7 +119,7 @@ namespace MangaViewer.Pages
             {
                 var w = SettingsProvider.Get("ReaderPaneWidth", double.NaN);
                 if (!double.IsNaN(w))
-                    ReaderSplitView.OpenPaneLength = Math.Clamp(w, PaneMinWidth, PaneMaxWidth);
+                    SetReaderPaneLength(w);
             }
             catch { }
 
@@ -126,6 +144,7 @@ namespace MangaViewer.Pages
         protected override void OnNavigatedTo(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
         {
             base.OnNavigatedTo(e);
+            _isUnloaded = false;
             if (e.Parameter is MangaViewModel vm)
             {
                 DataContext = vm;
@@ -137,15 +156,9 @@ namespace MangaViewer.Pages
 
         private void SetFocusAfterDelay()
         {
-            // UI 렌더링이 완전히 완료될 때까지 충분한 시간 대기 후 포커스 설정
-            _ = DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, async () =>
-            {
-                await System.Threading.Tasks.Task.Delay(150);
-                if (!_isUnloaded && this.XamlRoot != null)
-                {
-                    this.Focus(FocusState.Programmatic);
-                }
-            });
+            // The top-level window handles reader keyboard shortcuts.
+            // Programmatically focusing the Page itself can crash WinUI's native input stack
+            // in NativeAOT builds during navigation, so the reader no longer takes focus here.
         }
 
         protected override void OnNavigatedFrom(Microsoft.UI.Xaml.Navigation.NavigationEventArgs e)
@@ -163,6 +176,9 @@ namespace MangaViewer.Pages
 
             _thumbRefreshUiTimer?.Stop();
             _thumbRefreshUiTimer = null;
+
+            _thumbnailItemsSyncTimer?.Stop();
+            _thumbnailItemsSyncTimer = null;
 
             if (_thumbScrollViewer != null)
             {
@@ -183,14 +199,14 @@ namespace MangaViewer.Pages
 
         private void HookVm(MangaViewModel vm)
         {
-            if (ReferenceEquals(ViewModel, vm)) return;
+            if (ReferenceEquals(ViewModel, vm) && _isVmHooked) return;
 
             // Unhook previous VM to avoid duplicate subscriptions.
-            if (ViewModel != null)
+            if (_isVmHooked && ViewModel != null)
                 UnhookVm(ViewModel);
 
             ViewModel = vm;
-            Bindings.Update();
+            DataContext = vm;
 
             ViewModel.PageViewChanged += OnVmRedrawRequested;
             ViewModel.OcrCompleted += OnVmRedrawRequested;
@@ -198,7 +214,6 @@ namespace MangaViewer.Pages
             ViewModel.MangaFolderLoaded += OnMangaFolderLoaded;
             ViewModel.PropertyChanged += OnViewModelPropertyChanged;
 
-            // Load preferred pane state from SettingsProvider
             try
             {
                 bool pref = SettingsProvider.Get("ReaderPaneOpenPreferred", ViewModel.IsPaneOpen);
@@ -206,7 +221,10 @@ namespace MangaViewer.Pages
                 if (ViewModel.IsPaneOpen != pref)
                     ViewModel.IsPaneOpen = pref;
             }
-            catch { _preferredPaneOpen = ViewModel.IsPaneOpen; }
+            catch
+            {
+                _preferredPaneOpen = ViewModel.IsPaneOpen;
+            }
 
             if (ViewModel.Thumbnails is INotifyCollectionChanged incc)
                 incc.CollectionChanged += OnThumbsChanged;
@@ -218,7 +236,10 @@ namespace MangaViewer.Pages
                 bincc.CollectionChanged += OnBookmarksChanged;
 
             StartThumbnailAutoRefresh();
+            UpdateReaderSurfaceBindings();
             RedrawAllOcr();
+            UpdateReaderPaneLayout();
+            _isVmHooked = true;
         }
 
         private void UnhookVm(MangaViewModel? vm)
@@ -239,6 +260,9 @@ namespace MangaViewer.Pages
 
             if (vm.Bookmarks is INotifyCollectionChanged bincc)
                 bincc.CollectionChanged -= OnBookmarksChanged;
+
+            if (ReferenceEquals(ViewModel, vm))
+                _isVmHooked = false;
         }
 
         private void OnVmRedrawRequested(object? sender, EventArgs e) => RedrawAllOcr();
@@ -254,6 +278,7 @@ namespace MangaViewer.Pages
         private void OnBookmarksChanged(object? sender, NotifyCollectionChangedEventArgs e)
         {
             if (_isUnloaded || ViewModel == null) return;
+            UpdateReaderSurfaceBindings();
             if (ViewModel.IsBookmarkFilterActive)
                 RebuildViewportThumbnailQueue(radius: 48);
         }
@@ -264,6 +289,8 @@ namespace MangaViewer.Pages
 
             if (e.PropertyName == nameof(MangaViewModel.IsPaneOpen))
             {
+                UpdateReaderPaneLayout();
+
                 if (_suppressPersistDuringResize) return;
 
                 _preferredPaneOpen = vm.IsPaneOpen;
@@ -275,12 +302,14 @@ namespace MangaViewer.Pages
                 || e.PropertyName == nameof(MangaViewModel.VisibleThumbnails)
                 || e.PropertyName == nameof(MangaViewModel.SelectedThumbnailItem))
             {
+                UpdateReaderSurfaceBindings();
                 RebuildViewportThumbnailQueue(radius: 48);
                 return;
             }
 
             if (e.PropertyName == nameof(MangaViewModel.SelectedThumbnailIndex))
             {
+                UpdateReaderSurfaceBindings();
                 RebuildViewportThumbnailQueue(radius: 48);
                 return;
             }
@@ -290,8 +319,48 @@ namespace MangaViewer.Pages
                 || e.PropertyName == nameof(MangaViewModel.IsSinglePageMode)
                 || e.PropertyName == nameof(MangaViewModel.IsTwoPageMode))
             {
+                UpdateReaderSurfaceBindings();
                 RedrawAllOcr();
             }
+        }
+
+        private void UpdateReaderSurfaceBindings()
+        {
+            if (ViewModel == null) return;
+
+            SyncVisibleThumbnailItems();
+            if (!ReferenceEquals(ThumbnailsList.SelectedItem, ViewModel.SelectedThumbnailItem))
+                ThumbnailsList.SelectedItem = ViewModel.SelectedThumbnailItem;
+
+            SingleImage.Source = ViewModel.LeftImageSource;
+            LeftImage.Source = ViewModel.LeftImageSource;
+            RightImage.Source = ViewModel.RightImageSource;
+
+            SingleWrapper.Visibility = ViewModel.IsSinglePageMode ? Visibility.Visible : Visibility.Collapsed;
+            TwoPageWrapper.Visibility = ViewModel.IsTwoPageMode ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void SyncVisibleThumbnailItems()
+        {
+            var visible = ViewModel.VisibleThumbnails;
+            if (ThumbnailsList.Items.Count == visible.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < visible.Count; i++)
+                {
+                    if (!ReferenceEquals(ThumbnailsList.Items[i], visible[i]))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+
+                if (same) return;
+            }
+
+            ThumbnailsList.Items.Clear();
+            for (int i = 0; i < visible.Count; i++)
+                ThumbnailsList.Items.Add(visible[i]);
         }
 
         private void HookThumbScrollViewer()
@@ -444,7 +513,14 @@ namespace MangaViewer.Pages
                     if (item is MangaPageViewModel m) SubscribePage(m);
                 }
             }
-            RebuildViewportThumbnailQueue(radius: 48);
+            ScheduleVisibleThumbnailItemsSync();
+        }
+
+        private void ScheduleVisibleThumbnailItemsSync()
+        {
+            if (_isUnloaded || _thumbnailItemsSyncTimer == null) return;
+            _thumbnailItemsSyncTimer.Stop();
+            _thumbnailItemsSyncTimer.Start();
         }
 
         private void SubscribePage(MangaPageViewModel page)
@@ -496,6 +572,16 @@ namespace MangaViewer.Pages
                 mvm.RemoveBookmarkCommand.Execute(vm);
         }
 
+        private void ThumbnailsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (ViewModel == null) return;
+            if (ThumbnailsList.SelectedItem is MangaPageViewModel selected
+                && !ReferenceEquals(ViewModel.SelectedThumbnailItem, selected))
+            {
+                ViewModel.SelectedThumbnailItem = selected;
+            }
+        }
+
         private void OnLeftOcrContainerSizeChanged(object sender, SizeChangedEventArgs e)
         {
             if (ViewModel != null)
@@ -544,10 +630,9 @@ namespace MangaViewer.Pages
             // If preferred to be open, force it open immediately during resizing
             if (_preferredPaneOpen == true)
             {
-                if (!ReaderSplitView.IsPaneOpen)
-                    ReaderSplitView.IsPaneOpen = true;
                 if (ViewModel != null && !ViewModel.IsPaneOpen)
                     ViewModel.IsPaneOpen = true; // will be ignored for persistence while suppress flag is set
+                UpdateReaderPaneLayout();
             }
 
             _resizeDebounceTimer?.Stop();
@@ -1281,12 +1366,26 @@ namespace MangaViewer.Pages
 
         private void PaneResizeThumb_DragDelta(object sender, DragDeltaEventArgs e)
         {
-            double newLen = ReaderSplitView.OpenPaneLength - e.HorizontalChange;
+            double newLen = _readerPaneLength - e.HorizontalChange;
             newLen = Math.Clamp(newLen, PaneMinWidth, PaneMaxWidth);
-            ReaderSplitView.OpenPaneLength = newLen;
+            SetReaderPaneLength(newLen);
             try { SettingsProvider.Set("ReaderPaneWidth", newLen); } catch { }
         }
 
         private void PaneResizeThumb_DragCompleted(object sender, DragCompletedEventArgs e) { }
+
+        private void SetReaderPaneLength(double value)
+        {
+            _readerPaneLength = Math.Clamp(value, PaneMinWidth, PaneMaxWidth);
+            ReaderPaneHost.Width = _readerPaneLength;
+            UpdateReaderPaneLayout();
+        }
+
+        private void UpdateReaderPaneLayout()
+        {
+            bool isOpen = ViewModel?.IsPaneOpen == true;
+            ReaderPaneHost.Visibility = isOpen ? Visibility.Visible : Visibility.Collapsed;
+            ReaderPaneColumn.Width = isOpen ? new GridLength(_readerPaneLength) : new GridLength(0);
+        }
     }
 }

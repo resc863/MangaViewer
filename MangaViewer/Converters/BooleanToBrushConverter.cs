@@ -7,7 +7,7 @@ namespace MangaViewer.Converters
     /// <summary>
     /// bool -> Brush 변환 (true=Green, false=Red, null/기타=Gray)
     /// </summary>
-    public class BooleanToBrushConverter : IValueConverter
+    public partial class BooleanToBrushConverter : IValueConverter
     {
         // 동일 Brush 재사용 (SolidColorBrush 불변 가정)
         private static readonly SolidColorBrush GreenBrush = new(Microsoft.UI.Colors.Green);

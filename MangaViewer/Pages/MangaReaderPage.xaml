@@ -5,25 +5,22 @@
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:viewmodels="using:MangaViewer.ViewModels"
-    xmlns:converters="using:MangaViewer.Converters"
     mc:Ignorable="d" 
-    Background="Transparent"
-    IsTabStop="True"
-    AllowFocusOnInteraction="True">
-    <Page.Resources>
-        <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
-    </Page.Resources>
+    Background="Transparent">
     <Grid Background="Transparent">
-        <SplitView x:Name="ReaderSplitView"
-                   DisplayMode="Inline"
-                   OpenPaneLength="160"
-                   IsPaneOpen="{x:Bind ViewModel.IsPaneOpen, Mode=TwoWay}"
-                   PanePlacement="Right"
-                   PaneBackground="Transparent"
-                   Background="Transparent"
-                   SizeChanged="ReaderSplitView_SizeChanged"
-                   Canvas.ZIndex="1">
-            <SplitView.Pane>
+        <Grid x:Name="ReaderLayoutRoot"
+              Background="Transparent"
+              SizeChanged="ReaderSplitView_SizeChanged"
+              Canvas.ZIndex="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition x:Name="ReaderPaneColumn" Width="0" />
+            </Grid.ColumnDefinitions>
+
+            <Grid x:Name="ReaderPaneHost"
+                  Grid.Column="1"
+                  Width="160"
+                  Visibility="Collapsed">
                 <!-- Resizable pane: left grip thumb + content listview -->
                 <Grid Background="Transparent">
                     <Grid.ColumnDefinitions>
@@ -52,22 +49,13 @@
                         <!-- Thumbnails list -->
                         <ListView x:Name="ThumbnailsList"
                                   Background="Transparent"
-                                  ItemsSource="{x:Bind ViewModel.VisibleThumbnails, Mode=OneWay}"
-                                  SelectedItem="{x:Bind ViewModel.SelectedThumbnailItem, Mode=TwoWay}"
                                   SelectionMode="Single"
+                                  SelectionChanged="ThumbnailsList_SelectionChanged"
                                   ContainerContentChanging="ThumbnailsList_ContainerContentChanging">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="viewmodels:MangaPageViewModel">
                                     <Grid>
                                         <Image Source="{x:Bind ThumbnailSource, Mode=OneWay}" Height="120" Stretch="Uniform" Margin="5"/>
-                                        <Button x:Name="RemoveBookmarkButton"
-                                                x:Uid="RemoveBookmarkButton"
-                                                Content="제거"
-                                                HorizontalAlignment="Right"
-                                                VerticalAlignment="Top"
-                                                Margin="0,5,5,0"
-                                                Click="RemoveBookmark_Click"
-                                                Visibility="{Binding DataContext.IsBookmarkFilterActive, ElementName=ThumbnailsList, Converter={StaticResource BooleanToVisibilityConverter}}"/>
                                     </Grid>
                                 </DataTemplate>
                             </ListView.ItemTemplate>
@@ -75,7 +63,7 @@
 
                         <Border Background="Transparent"
                                 IsHitTestVisible="False"
-                                Visibility="{x:Bind ViewModel.IsBookmarkFilterEmpty, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                Visibility="Collapsed">
                             <StackPanel HorizontalAlignment="Center"
                                         VerticalAlignment="Center"
                                         Spacing="8"
@@ -98,9 +86,9 @@
                         </Border>
                     </Grid>
                 </Grid>
-            </SplitView.Pane>
-            <SplitView.Content>
-                <Grid x:Name="PageSlideHost" Background="Transparent">
+            </Grid>
+
+            <Grid x:Name="PageSlideHost" Grid.Column="0" Background="Transparent">
                     <Grid x:Name="PageContentRoot" Background="Transparent" RenderTransformOrigin="0.5,0.5">
                         <Grid.RenderTransform>
                             <TranslateTransform x:Name="PageTranslate" />
@@ -108,170 +96,36 @@
                         <Grid Background="Transparent">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                             <!-- Row 0: Images -->
                             <Grid Grid.Row="0" Background="Transparent">
                                 <!-- Single Page Mode -->
-                                <Grid x:Name="SingleWrapper" Visibility="{x:Bind ViewModel.IsSinglePageMode, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
-                                    <Image x:Name="SingleImage" Source="{x:Bind ViewModel.LeftImageSource, Mode=OneWay}" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
+                                <Grid x:Name="SingleWrapper" Visibility="Collapsed" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <Image x:Name="SingleImage" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
                                     <Canvas x:Name="SingleOverlay" Background="Transparent" />
                                 </Grid>
                                 <!-- Two Page Mode -->
-                                <Grid Visibility="{x:Bind ViewModel.IsTwoPageMode, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
+                                <Grid x:Name="TwoPageWrapper" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="0"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                        <Image x:Name="LeftImage" Source="{x:Bind ViewModel.LeftImageSource, Mode=OneWay}" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
+                                        <Image x:Name="LeftImage" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
                                         <Canvas x:Name="LeftOverlay" Background="Transparent" />
                                     </Grid>
                                     <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
-                                        <Image x:Name="RightImage" Source="{x:Bind ViewModel.RightImageSource, Mode=OneWay}" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
+                                        <Image x:Name="RightImage" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
                                         <Canvas x:Name="RightOverlay" Background="Transparent" />
                                     </Grid>
                                 </Grid>
                             </Grid>
 
-                            <!-- Row 1: OCR Text Boxes (+ Translation) -->
-                            <Border Grid.Row="1"
-                                    Padding="8,6,8,8"
-                                    Visibility="{x:Bind ViewModel.IsOllamaOcrTextVisible, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                <Grid>
-                                    <!-- Single page mode -->
-                                    <Grid Visibility="{x:Bind ViewModel.IsSinglePageMode, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*" x:Name="SingleTranslationColumn"/>
-                                        </Grid.ColumnDefinitions>
-                                        <!-- OCR 원문 -->
-                                        <ScrollViewer Grid.Column="0"
-                                                      MaxHeight="200"
-                                                      Margin="0,0,4,0"
-                                                      VerticalScrollBarVisibility="Auto">
-                                             <TextBox x:Name="SingleOcrTextBox"
-                                                      x:Uid="SingleOcrTextBox"
-                                                      Text="{x:Bind ViewModel.LeftOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="OCR 텍스트"/>
-                                        </ScrollViewer>
-                                        <!-- 번역 결과 -->
-                                         <ScrollViewer Grid.Column="1"
-                                                       MaxHeight="200"
-                                                       Margin="4,0,0,0"
-                                                       VerticalScrollBarVisibility="Auto"
-                                                       Visibility="{x:Bind ViewModel.IsTranslationVisible, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox x:Name="SingleTranslationTextBox"
-                                                     x:Uid="SingleTranslationTextBox"
-                                                      Text="{x:Bind ViewModel.TranslatedLeftOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="번역 결과"/>
-                                        </ScrollViewer>
-                                    </Grid>
-                                    <!-- Two page mode -->
-                                    <Grid Visibility="{x:Bind ViewModel.IsTwoPageMode, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="*"/>
-                                        </Grid.ColumnDefinitions>
-                                        <!-- 왼쪽 OCR 원문 -->
-                                        <ScrollViewer Grid.Column="0"
-                                                      MaxHeight="200"
-                                                      Margin="0,0,4,0"
-                                                      VerticalScrollBarVisibility="Auto">
-                                             <TextBox x:Name="LeftOcrTextBox"
-                                                      x:Uid="LeftOcrTextBox"
-                                                      Text="{x:Bind ViewModel.LeftOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="왼쪽 OCR 텍스트"/>
-                                        </ScrollViewer>
-                                        <!-- 왼쪽 번역 결과 -->
-                                         <ScrollViewer Grid.Column="1"
-                                                       MaxHeight="200"
-                                                       Margin="0,0,8,0"
-                                                       VerticalScrollBarVisibility="Auto"
-                                                       Visibility="{x:Bind ViewModel.IsTranslationVisible, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox x:Name="LeftTranslationTextBox"
-                                                     x:Uid="LeftTranslationTextBox"
-                                                      Text="{x:Bind ViewModel.TranslatedLeftOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="왼쪽 번역"/>
-                                        </ScrollViewer>
-                                        <!-- 오른쪽 OCR 원문 -->
-                                        <ScrollViewer Grid.Column="2"
-                                                      MaxHeight="200"
-                                                      Margin="8,0,4,0"
-                                                      VerticalScrollBarVisibility="Auto">
-                                             <TextBox x:Name="RightOcrTextBox"
-                                                      x:Uid="RightOcrTextBox"
-                                                      Text="{x:Bind ViewModel.RightOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="오른쪽 OCR 텍스트"/>
-                                        </ScrollViewer>
-                                        <!-- 오른쪽 번역 결과 -->
-                                         <ScrollViewer Grid.Column="3"
-                                                       MaxHeight="200"
-                                                       Margin="4,0,0,0"
-                                                       VerticalScrollBarVisibility="Auto"
-                                                       Visibility="{x:Bind ViewModel.IsTranslationVisible, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                            <TextBox x:Name="RightTranslationTextBox"
-                                                     x:Uid="RightTranslationTextBox"
-                                                      Text="{x:Bind ViewModel.TranslatedRightOcrText, Mode=OneWay}"
-                                                     IsReadOnly="True"
-                                                     TextWrapping="Wrap"
-                                                     AcceptsReturn="True"
-                                                     FontFamily="Segoe UI"
-                                                     PlaceholderText="오른쪽 번역"/>
-                                        </ScrollViewer>
-                                    </Grid>
-                                </Grid>
-                            </Border>
                         </Grid>
                     </Grid>
-                </Grid>
-            </SplitView.Content>
-        </SplitView>
-
-        <InfoBar
-            IsOpen="{Binding IsInfoBarOpen, Mode=TwoWay}"
-            Message="{x:Bind ViewModel.OcrStatusMessage, Mode=OneWay}"
-            Severity="{x:Bind ViewModel.OcrSeverity, Mode=OneWay}"
-            IsClosable="True"
-            HorizontalAlignment="Right"
-            VerticalAlignment="Bottom"
-            Margin="0,0,16,16"
-            MaxWidth="460"
-            Canvas.ZIndex="100" />
-
-        <InfoBar
-            IsOpen="{Binding IsProgressPopupOpen, Mode=TwoWay}"
-            Message="{x:Bind ViewModel.ProgressPopupMessage, Mode=OneWay}"
-            Severity="Informational"
-            IsClosable="False"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Top"
-            Margin="0,56,0,0"
-            MaxWidth="420"
-            Canvas.ZIndex="101" />
+            </Grid>
+        </Grid>
     </Grid>
 </Page>

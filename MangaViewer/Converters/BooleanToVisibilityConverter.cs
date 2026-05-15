@@ -7,7 +7,7 @@ namespace MangaViewer.Converters
     /// <summary>
     /// bool -> Visibility 변환. parameter="Reversed" 시 반전.
     /// </summary>
-    public class BooleanToVisibilityConverter : IValueConverter
+    public partial class BooleanToVisibilityConverter : IValueConverter
     {
         public object Convert(object value, Type targetType, object parameter, string language)
         {

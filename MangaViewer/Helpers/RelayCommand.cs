@@ -6,7 +6,7 @@ namespace MangaViewer.Helpers
     /// <summary>
     /// 단순 동기 ICommand 구현. 델리게이트 기반.
     /// </summary>
-    public class RelayCommand : ICommand
+    public partial class RelayCommand : ICommand
     {
         private readonly Action<object?> _execute;
         private readonly Predicate<object?>? _canExecute;

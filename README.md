@@ -46,7 +46,7 @@ A WinUI 3 manga/image reader for Windows with local folder reading, library mana
   - Architecture
     - `TranslationService` owns translation orchestration, response normalization, and translation-result caching
     - `TranslationProviderDescriptor` centralizes provider metadata, settings accessors, thinking normalization, and client construction
-    - `DelegatingChatClientBase` removes duplicated inner-client forwarding logic from provider wrappers
+    - Provider adapters keep SDK-backed and direct REST implementations behind the same `IChatClient` boundary
   - Provider settings
     - Google: API key, system prompt, selectable model list fetch
     - OpenAI: API key, manual model entry, provider-specific thinking level
@@ -240,7 +240,7 @@ MangaViewer/
     TranslationSettingsService.cs # translation provider/model/API key/overlay/prefetch settings
     GoogleGenAIChatClient.cs      # Google Gemini API (IChatClient)
     OpenAIChatClient.cs           # OpenAI API (IChatClient)
-    AnthropicChatClient.cs        # Anthropic Claude API (IChatClient)
+    AnthropicChatClient.cs        # Anthropic Claude Messages API direct REST client (IChatClient)
     EhentaiService.cs             # search → image streaming (memory)
     ImageCacheService.cs          # decoded BitmapImage LRU cache + prefetch
     MemoryImageCache.cs           # streaming gallery memory byte cache (mem: keys)
@@ -324,9 +324,9 @@ OpenAIChatClient (IChatClient)
 └── Uses the standard OpenAI endpoint in the current translation flow
 
 AnthropicChatClient (IChatClient)
-├── Uses AnthropicClient + .AsIChatClient(model)
-├── Enables Anthropic thinking budgets when configured
-└── Delegates streaming/non-thinking calls to the inner client
+├── Calls POST /v1/messages directly with x-api-key and anthropic-version headers
+├── Writes request JSON and parses response text without SDK reflection
+└── Enables Anthropic thinking budgets when configured
 
 OllamaChatClient (IChatClient)
 ├── Talks to native Ollama `/api/chat` or OpenAI-compatible `/v1/chat/completions`

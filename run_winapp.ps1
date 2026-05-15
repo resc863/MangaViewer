@@ -17,13 +17,14 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $project = Join-Path $PSScriptRoot 'MangaViewer\MangaViewer.csproj'
-$manifest = Join-Path $PSScriptRoot 'MangaViewer\Package.appxmanifest'
 $rid = switch ($Platform) {
     'x86' { 'win-x86' }
     'x64' { 'win-x64' }
     'ARM64' { 'win-arm64' }
 }
 $output = Join-Path $PSScriptRoot "MangaViewer\bin\$Platform\$Configuration\net10.0-windows10.0.26100.0\$rid"
+$sourceManifest = Join-Path $PSScriptRoot 'MangaViewer\Package.appxmanifest'
+$generatedManifest = Join-Path $output 'AppxManifest.xml'
 
 if (-not $NoBuild) {
     dotnet restore $project
@@ -32,6 +33,8 @@ if (-not $NoBuild) {
         -f net10.0-windows10.0.26100.0 `
         -p:Platform=$Platform
 }
+
+$manifest = if (Test-Path $generatedManifest) { $generatedManifest } else { $sourceManifest }
 
 $args = @(
     'run',

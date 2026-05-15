@@ -7,7 +7,7 @@ namespace MangaViewer.Helpers
     /// <summary>
     /// 비동기 실행 지원 ICommand. 중복 실행 방지(_isExecuting) 및 CanExecute 갱신.
     /// </summary>
-    public class AsyncRelayCommand : ICommand
+    public partial class AsyncRelayCommand : ICommand
     {
         private readonly Func<object?, Task> _executeAsync;
         private readonly Predicate<object?>? _canExecute;

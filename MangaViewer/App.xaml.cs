@@ -1,12 +1,12 @@
 ﻿// Project: MangaViewer
 // File: App.xaml.cs
-// Purpose: Application entry and lifetime management. Configures logging and initializes
+// Purpose: Application entry and lifetime management. Initializes
 //          services that require a UI DispatcherQueue.
 
-using Microsoft.Extensions.Logging;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Dispatching;
 using MangaViewer.Services;
+using MangaViewer.Services.Logging;
 using System;
 using System.Globalization;
 using System.Linq;
@@ -23,14 +23,12 @@ namespace MangaViewer
         private Window? _window;
         public MainWindow? MainWindow => _window as MainWindow;
 
-        public static ILoggerFactory LoggerFactory { get; private set; } = null!;
         private static readonly string[] SupportedLanguageTags = ["ko-KR", "en-US", "ja-JP"];
 
         public App()
         {
             ApplyAppLanguage();
             InitializeComponent();
-            ConfigureLogging();
             
             // Handle application exit to cleanup resources
             this.UnhandledException += OnUnhandledException;
@@ -86,16 +84,6 @@ namespace MangaViewer
             return cultureMatch ?? "en-US";
         }
 
-        private static void ConfigureLogging()
-        {
-            LoggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(builder =>
-            {
-                builder
-                    .SetMinimumLevel(LogLevel.Information)
-                    .AddDebug(); // Debug output window
-            });
-        }
-
         protected override void OnLaunched(Microsoft.UI.Xaml.LaunchActivatedEventArgs args)
         {
             _window = new MainWindow();
@@ -125,8 +113,7 @@ namespace MangaViewer
             // Log unhandled exceptions
             try
             {
-                var logger = LoggerFactory.CreateLogger<App>();
-                logger.LogError(e.Exception, "Unhandled exception occurred");
+                Log.Error(e.Exception, "Unhandled exception occurred");
             }
             catch { }
         }

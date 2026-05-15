@@ -13,6 +13,7 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <Content Remove="Assets\LargeTile.scale-100.png" />
@@ -57,22 +58,16 @@
     <ProjectCapability Include="Msix" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Anthropic" Version="12.17.0" />
     <PackageReference Include="HtmlAgilityPack" Version="1.12.4" />
-    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.5.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.7" />
+    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.6.0" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.1839" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools.WinApp" Version="0.3.1">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.0.1" />
-    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.7" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Debug" Version="10.0.7" />
     <PackageReference Include="OllamaSharp" Version="5.4.25" />
-    <PackageReference Include="System.Numerics.Tensors" Version="10.0.7" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.7" />
-    <PackageReference Include="System.Text.Json" Version="10.0.7" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.8" />
   </ItemGroup>
 
   <PropertyGroup Condition="'$(DisableHasPackageAndPublishMenuAddedByProject)'!='true' and '$(EnableMsixTooling)'=='true'">
@@ -81,10 +76,29 @@
 
   <!-- Publish Properties -->
   <PropertyGroup>
+    <PublishAot Condition="'$(NativeAot)' == 'true'">True</PublishAot>
     <PublishReadyToRun Condition="'$(Configuration)' == 'Debug'">False</PublishReadyToRun>
-    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug'">True</PublishReadyToRun>
+    <PublishReadyToRun Condition="'$(Configuration)' != 'Debug' and '$(PublishAot)' != 'true'">True</PublishReadyToRun>
+    <PublishReadyToRun Condition="'$(PublishAot)' == 'true'">False</PublishReadyToRun>
     <PublishTrimmed Condition="'$(Configuration)' == 'Debug'">False</PublishTrimmed>
-    <PublishTrimmed Condition="'$(Configuration)' != 'Debug'">False</PublishTrimmed>
+    <PublishTrimmed Condition="'$(Configuration)' != 'Debug' and '$(PublishAot)' != 'true'">False</PublishTrimmed>
+    <PublishTrimmed Condition="'$(PublishAot)' == 'true'">True</PublishTrimmed>
     <SupportedOSPlatformVersion>10.0.26100.0</SupportedOSPlatformVersion>
   </PropertyGroup>
+
+  <Target Name="CopyWinUiXamlArtifactsToNativeAotPublish" AfterTargets="Publish" Condition="'$(PublishAot)' == 'true'">
+    <ItemGroup>
+      <_NativeAotXamlBinary Include="$(OutputPath)**\*.xbf" Exclude="$(OutputPath)AppX\**\*.xbf" />
+      <_NativeAotManifest Include="$(OutputPath)AppxManifest.xml" />
+    </ItemGroup>
+    <Copy
+      SourceFiles="@(_NativeAotXamlBinary)"
+      DestinationFiles="@(_NativeAotXamlBinary->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+      SkipUnchangedFiles="true" />
+    <Copy
+      SourceFiles="@(_NativeAotManifest)"
+      DestinationFolder="$(PublishDir)"
+      SkipUnchangedFiles="true"
+      Condition="Exists('$(OutputPath)AppxManifest.xml')" />
+  </Target>
 </Project>

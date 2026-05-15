@@ -4,9 +4,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:converters="using:MangaViewer.Converters"
     xmlns:viewmodels="using:MangaViewer.ViewModels"
     mc:Ignorable="d"
     Background="Transparent">
+    <Page.Resources>
+        <converters:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
+    </Page.Resources>
 
     <Grid>
         <Grid.RowDefinitions>
@@ -26,7 +30,7 @@
             
               <Button x:Name="LibraryRefreshButton" x:Uid="LibraryRefreshButton" Grid.Column="1" 
                      Content="새로고침" 
-                     Command="{Binding RefreshCommand}"
+                     Command="{x:Bind ViewModel.RefreshCommand, Mode=OneWay}"
                      Style="{StaticResource AccentButtonStyle}"/>
         </Grid>
 
@@ -37,7 +41,9 @@
                       HorizontalScrollBarVisibility="Disabled">
             <Grid x:Name="ContentGrid">
                 <!-- Loading indicator -->
-                 <ProgressRing IsActive="{Binding IsLoading, Mode=OneWay}"
+                 <ProgressRing x:Name="LoadingRing"
+                              IsActive="{x:Bind ViewModel.IsLoading, Mode=OneWay}"
+                              Visibility="{x:Bind ViewModel.IsLoading, Mode=OneWay, Converter={StaticResource BooleanToVisibilityConverter}}"
                               Width="50" Height="50"
                               HorizontalAlignment="Center"
                               VerticalAlignment="Center"
@@ -45,7 +51,7 @@
 
                 <!-- Manga folders grid -->
                  <GridView x:Name="MangaGridView"
-                           ItemsSource="{Binding MangaFolders, Mode=OneWay}"
+                           ItemsSource="{x:Bind ViewModel.MangaFolders, Mode=OneWay}"
                           Padding="24,8,24,24"
                           SelectionMode="Single"
                           IsItemClickEnabled="True"
@@ -68,7 +74,7 @@
                                 <Border Grid.Row="0" 
                                         CornerRadius="8,8,0,0"
                                         Background="{ThemeResource LayerFillColorDefaultBrush}">
-                                    <Image Source="{x:Bind ThumbnailPath, Mode=OneWay}"
+                                    <Image Source="{x:Bind ThumbnailSource, Mode=OneWay}"
                                            Stretch="UniformToFill"
                                            HorizontalAlignment="Center"
                                            VerticalAlignment="Center"/>

@@ -5,7 +5,7 @@ using MangaViewer.Services;
 
 namespace MangaViewer.Controls
 {
-    public sealed class ParagraphGapSliderControl : StackPanel
+    public sealed partial class ParagraphGapSliderControl : StackPanel
     {
         private readonly Slider _slider;
         private readonly TextBlock _valueText;

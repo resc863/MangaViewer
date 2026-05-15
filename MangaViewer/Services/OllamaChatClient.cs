@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net.Http;
 using System.Text.Encodings.Web;
 using System.Text;
@@ -16,7 +17,7 @@ namespace MangaViewer.Services
         private static readonly HttpClient s_httpClient = new();
         private static readonly TimeSpan BaseRequestTimeout = TimeSpan.FromSeconds(180);
         private static readonly TimeSpan ThinkingRequestTimeout = TimeSpan.FromMinutes(10);
-        private static readonly JsonSerializerOptions s_jsonOptions = new()
+        private static readonly JsonWriterOptions s_jsonWriterOptions = new()
         {
             Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
@@ -40,14 +41,12 @@ namespace MangaViewer.Services
 
         public override async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> chatMessages, ChatOptions? options = null, CancellationToken cancellationToken = default)
         {
-            var messages = new List<object>();
+            var messages = new List<ChatPayloadMessage>();
             foreach (var msg in chatMessages)
             {
-                messages.Add(new
-                {
-                    role = msg.Role == ChatRole.System ? "system" : msg.Role == ChatRole.Assistant ? "assistant" : "user",
-                    content = msg.Text ?? string.Empty,
-                });
+                messages.Add(new ChatPayloadMessage(
+                    msg.Role == ChatRole.System ? "system" : msg.Role == ChatRole.Assistant ? "assistant" : "user",
+                    msg.Text ?? string.Empty));
             }
 
             bool thinkingEnabled = BuildThinkParameter(_thinkingLevel);
@@ -93,40 +92,71 @@ namespace MangaViewer.Services
             }
         }
 
-        private HttpRequestMessage BuildRequest(List<object> messages, bool thinkingEnabled, LlmApiFlavor flavor, int slotId)
+        private HttpRequestMessage BuildRequest(List<ChatPayloadMessage> messages, bool thinkingEnabled, LlmApiFlavor flavor, int slotId)
         {
-            var payload = new Dictionary<string, object?>
-            {
-                ["model"] = _model,
-                ["stream"] = false,
-                ["messages"] = messages,
-            };
-
             string path;
             if (flavor == LlmApiFlavor.OpenAiCompatible)
             {
                 path = "/v1/chat/completions";
-                LlmEndpointCompatibility.ApplyOpenAiThinkingOptions(payload, thinkingEnabled);
-                payload["cache_prompt"] = false;
-                if (slotId >= 0)
-                    payload["id_slot"] = slotId;
             }
             else
             {
                 path = "/api/chat";
-                payload["think"] = thinkingEnabled;
             }
 
-            string requestJson = JsonSerializer.Serialize(payload, s_jsonOptions);
+            string requestJson = SerializePayload(messages, thinkingEnabled, flavor, slotId);
             return new HttpRequestMessage(HttpMethod.Post, _endpoint + path)
             {
                 Content = new StringContent(requestJson, new UTF8Encoding(false), "application/json")
             };
         }
 
+        private string SerializePayload(List<ChatPayloadMessage> messages, bool thinkingEnabled, LlmApiFlavor flavor, int slotId)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(stream, s_jsonWriterOptions))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("model", _model);
+                writer.WriteBoolean("stream", false);
+                writer.WritePropertyName("messages");
+                writer.WriteStartArray();
+                foreach (var message in messages)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("role", message.Role);
+                    writer.WriteString("content", message.Content);
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+
+                if (flavor == LlmApiFlavor.OpenAiCompatible)
+                {
+                    writer.WriteString("reasoning_format", "none");
+                    writer.WritePropertyName("chat_template_kwargs");
+                    writer.WriteStartObject();
+                    writer.WriteBoolean("enable_thinking", thinkingEnabled);
+                    writer.WriteEndObject();
+                    writer.WriteBoolean("cache_prompt", false);
+                    if (slotId >= 0)
+                        writer.WriteNumber("id_slot", slotId);
+                }
+                else
+                {
+                    writer.WriteBoolean("think", thinkingEnabled);
+                }
+
+                writer.WriteEndObject();
+            }
+
+            return Encoding.UTF8.GetString(stream.ToArray());
+        }
+
         private static bool BuildThinkParameter(string thinkingLevel)
         {
             return !ThinkingLevelHelper.IsOff(ThinkingLevelHelper.NormalizeOllama(thinkingLevel));
         }
+
+        private readonly record struct ChatPayloadMessage(string Role, string Content);
     }
 }

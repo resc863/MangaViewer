@@ -17,7 +17,7 @@ Main pieces:
 - `TranslationClientFactory`
   - builds `TranslationClientConfiguration` from the active descriptor
 - `DelegatingChatClientBase`
-  - common wrapper base for provider clients that forward to an inner `IChatClient`
+  - common wrapper base for SDK-backed provider clients that forward to an inner `IChatClient`
 
 Provider adapters:
 - `GoogleGenAIChatClient`
