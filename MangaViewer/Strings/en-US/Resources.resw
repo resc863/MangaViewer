@@ -74,13 +74,14 @@
   <data name="Settings.Library.AddFolder" xml:space="preserve"><value>Add library folder</value></data>
   <data name="Settings.Ocr.Header" xml:space="preserve"><value>OCR settings</value></data>
   <data name="Settings.Ocr.Engine" xml:space="preserve"><value>OCR engine:</value></data>
-  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama endpoint:</value></data>
+  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama/llama-server endpoint:</value></data>
   <data name="Settings.Ocr.LoadModels" xml:space="preserve"><value>Load models</value></data>
   <data name="Settings.Ocr.Model" xml:space="preserve"><value>OCR model:</value></data>
   <data name="Settings.Ocr.Output.Json" xml:space="preserve"><value>JSON (with boxes)</value></data>
   <data name="Settings.Ocr.Output.Text" xml:space="preserve"><value>Plain text</value></data>
   <data name="Settings.Ocr.OutputFormat" xml:space="preserve"><value>Output format:</value></data>
   <data name="Settings.Ocr.HybridParallel" xml:space="preserve"><value>Hybrid text parallel:</value></data>
+  <data name="Settings.Ocr.DocLayout.ScoreThreshold" xml:space="preserve"><value>DocLayout score threshold:</value></data>
   <data name="Settings.Ocr.HybridFallback" xml:space="preserve"><value>Hybrid fallback to VLM:</value></data>
   <data name="Settings.Ocr.DocLayout.Download" xml:space="preserve"><value>Download PP-DocLayoutV3 model</value></data>
   <data name="Settings.Ocr.DocLayout.Model" xml:space="preserve"><value>DocLayout model:</value></data>

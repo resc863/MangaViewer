@@ -103,7 +103,7 @@
                                 <!-- Single Page Mode -->
                                 <Grid x:Name="SingleWrapper" Visibility="Collapsed" SizeChanged="OnSingleOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}" HorizontalAlignment="Center" VerticalAlignment="Center">
                                     <Image x:Name="SingleImage" Stretch="Uniform" SizeChanged="OnSingleImageSizeChanged" />
-                                    <Canvas x:Name="SingleOverlay" Background="Transparent" />
+                                    <Canvas x:Name="SingleOverlay" Canvas.ZIndex="1" Background="Transparent" />
                                 </Grid>
                                 <!-- Two Page Mode -->
                                 <Grid x:Name="TwoPageWrapper" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center" Background="Transparent">
@@ -114,11 +114,11 @@
                                     </Grid.ColumnDefinitions>
                                     <Grid x:Name="LeftWrapper" Grid.Column="0" HorizontalAlignment="Right" VerticalAlignment="Center" SizeChanged="OnLeftOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                                         <Image x:Name="LeftImage" Stretch="Uniform" SizeChanged="OnLeftImageSizeChanged" />
-                                        <Canvas x:Name="LeftOverlay" Background="Transparent" />
+                                        <Canvas x:Name="LeftOverlay" Canvas.ZIndex="1" Background="Transparent" />
                                     </Grid>
                                     <Grid x:Name="RightWrapper" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="OnRightOcrContainerSizeChanged" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}">
                                         <Image x:Name="RightImage" Stretch="Uniform" SizeChanged="OnRightImageSizeChanged" />
-                                        <Canvas x:Name="RightOverlay" Background="Transparent" />
+                                        <Canvas x:Name="RightOverlay" Canvas.ZIndex="1" Background="Transparent" />
                                     </Grid>
                                 </Grid>
                             </Grid>

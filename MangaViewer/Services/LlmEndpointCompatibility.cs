@@ -35,7 +35,12 @@ namespace MangaViewer.Services
         }
 
         public static string NormalizeEndpoint(string? endpoint, string defaultEndpoint = "http://localhost:11434")
-            => string.IsNullOrWhiteSpace(endpoint) ? defaultEndpoint : endpoint.Trim().TrimEnd('/');
+        {
+            string normalized = string.IsNullOrWhiteSpace(endpoint) ? defaultEndpoint : endpoint.Trim().TrimEnd('/');
+            return normalized.EndsWith("/v1", StringComparison.OrdinalIgnoreCase)
+                ? normalized[..^3].TrimEnd('/')
+                : normalized;
+        }
 
         public static async Task<LlmApiFlavor> DetectApiFlavorAsync(HttpClient http, string endpoint, CancellationToken cancellationToken)
         {
@@ -97,6 +102,12 @@ namespace MangaViewer.Services
                 return;
             }
 
+            if (string.IsNullOrWhiteSpace(modelEntry.Status))
+            {
+                DebugLog($"EnsureModelLoaded skipped: endpoint={endpoint}, model={model}, no load status reported by {url}");
+                return;
+            }
+
             if (IsLoadedStatus(modelEntry.Status))
             {
                 DebugLog($"EnsureModelLoaded already loaded: model={model}, status={modelEntry.Status}");
@@ -104,7 +115,11 @@ namespace MangaViewer.Services
             }
 
             if (!IsLoadingStatus(modelEntry.Status))
-                await RequestModelLoadAsync(http, endpoint, model, cancellationToken).ConfigureAwait(false);
+            {
+                bool loadRequested = await TryRequestModelLoadAsync(http, endpoint, model, cancellationToken).ConfigureAwait(false);
+                if (!loadRequested)
+                    return;
+            }
 
             await WaitForModelLoadedAsync(http, endpoint, model, cancellationToken).ConfigureAwait(false);
         }
@@ -114,14 +129,14 @@ namespace MangaViewer.Services
             endpoint = NormalizeEndpoint(endpoint);
             DebugLog($"GetOpenAiCompatibleModelCapabilities start: endpoint={endpoint}, model={model}");
 
-            var modelSpecific = await TryGetPropsCapabilitiesAsync(http, endpoint + "/props?model=" + Uri.EscapeDataString(model) + "&autoload=false", cancellationToken).ConfigureAwait(false);
+            var modelSpecific = await TryGetPropsCapabilitiesAsync(http, endpoint + "/props?model=" + Uri.EscapeDataString(model) + "&autoload=false", model, cancellationToken).ConfigureAwait(false);
             if (modelSpecific.HasValue)
             {
                 DebugLog($"GetOpenAiCompatibleModelCapabilities from model props: model={model}, vision={modelSpecific.Value.Vision}, thinking={modelSpecific.Value.Thinking}");
                 return modelSpecific.Value;
             }
 
-            var singleModel = await TryGetPropsCapabilitiesAsync(http, endpoint + "/props", cancellationToken).ConfigureAwait(false);
+            var singleModel = await TryGetPropsCapabilitiesAsync(http, endpoint + "/props", model, cancellationToken).ConfigureAwait(false);
             if (singleModel.HasValue)
             {
                 DebugLog($"GetOpenAiCompatibleModelCapabilities from single props: model={model}, vision={singleModel.Value.Vision}, thinking={singleModel.Value.Thinking}");
@@ -135,6 +150,9 @@ namespace MangaViewer.Services
 
         public static void ApplyOpenAiThinkingOptions(IDictionary<string, object?> payload, bool thinkingEnabled)
         {
+            if (!thinkingEnabled)
+                return;
+
             payload["reasoning_format"] = "none";
             payload["chat_template_kwargs"] = new Dictionary<string, object?>
             {
@@ -145,7 +163,7 @@ namespace MangaViewer.Services
         public static bool SupportsManagedSlots(string endpoint, string? model)
         {
             string key = BuildSlotManagementKey(endpoint, model);
-            return !s_slotManagementSupport.TryGetValue(key, out bool supported) || supported;
+            return s_slotManagementSupport.TryGetValue(key, out bool supported) && supported;
         }
 
         public static async Task<int?> GetOpenAiCompatibleTotalSlotsAsync(HttpClient http, string endpoint, string? model, CancellationToken cancellationToken)
@@ -162,10 +180,17 @@ namespace MangaViewer.Services
                     endpoint + "/props?model=" + Uri.EscapeDataString(model) + "&autoload=false",
                     cancellationToken).ConfigureAwait(false);
                 if (modelSpecific.HasValue)
+                {
+                    s_slotManagementSupport[BuildSlotManagementKey(endpoint, model)] = true;
                     return modelSpecific.Value;
+                }
             }
 
-            return await TryGetTotalSlotsAsync(http, endpoint + "/props", cancellationToken).ConfigureAwait(false);
+            int? totalSlots = await TryGetTotalSlotsAsync(http, endpoint + "/props", cancellationToken).ConfigureAwait(false);
+            if (totalSlots.HasValue)
+                s_slotManagementSupport[BuildSlotManagementKey(endpoint, model)] = true;
+
+            return totalSlots;
         }
 
         public static async Task<bool> TryEraseSlotAsync(HttpClient http, string endpoint, int slotId, string? model = null)
@@ -349,6 +374,23 @@ namespace MangaViewer.Services
             response.EnsureSuccessStatusCode();
         }
 
+        private static async Task<bool> TryRequestModelLoadAsync(HttpClient http, string endpoint, string model, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await RequestModelLoadAsync(http, endpoint, model, cancellationToken).ConfigureAwait(false);
+                return true;
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.BadRequest
+                or System.Net.HttpStatusCode.NotFound
+                or System.Net.HttpStatusCode.MethodNotAllowed
+                or System.Net.HttpStatusCode.NotImplemented)
+            {
+                DebugLog($"RequestModelLoad skipped: endpoint={endpoint}, model={model}, status={(int?)ex.StatusCode}, error={ex.Message}");
+                return false;
+            }
+        }
+
         private static async Task WaitForModelLoadedAsync(HttpClient http, string endpoint, string model, CancellationToken cancellationToken)
         {
             using var waitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -396,9 +438,56 @@ namespace MangaViewer.Services
                 || normalized.Contains("vision", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("vlm", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("qwen-vl", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("qwen2-vl", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("qwen2.5-vl", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("qwen3-vl", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("gemma-3", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("gemma-4", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("llava", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("minicpm-v", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("moondream", StringComparison.OrdinalIgnoreCase)
                 || normalized.Contains("multimodal", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool TryReadVisionSupport(JsonElement root, string? model)
+        {
+            if (root.TryGetProperty("modalities", out var modalitiesElement))
+            {
+                bool? modalitiesVision = TryReadVisionFromModalities(modalitiesElement);
+                if (modalitiesVision.HasValue)
+                    return modalitiesVision.Value;
+            }
+
+            return InferVisionSupportFromModelId(model);
+        }
+
+        private static bool? TryReadVisionFromModalities(JsonElement modalitiesElement)
+        {
+            if (modalitiesElement.ValueKind == JsonValueKind.Object
+                && modalitiesElement.TryGetProperty("vision", out var visionElement)
+                && (visionElement.ValueKind == JsonValueKind.True || visionElement.ValueKind == JsonValueKind.False))
+            {
+                return visionElement.GetBoolean();
+            }
+
+            if (modalitiesElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in modalitiesElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String
+                        && item.GetString()?.Contains("vision", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            if (modalitiesElement.ValueKind == JsonValueKind.String)
+                return modalitiesElement.GetString()?.Contains("vision", StringComparison.OrdinalIgnoreCase) == true;
+
+            return null;
         }
 
         private static bool InferThinkingSupportFromModelId(string? model)
@@ -416,7 +505,7 @@ namespace MangaViewer.Services
             return true;
         }
 
-        private static async Task<(bool Vision, bool Thinking)?> TryGetPropsCapabilitiesAsync(HttpClient http, string url, CancellationToken cancellationToken)
+        private static async Task<(bool Vision, bool Thinking)?> TryGetPropsCapabilitiesAsync(HttpClient http, string url, string? model, CancellationToken cancellationToken)
         {
             using var doc = await TryGetJsonAsync(http, url, cancellationToken).ConfigureAwait(false);
             if (doc == null || doc.RootElement.ValueKind != JsonValueKind.Object)
@@ -433,14 +522,7 @@ namespace MangaViewer.Services
                 return null;
             }
 
-            bool vision = false;
-            if (doc.RootElement.TryGetProperty("modalities", out var modalitiesElement)
-                && modalitiesElement.ValueKind == JsonValueKind.Object
-                && modalitiesElement.TryGetProperty("vision", out var visionElement)
-                && (visionElement.ValueKind == JsonValueKind.True || visionElement.ValueKind == JsonValueKind.False))
-            {
-                vision = visionElement.GetBoolean();
-            }
+            bool vision = TryReadVisionSupport(doc.RootElement, model);
 
             bool thinking = true;
             if (doc.RootElement.TryGetProperty("chat_template_caps", out var capsElement))

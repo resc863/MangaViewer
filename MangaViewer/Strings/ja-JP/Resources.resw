@@ -74,13 +74,14 @@
   <data name="Settings.Library.AddFolder" xml:space="preserve"><value>ライブラリフォルダー追加</value></data>
   <data name="Settings.Ocr.Header" xml:space="preserve"><value>OCR設定</value></data>
   <data name="Settings.Ocr.Engine" xml:space="preserve"><value>OCRエンジン:</value></data>
-  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollamaエンドポイント:</value></data>
+  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama/llama-serverエンドポイント:</value></data>
   <data name="Settings.Ocr.LoadModels" xml:space="preserve"><value>モデル読み込み</value></data>
   <data name="Settings.Ocr.Model" xml:space="preserve"><value>OCRモデル:</value></data>
   <data name="Settings.Ocr.Output.Json" xml:space="preserve"><value>JSON（ボックス含む）</value></data>
   <data name="Settings.Ocr.Output.Text" xml:space="preserve"><value>テキスト</value></data>
   <data name="Settings.Ocr.OutputFormat" xml:space="preserve"><value>出力形式:</value></data>
   <data name="Settings.Ocr.HybridParallel" xml:space="preserve"><value>Hybrid text parallel:</value></data>
+  <data name="Settings.Ocr.DocLayout.ScoreThreshold" xml:space="preserve"><value>DocLayout score threshold:</value></data>
   <data name="Settings.Ocr.HybridFallback" xml:space="preserve"><value>Hybrid VLMフォールバック:</value></data>
   <data name="Settings.Ocr.DocLayout.Download" xml:space="preserve"><value>PP-DocLayoutV3モデルをダウンロード</value></data>
   <data name="Settings.Ocr.DocLayout.Model" xml:space="preserve"><value>DocLayoutモデル:</value></data>

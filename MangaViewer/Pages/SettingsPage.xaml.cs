@@ -40,9 +40,12 @@ namespace MangaViewer.Pages
         private NumberBox _llamaServerMaxConcurrentBox = null!;
         private ToggleSwitch _llamaServerSlotEraseToggle = null!;
         private NumberBox _hybridTextParallelBox = null!;
+        private NumberBox _docLayoutScoreThresholdBox = null!;
         private ToggleSwitch _hybridOnnxFallbackToggle = null!;
         private Button _docLayoutModelDownloadButton = null!;
         private TextBlock _docLayoutModelStatusText = null!;
+        private ProgressBar _docLayoutModelProgressBar = null!;
+        private TextBlock _docLayoutModelProgressText = null!;
         private ComboBox _onnxEpModeCombo = null!;
         private TextBox _onnxEpManualListBox = null!;
         private Button _onnxEpRegisterNowButton = null!;
@@ -91,13 +94,23 @@ namespace MangaViewer.Pages
             Unloaded += SettingsPage_Unloaded;
             // Removed direct OCR auto-run here to avoid duplicate with MangaViewModel subscription
             _ocr.SettingsChanged += Ocr_SettingsChanged; // keep for potential UI sync only
+            _ocr.DocLayoutModelDownloadStateChanged += Ocr_DocLayoutModelDownloadStateChanged;
             _thumbSettings.SettingsChanged += Thumb_SettingsChanged;
         }
 
         private void SettingsPage_Unloaded(object sender, RoutedEventArgs e)
         {
             _ocr.SettingsChanged -= Ocr_SettingsChanged;
+            _ocr.DocLayoutModelDownloadStateChanged -= Ocr_DocLayoutModelDownloadStateChanged;
             _thumbSettings.SettingsChanged -= Thumb_SettingsChanged;
+        }
+
+        private void Ocr_DocLayoutModelDownloadStateChanged(object? sender, EventArgs e)
+        {
+            if (!IsLoaded)
+                return;
+
+            _ = DispatcherQueue.TryEnqueue(UpdateDocLayoutModelStatus);
         }
 
         private void Thumb_SettingsChanged(object? sender, EventArgs e)
@@ -132,6 +145,8 @@ namespace MangaViewer.Pages
                 _llamaServerSlotEraseToggle.IsOn = _ocr.LlamaServerSlotEraseEnabled;
             if (Math.Abs(_hybridTextParallelBox.Value - _ocr.HybridTextExtractionParallelism) > 0.001)
                 _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            if (Math.Abs(_docLayoutScoreThresholdBox.Value - _ocr.DocLayoutScoreThreshold) > 0.0001)
+                _docLayoutScoreThresholdBox.Value = _ocr.DocLayoutScoreThreshold;
             if (_hybridOnnxFallbackToggle.IsOn != _ocr.HybridOnnxFallbackEnabled)
                 _hybridOnnxFallbackToggle.IsOn = _ocr.HybridOnnxFallbackEnabled;
             if (_onnxEpModeCombo.SelectedIndex != (int)_ocr.OnnxExecutionProviderMode)
@@ -233,10 +248,10 @@ namespace MangaViewer.Pages
             _ocrBackendCombo.SelectionChanged += OcrBackendCombo_SelectionChanged;
             stack.Children.Add(Row(L("Settings.Ocr.Engine", "OCR 엔진:"), _ocrBackendCombo));
 
-            _ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434" };
+            _ollamaEndpointBox = new TextBox { Width = 260, PlaceholderText = "http://localhost:11434 or http://localhost:8080/v1" };
             _ollamaEndpointBox.LostFocus += OllamaEndpointBox_LostFocus;
             _ollamaSettingsPanel = new StackPanel { Spacing = 8 };
-            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OllamaEndpoint", "Ollama 주소:"), _ollamaEndpointBox));
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.OllamaEndpoint", "Ollama/llama-server 주소:"), _ollamaEndpointBox));
 
             _ocrOllamaModelCombo = new ComboBox { Width = 260, PlaceholderText = "VLM model" };
             _ocrOllamaModelCombo.SelectionChanged += OcrOllamaModelCombo_SelectionChanged;
@@ -315,6 +330,17 @@ namespace MangaViewer.Pages
             _hybridTextParallelBox.ValueChanged += HybridTextParallelBox_ValueChanged;
             _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.HybridParallel", "Hybrid text parallel:"), _hybridTextParallelBox));
 
+            _docLayoutScoreThresholdBox = new NumberBox
+            {
+                Width = 140,
+                Minimum = 0.05,
+                Maximum = 0.95,
+                SmallChange = 0.05,
+                SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Inline
+            };
+            _docLayoutScoreThresholdBox.ValueChanged += DocLayoutScoreThresholdBox_ValueChanged;
+            _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.DocLayout.ScoreThreshold", "DocLayout score threshold:"), _docLayoutScoreThresholdBox));
+
             _hybridOnnxFallbackToggle = new ToggleSwitch
             {
                 OnContent = L("Settings.Common.Enabled", "Enabled"),
@@ -325,6 +351,22 @@ namespace MangaViewer.Pages
 
             _docLayoutModelDownloadButton = new Button { Content = L("Settings.Ocr.DocLayout.Download", "Download PP-DocLayoutV3 model") };
             _docLayoutModelDownloadButton.Click += DocLayoutModelDownloadButton_Click;
+            _docLayoutModelProgressBar = new ProgressBar
+            {
+                Width = 180,
+                Height = 4,
+                Minimum = 0,
+                Maximum = 100,
+                Visibility = Visibility.Collapsed
+            };
+            _docLayoutModelProgressText = new TextBlock
+            {
+                VerticalAlignment = VerticalAlignment.Center,
+                Margin = new Thickness(8, 0, 0, 0),
+                Opacity = 0.7,
+                FontSize = 12,
+                Visibility = Visibility.Collapsed
+            };
             _docLayoutModelStatusText = new TextBlock
             {
                 VerticalAlignment = VerticalAlignment.Center,
@@ -334,6 +376,8 @@ namespace MangaViewer.Pages
             };
             var docLayoutRow = new StackPanel { Orientation = Orientation.Horizontal };
             docLayoutRow.Children.Add(_docLayoutModelDownloadButton);
+            docLayoutRow.Children.Add(_docLayoutModelProgressBar);
+            docLayoutRow.Children.Add(_docLayoutModelProgressText);
             docLayoutRow.Children.Add(_docLayoutModelStatusText);
             _ollamaSettingsPanel.Children.Add(Row(L("Settings.Ocr.DocLayout.Model", "DocLayout model:"), docLayoutRow));
 
@@ -1280,6 +1324,7 @@ namespace MangaViewer.Pages
             _llamaServerMaxConcurrentBox.Value = _ocr.LlamaServerMaxConcurrentRequests;
             _llamaServerSlotEraseToggle.IsOn = _ocr.LlamaServerSlotEraseEnabled;
             _hybridTextParallelBox.Value = _ocr.HybridTextExtractionParallelism;
+            _docLayoutScoreThresholdBox.Value = _ocr.DocLayoutScoreThreshold;
             _hybridOnnxFallbackToggle.IsOn = _ocr.HybridOnnxFallbackEnabled;
             _onnxEpModeCombo.SelectedIndex = (int)_ocr.OnnxExecutionProviderMode;
             _onnxEpManualListBox.Text = _ocr.OnnxExecutionProviderManualList;
@@ -1406,6 +1451,7 @@ namespace MangaViewer.Pages
 
         private void HybridTextParallelBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
         {
+            if (_isInitializingSettingsUi) return;
             if (double.IsNaN(sender.Value)) return;
             int value = (int)Math.Clamp(Math.Round(sender.Value), 1, 8);
             if (Math.Abs(sender.Value - value) > 0.001)
@@ -1413,40 +1459,101 @@ namespace MangaViewer.Pages
             _ocr.SetHybridTextExtractionParallelism(value);
         }
 
+        private void DocLayoutScoreThresholdBox_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+        {
+            if (_isInitializingSettingsUi) return;
+            if (double.IsNaN(sender.Value)) return;
+
+            double value = Math.Clamp(sender.Value, 0.05, 0.95);
+            value = Math.Round(value / 0.05) * 0.05;
+            if (Math.Abs(sender.Value - value) > 0.0001)
+                sender.Value = value;
+
+            _ocr.SetDocLayoutScoreThreshold(value);
+        }
+
         private void HybridOnnxFallbackToggle_Toggled(object sender, RoutedEventArgs e)
         {
+            if (_isInitializingSettingsUi) return;
             _ocr.SetHybridOnnxFallbackEnabled(_hybridOnnxFallbackToggle.IsOn);
         }
 
         private async void DocLayoutModelDownloadButton_Click(object sender, RoutedEventArgs e)
         {
-            _docLayoutModelDownloadButton.IsEnabled = false;
-            _docLayoutModelStatusText.Text = L("Settings.Common.Downloading", "Downloading...");
-
             try
             {
-                await _ocr.DownloadDocLayoutModelAsync(CancellationToken.None);
+                _docLayoutModelStatusText.Text = string.Empty;
+                Task downloadTask = _ocr.DownloadDocLayoutModelAsync(CancellationToken.None);
+                UpdateDocLayoutModelStatus();
+                await downloadTask;
                 UpdateDocLayoutModelStatus();
             }
             catch (Exception ex)
             {
-                _docLayoutModelStatusText.Text = L("Settings.Common.DownloadFailedPrefix", "Download failed: ") + ex.Message;
-            }
-            finally
-            {
                 _docLayoutModelDownloadButton.IsEnabled = true;
+                _docLayoutModelProgressBar.Visibility = Visibility.Collapsed;
+                _docLayoutModelProgressBar.IsIndeterminate = false;
+                _docLayoutModelProgressBar.Value = 0;
+                _docLayoutModelProgressText.Visibility = Visibility.Collapsed;
+                _docLayoutModelProgressText.Text = string.Empty;
+                _docLayoutModelStatusText.Text = L("Settings.Common.DownloadFailedPrefix", "Download failed: ") + ex.Message;
             }
         }
 
         private void UpdateDocLayoutModelStatus()
         {
+            if (_ocr.IsDocLayoutModelDownloadInProgress)
+            {
+                _docLayoutModelDownloadButton.IsEnabled = false;
+                _docLayoutModelProgressBar.Visibility = Visibility.Visible;
+                _docLayoutModelProgressText.Visibility = Visibility.Visible;
+                _docLayoutModelStatusText.Text = string.Empty;
+
+                double? progress = _ocr.DocLayoutModelDownloadProgress;
+                if (progress.HasValue)
+                {
+                    double percent = progress.Value * 100.0;
+                    _docLayoutModelProgressBar.IsIndeterminate = false;
+                    _docLayoutModelProgressBar.Value = percent;
+                    _docLayoutModelProgressText.Text = $"{percent:0}% ({FormatBytes(_ocr.DocLayoutModelDownloadReceivedBytes)} / {FormatBytes(_ocr.DocLayoutModelDownloadTotalBytes ?? 0)})";
+                }
+                else
+                {
+                    _docLayoutModelProgressBar.IsIndeterminate = true;
+                    _docLayoutModelProgressText.Text = $"{L("Settings.Common.Downloading", "Downloading...")} {FormatBytes(_ocr.DocLayoutModelDownloadReceivedBytes)}";
+                }
+
+                return;
+            }
+
+            _docLayoutModelDownloadButton.IsEnabled = true;
+            _docLayoutModelProgressBar.Visibility = Visibility.Collapsed;
+            _docLayoutModelProgressBar.IsIndeterminate = false;
+            _docLayoutModelProgressBar.Value = 0;
+            _docLayoutModelProgressText.Visibility = Visibility.Collapsed;
+            _docLayoutModelProgressText.Text = string.Empty;
             bool installed = _ocr.IsDocLayoutModelInstalled();
             bool epContextInstalled = _ocr.IsDocLayoutEpContextModelInstalled();
+            if (!installed && !string.IsNullOrWhiteSpace(_ocr.LastDocLayoutModelDownloadError))
+            {
+                _docLayoutModelStatusText.Text = L("Settings.Common.DownloadFailedPrefix", "Download failed: ") + _ocr.LastDocLayoutModelDownloadError;
+                return;
+            }
+
             _docLayoutModelStatusText.Text = installed
                 ? (epContextInstalled
                     ? L("Settings.Ocr.DocLayout.InstalledWithEp", "Installed + EP context ready")
                     : L("Settings.Ocr.DocLayout.Installed", "Installed"))
                 : L("Settings.Ocr.DocLayout.NotInstalled", "Not installed (required for Hybrid OCR).");
+        }
+
+        private static string FormatBytes(long bytes)
+        {
+            const double mb = 1024.0 * 1024.0;
+            if (bytes <= 0)
+                return "0 MB";
+
+            return $"{bytes / mb:0.0} MB";
         }
 
         private void OnnxEpModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1571,6 +1678,7 @@ namespace MangaViewer.Pages
             _ocrStructuredOutputToggle.IsEnabled = isVlm;
             _ocrOllamaTemperatureBox.IsEnabled = isVlm;
             _hybridTextParallelBox.IsEnabled = isHybrid;
+            _docLayoutScoreThresholdBox.IsEnabled = isHybrid;
             _hybridOnnxFallbackToggle.IsEnabled = isHybrid;
         }
 

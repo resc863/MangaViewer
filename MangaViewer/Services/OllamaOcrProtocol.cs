@@ -65,9 +65,11 @@ Use a simple shape like { ""result"": [ { ""label"": ""..."", ""box_2d"": [ymin,
             }
             else
             {
-                structuredInstruction = @"Include OCR text and location information when available.
-When returning box coordinates, use [ymin, xmin, ymax, xmax].
-Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge x=1000, bottom edge y=1000.";
+                structuredInstruction = @"Return JSON only.
+Use a simple shape like { ""result"": [ { ""text_content"": ""..."", ""bbox_2d"": [ymin, xmin, ymax, xmax] } ] }.
+Include OCR text and location information in reading order.
+Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge x=1000, bottom edge y=1000.
+If exact coordinates are uncertain, estimate the full speech-bubble rectangle.";
             }
 
             string contentFilterInstruction = "Include only dialogue or narration text that should be read by the user. Exclude non-dialogue text such as sound effects, onomatopoeia, decorative background text, and UI/watermark text.";
@@ -79,7 +81,7 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
 {speechBubbleInstruction}
 {thinkInstruction}";
 
-            return new VisionPromptDefinition(prompt, isQwenFamilyModel || isGemmaFamilyModel);
+            return new VisionPromptDefinition(prompt, true);
         }
 
         public static object BuildOcrJsonSchema()
@@ -202,22 +204,24 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                 }
                 else
                 {
-                    return new OcrService.OllamaOcrResponse { Text = responseText.Trim(), IsSuccessful = true };
+                    return BuildPlainTextOnlyResponse(ExtractPlainText(root, responseText), originalImageWidth, originalImageHeight);
                 }
 
                 var rawBoxes = new List<RawOllamaBox>();
                 bool useNormalizedYxOrder = true;
                 foreach (var item in boxesElement.EnumerateArray())
                 {
+                    if (item.ValueKind == JsonValueKind.String)
+                    {
+                        string itemText = item.GetString() ?? string.Empty;
+                        if (!string.IsNullOrWhiteSpace(itemText))
+                            rawBoxes.Add(new RawOllamaBox(itemText, 0, 0, 0, 0));
+                        continue;
+                    }
+
                     if (item.ValueKind != JsonValueKind.Object) continue;
 
-                    string boxText = item.TryGetProperty("text_content", out var bt) && bt.ValueKind == JsonValueKind.String
-                        ? (bt.GetString() ?? string.Empty)
-                        : (item.TryGetProperty("text", out var legacyBt) && legacyBt.ValueKind == JsonValueKind.String
-                            ? (legacyBt.GetString() ?? string.Empty)
-                            : (item.TryGetProperty("label", out var labelBt) && labelBt.ValueKind == JsonValueKind.String
-                                ? (labelBt.GetString() ?? string.Empty)
-                                : string.Empty));
+                    string boxText = ExtractPlainText(item, string.Empty);
 
                     if (!TryReadBbox2D(item, out var x1, out var y1, out var x2, out var y2, useNormalizedYxOrder))
                     {
@@ -262,7 +266,10 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
 
                 string text = boxes.Count > 0
                     ? string.Join(Environment.NewLine, boxes.Select(b => b.Text).Where(t => !string.IsNullOrWhiteSpace(t)))
-                    : string.Empty;
+                    : string.Join(Environment.NewLine, rawBoxes.Select(b => b.Text).Where(t => !string.IsNullOrWhiteSpace(t)));
+
+                if (boxes.Count == 0 && !string.IsNullOrWhiteSpace(text) && originalImageWidth > 0 && originalImageHeight > 0)
+                    boxes.Add(new BoundingBoxViewModel(text, new Rect(0, 0, originalImageWidth, originalImageHeight), originalImageWidth, originalImageHeight));
 
                 return new OcrService.OllamaOcrResponse
                 {
@@ -273,8 +280,56 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
             }
             catch
             {
-                return new OcrService.OllamaOcrResponse { Text = responseText.Trim(), IsSuccessful = true };
+                return BuildPlainTextOnlyResponse(responseText.Trim(), originalImageWidth, originalImageHeight);
             }
+        }
+
+        private static OcrService.OllamaOcrResponse BuildPlainTextOnlyResponse(string text, int originalImageWidth, int originalImageHeight)
+        {
+            text = text.Trim();
+            var boxes = new List<BoundingBoxViewModel>();
+            if (!string.IsNullOrWhiteSpace(text) && originalImageWidth > 0 && originalImageHeight > 0)
+                boxes.Add(new BoundingBoxViewModel(text, new Rect(0, 0, originalImageWidth, originalImageHeight), originalImageWidth, originalImageHeight));
+
+            return new OcrService.OllamaOcrResponse
+            {
+                Text = text,
+                Boxes = boxes,
+                IsSuccessful = true
+            };
+        }
+
+        private static string ExtractPlainText(JsonElement element, string fallback)
+        {
+            if (element.ValueKind == JsonValueKind.String)
+                return (element.GetString() ?? fallback).Trim();
+
+            if (element.ValueKind != JsonValueKind.Object)
+                return fallback.Trim();
+
+            string[] textProperties =
+            [
+                "text_content",
+                "text",
+                "label",
+                "content",
+                "ocr_text",
+                "recognized_text",
+                "transcription",
+                "markdown"
+            ];
+
+            foreach (string property in textProperties)
+            {
+                if (element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.String)
+                {
+                    string text = value.GetString() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(text))
+                        return text.Trim();
+                }
+            }
+
+            return fallback.Trim();
         }
 
         private static string TrimMarkdownCodeFence(string text)
@@ -310,7 +365,11 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
         {
             x1 = y1 = x2 = y2 = 0;
             if (item.ValueKind != JsonValueKind.Object) return false;
-            if (!(item.TryGetProperty("bbox_2d", out var bboxElement) || item.TryGetProperty("box_2d", out bboxElement))
+            if (!(item.TryGetProperty("bbox_2d", out var bboxElement)
+                  || item.TryGetProperty("box_2d", out bboxElement)
+                  || item.TryGetProperty("bbox", out bboxElement)
+                  || item.TryGetProperty("box", out bboxElement)
+                  || item.TryGetProperty("coordinates", out bboxElement))
                 || bboxElement.ValueKind != JsonValueKind.Array)
                 return false;
 
@@ -481,6 +540,13 @@ Use normalized coordinates on a 0..1000 scale with top-left as (0,0), right edge
                 return VisionModelFamily.Other;
 
             string normalized = modelName.Trim().ToLowerInvariant();
+            if (normalized.Contains("qwen", StringComparison.Ordinal)
+                && (normalized.Contains("vl", StringComparison.Ordinal)
+                    || normalized.Contains("vision", StringComparison.Ordinal)))
+            {
+                return VisionModelFamily.Qwen;
+            }
+
             if (normalized.StartsWith("qwen3.5", StringComparison.Ordinal)
                 || normalized.StartsWith("qwen3_5", StringComparison.Ordinal)
                 || normalized.StartsWith("qwen-3.5", StringComparison.Ordinal)

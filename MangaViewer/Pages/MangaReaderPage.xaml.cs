@@ -14,9 +14,11 @@ using Microsoft.UI.Xaml.Input; // Tapped
 using Microsoft.UI.Xaml.Controls.Primitives; // DragDeltaEventArgs
 using MangaViewer.Services.Thumbnails;
 using System.Collections.Generic;
+using System.Text;
 using Microsoft.UI.Xaml.Media.Imaging;
 using MangaViewer.Services;
 using Windows.Foundation;
+using System.Threading.Tasks;
 
 namespace MangaViewer.Pages
 {
@@ -32,6 +34,7 @@ namespace MangaViewer.Pages
         private bool? _preferredPaneOpen; // persisted preferred state
         private DispatcherTimer? _resizeDebounceTimer; // debounce resize
         private bool _suppressPersistDuringResize; // suppress persisting IsPaneOpen while resizing
+        private bool _ocrRedrawRetryPending;
         private const double PaneMinWidth = 120;
         private const double PaneMaxWidth = 420;
         private double _readerPaneLength = 160;
@@ -697,43 +700,62 @@ namespace MangaViewer.Pages
         private void RedrawOcr(Grid? wrapper, Canvas? overlay, IEnumerable<BoundingBoxViewModel> boxes, BitmapImage? imageSource, bool isLeft)
         {
             if (overlay == null) return;
+            var boxList = boxes as IList<BoundingBoxViewModel> ?? boxes.ToList();
             if (wrapper == null || imageSource == null)
             {
                 overlay.Children.Clear();
+                ScheduleOcrRedrawRetryIfNeeded(wrapper, boxList.Count, "wrapper-or-image-not-ready");
                 return;
             }
 
-            (int baseW, int baseH) = GetBestMatchingBaseSize(wrapper, boxes, imageSource);
+            (int baseW, int baseH) = GetBestMatchingBaseSize(wrapper, boxList, imageSource);
             if (baseW <= 0 || baseH <= 0)
             {
                 overlay.Children.Clear();
+                ScheduleOcrRedrawRetryIfNeeded(wrapper, boxList.Count, "base-size-not-ready");
                 return;
             }
 
-            DrawBoxes(wrapper, overlay, boxes, baseW, baseH, isLeft);
+            DrawBoxes(wrapper, overlay, boxList, baseW, baseH, isLeft);
         }
 
         // OCR 결과의 좌표계(가로/세로)가 표시된 이미지와 다를 수 있으므로,
         // wrapper 종횡비와 비교해 가장 맞는 기준 크기(정방향/회전)를 선택한다.
         private static (int W, int H) GetBestMatchingBaseSize(Grid wrapper, IEnumerable<BoundingBoxViewModel> boxes, BitmapImage imageSource)
         {
-            int imgW = imageSource.PixelWidth;
-            int imgH = imageSource.PixelHeight;
+            var first = boxes.FirstOrDefault();
+            int baseW = first?.ImagePixelWidth > 0 ? first.ImagePixelWidth : imageSource.PixelWidth;
+            int baseH = first?.ImagePixelHeight > 0 ? first.ImagePixelHeight : imageSource.PixelHeight;
+
+            return SelectOcrBaseSize(
+                wrapper.ActualWidth,
+                wrapper.ActualHeight,
+                imageSource.PixelWidth,
+                imageSource.PixelHeight,
+                baseW,
+                baseH,
+                first != null);
+        }
+
+        internal static (int W, int H) SelectOcrBaseSize(
+            double wrapperW,
+            double wrapperH,
+            int imagePixelW,
+            int imagePixelH,
+            int boxImagePixelW,
+            int boxImagePixelH,
+            bool hasBox)
+        {
+            int imgW = hasBox && boxImagePixelW > 0 ? boxImagePixelW : imagePixelW;
+            int imgH = hasBox && boxImagePixelH > 0 ? boxImagePixelH : imagePixelH;
             if (imgW <= 0 || imgH <= 0) return (0, 0);
 
-            var first = boxes.FirstOrDefault();
-            if (first == null)
+            if (!hasBox || wrapperW <= 0 || wrapperH <= 0)
                 return (imgW, imgH);
-
-            double wrapperW = wrapper.ActualWidth;
-            double wrapperH = wrapper.ActualHeight;
-            if (wrapperW <= 0 || wrapperH <= 0)
-                return (imgW, imgH);
-
-            double wrapperAspect = wrapperW / wrapperH;
 
             double aspectA = imgW / (double)imgH;
             double aspectB = imgH / (double)imgW;
+            double wrapperAspect = wrapperW / wrapperH;
 
             double da = Math.Abs(wrapperAspect - aspectA);
             double db = Math.Abs(wrapperAspect - aspectB);
@@ -742,6 +764,49 @@ namespace MangaViewer.Pages
                 return (imgH, imgW);
 
             return (imgW, imgH);
+        }
+
+        public static string RunOcrOverlayMappingSelfTest()
+        {
+            var report = new StringBuilder();
+
+            var decodedPortrait = SelectOcrBaseSize(
+                wrapperW: 800,
+                wrapperH: 1200,
+                imagePixelW: 800,
+                imagePixelH: 1200,
+                boxImagePixelW: 2400,
+                boxImagePixelH: 3600,
+                hasBox: true);
+            report.AppendLine($"DecodedPortraitBase={decodedPortrait.W}x{decodedPortrait.H}");
+            if (decodedPortrait != (2400, 3600))
+                throw new InvalidOperationException($"Expected original OCR coordinate size 2400x3600, got {decodedPortrait.W}x{decodedPortrait.H}.");
+
+            var noBox = SelectOcrBaseSize(
+                wrapperW: 800,
+                wrapperH: 1200,
+                imagePixelW: 800,
+                imagePixelH: 1200,
+                boxImagePixelW: 0,
+                boxImagePixelH: 0,
+                hasBox: false);
+            report.AppendLine($"NoBoxBase={noBox.W}x{noBox.H}");
+            if (noBox != (800, 1200))
+                throw new InvalidOperationException($"Expected decoded image size 800x1200 without OCR boxes, got {noBox.W}x{noBox.H}.");
+
+            var rotated = SelectOcrBaseSize(
+                wrapperW: 1200,
+                wrapperH: 800,
+                imagePixelW: 800,
+                imagePixelH: 1200,
+                boxImagePixelW: 2400,
+                boxImagePixelH: 3600,
+                hasBox: true);
+            report.AppendLine($"RotatedBase={rotated.W}x{rotated.H}");
+            if (rotated != (3600, 2400))
+                throw new InvalidOperationException($"Expected rotated OCR coordinate size 3600x2400, got {rotated.W}x{rotated.H}.");
+
+            return report.ToString();
         }
 
         private void RedrawSingle() => RedrawOcr(SingleWrapper, SingleOverlay, ViewModel.LeftOcrBoxes, ViewModel.LeftImageSource, true);
@@ -781,7 +846,11 @@ namespace MangaViewer.Pages
 
             double wrapperW = wrapper.ActualWidth;
             double wrapperH = wrapper.ActualHeight;
-            if (wrapperW <= 0 || wrapperH <= 0 || imgPixelW <= 0 || imgPixelH <= 0) return;
+            if (wrapperW <= 0 || wrapperH <= 0 || imgPixelW <= 0 || imgPixelH <= 0)
+            {
+                ScheduleOcrRedrawRetryIfNeeded(wrapper, boxList.Count, "wrapper-size-not-ready");
+                return;
+            }
 
             EnsureOcrBrushes();
             var strokeBrush = isLeft ? _ocrLeftStrokeBrush! : _ocrRightStrokeBrush!;
@@ -878,12 +947,31 @@ namespace MangaViewer.Pages
                 rect.Width = sourceRect.Width;
                 rect.Height = sourceRect.Height;
                 rect.Tag = new OcrBoxHitContext(b, isLeft);
+                rect.StrokeThickness = 1;
                 rect.Stroke = strokeBrush;
                 rect.Fill = fillBrush;
                 Canvas.SetLeft(rect, sourceRect.X);
                 Canvas.SetTop(rect, sourceRect.Y);
                 overlay.Children.Add(rect);
             }
+        }
+
+        private void ScheduleOcrRedrawRetryIfNeeded(Grid? wrapper, int boxCount, string reason)
+        {
+            if (_isUnloaded || boxCount <= 0 || wrapper?.Visibility != Visibility.Visible || _ocrRedrawRetryPending)
+                return;
+
+            _ocrRedrawRetryPending = true;
+            Debug.WriteLine($"[MangaReaderPage][OCR] Redraw delayed. Reason={reason}, Boxes={boxCount}, Wrapper={wrapper.Name}, Size={wrapper.ActualWidth:0.##}x{wrapper.ActualHeight:0.##}");
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(80).ConfigureAwait(false);
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    _ocrRedrawRetryPending = false;
+                    RedrawAllOcr();
+                });
+            });
         }
 
         // Hybrid 전용 배치: 원본 박스를 사용자 스케일로 확장/축소하고
@@ -1316,7 +1404,7 @@ namespace MangaViewer.Pages
 
         private void FlashRectangleSelection(Rectangle rectangle)
         {
-            rectangle.StrokeThickness = 2;
+            rectangle.StrokeThickness = 1;
             _ = DispatcherQueue.TryEnqueue(async () =>
             {
                 await System.Threading.Tasks.Task.Delay(300);

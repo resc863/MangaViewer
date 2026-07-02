@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using Microsoft.Windows.Storage.Pickers;
+using Microsoft.UI.Dispatching;
 using System.Threading;
 using System.Linq;
 using Microsoft.UI.Xaml.Controls;
@@ -24,6 +25,7 @@ namespace MangaViewer.ViewModels
         private readonly BookmarkService _bookmarkService = BookmarkService.Instance;
         private readonly LibraryService _libraryService = new();
         private readonly TranslationService _translationService = TranslationService.Instance;
+        private readonly DispatcherQueue? _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
         private BitmapImage? _leftImageSource;
         private BitmapImage? _rightImageSource;
@@ -310,6 +312,32 @@ namespace MangaViewer.ViewModels
             AddBookmarkCommand = new RelayCommand(_ => AddCurrentBookmark(), _ => _mangaManager.TotalImages > 0);
             RemoveBookmarkCommand = new RelayCommand(o => RemoveBookmark(o as MangaPageViewModel), _ => Bookmarks.Count > 0);
             NavigateToBookmarkCommand = new RelayCommand(o => NavigateToBookmark(o as MangaPageViewModel));
+        }
+
+        private Task RunOnUiThreadAsync(Action action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            if (_dispatcherQueue == null || _dispatcherQueue.HasThreadAccess)
+            {
+                action();
+                return Task.CompletedTask;
+            }
+
+            return DispatcherHelper.RunOnUiAsync(_dispatcherQueue, action);
+        }
+
+        private void PostToUiThread(Action action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            if (_dispatcherQueue == null || _dispatcherQueue.HasThreadAccess)
+            {
+                action();
+                return;
+            }
+
+            _dispatcherQueue.TryEnqueue(() => action());
         }
 
         private async void OnOcrSettingsChanged(object? sender, EventArgs e)
@@ -1044,7 +1072,6 @@ namespace MangaViewer.ViewModels
             int totalBoxes = 0;
             string fallbackStatusMessage = string.Empty;
 
-            var syncContext = SynchronizationContext.Current;
             var previewPublished = new bool[2];
 
             void PublishPreview(int pageIndex, IReadOnlyList<BoundingBoxViewModel> boxes)
@@ -1068,10 +1095,7 @@ namespace MangaViewer.ViewModels
                     PageViewChanged?.Invoke(this, EventArgs.Empty);
                 }
 
-                if (syncContext != null)
-                    syncContext.Post(_ => Apply(), null);
-                else
-                    Apply();
+                PostToUiThread(Apply);
             }
 
             var pending = new List<(int PageIndex, Task<OcrService.OllamaOcrResponse> Task)>();
@@ -1100,24 +1124,28 @@ namespace MangaViewer.ViewModels
                 if (!result.IsSuccessful)
                     throw new InvalidOperationException(string.IsNullOrWhiteSpace(result.StatusMessage) ? "OCR request did not complete." : result.StatusMessage);
 
-                if (pageIndex == 0)
+                await RunOnUiThreadAsync(() =>
                 {
-                    LeftOcrText = result.Text;
-                    if (!previewPublished[0])
+                    var targetBoxes = pageIndex == 0 ? _leftOcrBoxes : _rightOcrBoxes;
+                    if (pageIndex == 0)
                     {
-                        foreach (var box in result.Boxes)
-                            _leftOcrBoxes.Add(box);
+                        LeftOcrText = result.Text;
                     }
-                }
-                else
-                {
-                    RightOcrText = result.Text;
-                    if (!previewPublished[1])
+                    else
                     {
-                        foreach (var box in result.Boxes)
-                            _rightOcrBoxes.Add(box);
+                        RightOcrText = result.Text;
                     }
-                }
+
+                    if (result.Boxes.Count > 0)
+                    {
+                        targetBoxes.Clear();
+                        foreach (var box in result.Boxes)
+                            targetBoxes.Add(box);
+                    }
+
+                    RaiseOllamaOcrTextVisibilityChanged();
+                    PageViewChanged?.Invoke(this, EventArgs.Empty);
+                }).ConfigureAwait(true);
 
                 totalBoxes += result.Boxes.Count;
                 completedPages++;
@@ -1125,9 +1153,6 @@ namespace MangaViewer.ViewModels
 
                 if (!string.IsNullOrWhiteSpace(result.StatusMessage))
                     fallbackStatusMessage = result.StatusMessage;
-
-                RaiseOllamaOcrTextVisibilityChanged();
-                PageViewChanged?.Invoke(this, EventArgs.Empty);
 
                 if (completedPages < totalPages)
                     SetOcrStatus($"Hybrid OCR 실행 중... ({completedPages}/{totalPages})", InfoBarSeverity.Informational, false);

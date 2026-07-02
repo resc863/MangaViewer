@@ -74,13 +74,14 @@
   <data name="Settings.Library.AddFolder" xml:space="preserve"><value>라이브러리 폴더 추가</value></data>
   <data name="Settings.Ocr.Header" xml:space="preserve"><value>OCR 설정</value></data>
   <data name="Settings.Ocr.Engine" xml:space="preserve"><value>OCR 엔진:</value></data>
-  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama 주소:</value></data>
+  <data name="Settings.Ocr.OllamaEndpoint" xml:space="preserve"><value>Ollama/llama-server 주소:</value></data>
   <data name="Settings.Ocr.LoadModels" xml:space="preserve"><value>모델 불러오기</value></data>
   <data name="Settings.Ocr.Model" xml:space="preserve"><value>OCR 모델:</value></data>
   <data name="Settings.Ocr.Output.Json" xml:space="preserve"><value>JSON(박스 포함)</value></data>
   <data name="Settings.Ocr.Output.Text" xml:space="preserve"><value>일반 텍스트</value></data>
   <data name="Settings.Ocr.OutputFormat" xml:space="preserve"><value>출력 형식:</value></data>
   <data name="Settings.Ocr.HybridParallel" xml:space="preserve"><value>하이브리드 텍스트 병렬:</value></data>
+  <data name="Settings.Ocr.DocLayout.ScoreThreshold" xml:space="preserve"><value>DocLayout 점수 임계값:</value></data>
   <data name="Settings.Ocr.HybridFallback" xml:space="preserve"><value>하이브리드 VLM 폴백:</value></data>
   <data name="Settings.Ocr.DocLayout.Download" xml:space="preserve"><value>PP-DocLayoutV3 모델 다운로드</value></data>
   <data name="Settings.Ocr.DocLayout.Model" xml:space="preserve"><value>DocLayout 모델:</value></data>

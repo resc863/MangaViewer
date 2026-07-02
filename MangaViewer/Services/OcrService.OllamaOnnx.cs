@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Runtime.InteropServices.WindowsRuntime;
 using System.Text;
@@ -15,6 +17,7 @@ using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
 using Windows.Foundation;
 using Windows.Graphics.Imaging;
+using Windows.Networking.BackgroundTransfer;
 using Windows.Storage;
 using Windows.Storage.Streams;
 
@@ -23,9 +26,50 @@ namespace MangaViewer.Services
     public partial class OcrService
     {
         private const string DocLayoutModelDownloadUrl = "https://huggingface.co/alex-dinh/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx";
+        private const string DocLayoutModelDownloadFallbackUrl = "https://huggingface.co/alex-dinh/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx?download=true";
+        private const long DocLayoutModelMinimumBytes = 100L * 1024L * 1024L;
+        private const string DocLayoutModelDirectoryName = "onnx";
+        private const string DocLayoutModelFileName = "PP-DocLayoutV3.onnx";
+        private static readonly TimeSpan DocLayoutModelDownloadTimeout = TimeSpan.FromMinutes(15);
+        private static readonly TimeSpan DocLayoutModelDownloadStallTimeout = TimeSpan.FromSeconds(60);
+
+        private readonly object _docLayoutModelDownloadGate = new();
+        private Task? _docLayoutModelDownloadTask;
+        private bool _docLayoutBackgroundTransferUnavailable;
+        public string? LastDocLayoutModelDownloadError { get; private set; }
+        public long DocLayoutModelDownloadReceivedBytes { get; private set; }
+        public long? DocLayoutModelDownloadTotalBytes { get; private set; }
+        public double? DocLayoutModelDownloadProgress
+        {
+            get
+            {
+                lock (_docLayoutModelDownloadGate)
+                {
+                    return DocLayoutModelDownloadTotalBytes is > 0
+                        ? Math.Clamp((double)DocLayoutModelDownloadReceivedBytes / DocLayoutModelDownloadTotalBytes.Value, 0.0, 1.0)
+                        : null;
+                }
+            }
+        }
+
+        public event EventHandler? DocLayoutModelDownloadStateChanged;
+        public bool IsDocLayoutModelDownloadInProgress
+        {
+            get
+            {
+                lock (_docLayoutModelDownloadGate)
+                {
+                    return _docLayoutModelDownloadTask is { IsCompleted: false };
+                }
+            }
+        }
 
         public string GetDocLayoutModelPath()
-            => Path.Combine(AppContext.BaseDirectory, DocLayoutModelRelativePath.Replace('/', Path.DirectorySeparatorChar));
+        {
+            string targetPath = GetDocLayoutUserDataModelPath();
+            TryMigrateLegacyDocLayoutModel(targetPath);
+            return targetPath;
+        }
 
         public string GetDocLayoutEpContextModelPath()
         {
@@ -36,12 +80,238 @@ namespace MangaViewer.Services
         }
 
         public bool IsDocLayoutModelInstalled()
-            => File.Exists(GetDocLayoutModelPath());
+            => IsDocLayoutModelFilePlausible(GetDocLayoutModelPath());
+
+        public async Task<string> RunDocLayoutModelSelfTestAsync(CancellationToken cancellationToken)
+        {
+            var report = new StringBuilder();
+            string modelPath = GetDocLayoutModelPath();
+            report.AppendLine($"ModelPath={modelPath}");
+            report.AppendLine($"ModelExists={File.Exists(modelPath)}");
+            report.AppendLine($"ModelBytes={(File.Exists(modelPath) ? new FileInfo(modelPath).Length : 0)}");
+            report.AppendLine($"ScoreThreshold={DocLayoutScoreThreshold:0.###}");
+
+            if (!IsDocLayoutModelInstalled())
+                throw new FileNotFoundException("PP-DocLayoutV3 ONNX model is not installed or is unexpectedly small.", modelPath);
+
+            using var options = CreateCpuOnlyDocLayoutSessionOptions();
+            using var session = new InferenceSession(modelPath, options);
+
+            string inputSummary = string.Join(
+                "; ",
+                session.InputMetadata.Select(kvp => $"{kvp.Key}[{string.Join(",", kvp.Value.Dimensions)}]"));
+            string outputSummary = string.Join(
+                "; ",
+                session.OutputMetadata.Select(kvp => $"{kvp.Key}[{string.Join(",", kvp.Value.Dimensions)}]"));
+            report.AppendLine($"Inputs={inputSummary}");
+            report.AppendLine($"Outputs={outputSummary}");
+
+            var testImage = await CreateDocLayoutSelfTestImageAsync(cancellationToken).ConfigureAwait(false);
+            string rawDiagnostics = await RunDocLayoutRawDiagnosticsAsync(
+                session,
+                testImage.Bytes,
+                testImage.Width,
+                testImage.Height,
+                cancellationToken).ConfigureAwait(false);
+            var boxes = await RunDocLayoutDetectionCoreAsync(
+                session,
+                testImage.Bytes,
+                testImage.Width,
+                testImage.Height,
+                cancellationToken).ConfigureAwait(false);
+            var pipelineBoxes = await DetectLayoutWithOnnxAsync(
+                testImage.Bytes,
+                testImage.Width,
+                testImage.Height,
+                cancellationToken).ConfigureAwait(false);
+
+            report.AppendLine($"InferenceImage={testImage.Width}x{testImage.Height}");
+            report.Append(rawDiagnostics);
+            report.AppendLine($"DetectedBoxes={boxes.Count}");
+            report.AppendLine($"PipelineDetectedBoxes={pipelineBoxes.Count}");
+            if (boxes.Count > 0)
+            {
+                DocLayoutBox first = boxes[0];
+                report.AppendLine(
+                    $"FirstBox=Score:{first.Score:0.000},X:{first.Rect.X:0.0},Y:{first.Rect.Y:0.0},W:{first.Rect.Width:0.0},H:{first.Rect.Height:0.0},Order:{first.ReadOrder}");
+            }
+
+            return report.ToString();
+        }
+
+        public async Task<string> RunHybridOcrPipelineSelfTestAsync(CancellationToken cancellationToken, bool recognizeText = false)
+        {
+            var report = new StringBuilder();
+            var sw = Stopwatch.StartNew();
+            string modelPath = GetDocLayoutModelPath();
+            report.AppendLine($"ModelPath={modelPath}");
+            report.AppendLine($"ModelExists={File.Exists(modelPath)}");
+            report.AppendLine($"ModelBytes={(File.Exists(modelPath) ? new FileInfo(modelPath).Length : 0)}");
+            report.AppendLine($"ScoreThreshold={DocLayoutScoreThreshold:0.###}");
+            report.AppendLine($"RecognizeText={recognizeText}");
+            report.AppendLine($"Endpoint={OllamaEndpoint}");
+            report.AppendLine($"Model={OllamaModel}");
+
+            if (!IsDocLayoutModelInstalled())
+                throw new FileNotFoundException("PP-DocLayoutV3 ONNX model is not installed or is unexpectedly small.", modelPath);
+
+            var testImage = await CreateDocLayoutSelfTestImageAsync(cancellationToken).ConfigureAwait(false);
+            string imagePath = Path.Combine(ApplicationData.Current.LocalFolder.Path, "hybrid-ocr-pipeline-selftest.png");
+            await File.WriteAllBytesAsync(imagePath, testImage.Bytes, cancellationToken).ConfigureAwait(false);
+
+            ClearCache();
+
+            int previewCallCount = 0;
+            int previewBoxCount = 0;
+            int previewNonEmptyTextCount = 0;
+            var response = await GetHybridOcrAsync(
+                imagePath,
+                cancellationToken,
+                forceRefresh: true,
+                onLayoutBoxesReady: boxes =>
+                {
+                    previewCallCount++;
+                    previewBoxCount = boxes.Count;
+                    previewNonEmptyTextCount = boxes.Count(box => !string.IsNullOrWhiteSpace(box.Text));
+                },
+                recognizeText: recognizeText).ConfigureAwait(false);
+            sw.Stop();
+
+            report.AppendLine($"ImagePath={imagePath}");
+            report.AppendLine($"ImageBytes={testImage.Bytes.Length}");
+            report.AppendLine($"ImageSize={testImage.Width}x{testImage.Height}");
+            report.AppendLine($"ElapsedMs={sw.ElapsedMilliseconds}");
+            report.AppendLine($"PreviewCallCount={previewCallCount}");
+            report.AppendLine($"PreviewBoxes={previewBoxCount}");
+            report.AppendLine($"PreviewTextBoxes={previewNonEmptyTextCount}");
+            report.AppendLine($"ResultSuccess={response.IsSuccessful}");
+            report.AppendLine($"ResultUsedFallback={response.UsedFallback}");
+            report.AppendLine($"ResultBoxes={response.Boxes.Count}");
+            report.AppendLine($"ResultTextBoxes={response.Boxes.Count(box => !string.IsNullOrWhiteSpace(box.Text))}");
+            report.AppendLine($"ResultTextLength={response.Text?.Length ?? 0}");
+            report.AppendLine($"ResultStatus={response.StatusMessage}");
+            if (response.Boxes.Count > 0)
+            {
+                var first = response.Boxes[0];
+                report.AppendLine($"FirstBox=X:{first.OriginalX:0.#},Y:{first.OriginalY:0.#},W:{first.OriginalW:0.#},H:{first.OriginalH:0.#},Image:{first.ImagePixelWidth}x{first.ImagePixelHeight}");
+            }
+
+            if (previewCallCount <= 0)
+                throw new InvalidOperationException("Hybrid OCR pipeline did not publish layout preview boxes.");
+            if (previewBoxCount <= 0)
+                throw new InvalidOperationException("Hybrid OCR pipeline preview published zero boxes.");
+            if (!response.IsSuccessful)
+                throw new InvalidOperationException("Hybrid OCR pipeline result was not successful: " + response.StatusMessage);
+            if (response.Boxes.Count <= 0)
+                throw new InvalidOperationException("Hybrid OCR pipeline result contained zero boxes.");
+
+            return report.ToString();
+        }
+
+        public async Task<string> RunOnnxEpModeSwitchSelfTestAsync(CancellationToken cancellationToken)
+        {
+            var report = new StringBuilder();
+            var originalMode = OnnxExecutionProviderMode;
+            string originalManualList = OnnxExecutionProviderManualList;
+
+            try
+            {
+                var testImage = await CreateDocLayoutSelfTestImageAsync(cancellationToken).ConfigureAwait(false);
+                var initialBoxes = await DetectLayoutWithOnnxAsync(
+                    testImage.Bytes,
+                    testImage.Width,
+                    testImage.Height,
+                    cancellationToken).ConfigureAwait(false);
+                report.AppendLine($"InitialBoxes={initialBoxes.Count}");
+                report.AppendLine($"OriginalMode={originalMode}");
+
+                var targetMode = originalMode == OnnxEpRegistrationMode.Auto
+                    ? OnnxEpRegistrationMode.Manual
+                    : OnnxEpRegistrationMode.Auto;
+                if (targetMode == OnnxEpRegistrationMode.Manual && string.IsNullOrWhiteSpace(OnnxExecutionProviderManualList))
+                    OnnxExecutionProviderManualList = "CPUExecutionProvider";
+
+                var sw = Stopwatch.StartNew();
+                SetOnnxExecutionProviderMode(targetMode);
+                sw.Stop();
+                report.AppendLine($"SwitchTo={targetMode}");
+                report.AppendLine($"SwitchElapsedMs={sw.ElapsedMilliseconds}");
+                if (sw.ElapsedMilliseconds > 500)
+                    throw new InvalidOperationException($"EP mode switch took too long on caller thread: {sw.ElapsedMilliseconds} ms.");
+
+                sw.Restart();
+                SetOnnxExecutionProviderMode(originalMode);
+                sw.Stop();
+                report.AppendLine($"SwitchBack={originalMode}");
+                report.AppendLine($"SwitchBackElapsedMs={sw.ElapsedMilliseconds}");
+                if (sw.ElapsedMilliseconds > 500)
+                    throw new InvalidOperationException($"EP mode switch back took too long on caller thread: {sw.ElapsedMilliseconds} ms.");
+
+                return report.ToString();
+            }
+            finally
+            {
+                OnnxExecutionProviderManualList = originalManualList;
+                SettingsProvider.Set("OcrOnnxEpManualList", originalManualList);
+                SetOnnxExecutionProviderMode(originalMode);
+            }
+        }
 
         public bool IsDocLayoutEpContextModelInstalled()
             => File.Exists(GetDocLayoutEpContextModelPath());
 
-        public async Task DownloadDocLayoutModelAsync(CancellationToken cancellationToken)
+        public Task DownloadDocLayoutModelAsync(CancellationToken cancellationToken)
+        {
+            Task downloadTask;
+            lock (_docLayoutModelDownloadGate)
+            {
+                if (IsDocLayoutModelInstalled())
+                {
+                    LastDocLayoutModelDownloadError = null;
+                    long modelLength = new FileInfo(GetDocLayoutModelPath()).Length;
+                    DocLayoutModelDownloadReceivedBytes = modelLength;
+                    DocLayoutModelDownloadTotalBytes = modelLength;
+                    downloadTask = Task.CompletedTask;
+                }
+                else if (_docLayoutModelDownloadTask is { IsCompleted: false })
+                {
+                    return _docLayoutModelDownloadTask;
+                }
+                else
+                {
+                    _docLayoutModelDownloadTask = DownloadDocLayoutModelCoreAsync(cancellationToken);
+                    LastDocLayoutModelDownloadError = null;
+                    DocLayoutModelDownloadReceivedBytes = 0;
+                    DocLayoutModelDownloadTotalBytes = null;
+                    downloadTask = _docLayoutModelDownloadTask;
+                    _ = downloadTask.ContinueWith(
+                        task =>
+                        {
+                            lock (_docLayoutModelDownloadGate)
+                            {
+                                LastDocLayoutModelDownloadError = task.IsFaulted
+                                    ? task.Exception?.GetBaseException().Message
+                                    : task.IsCanceled
+                                        ? "Download canceled."
+                                        : null;
+
+                                if (ReferenceEquals(_docLayoutModelDownloadTask, task))
+                                    _docLayoutModelDownloadTask = null;
+                            }
+
+                            DocLayoutModelDownloadStateChanged?.Invoke(this, EventArgs.Empty);
+                        },
+                        CancellationToken.None,
+                        TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+            }
+
+            DocLayoutModelDownloadStateChanged?.Invoke(this, EventArgs.Empty);
+            return downloadTask;
+        }
+
+        private async Task DownloadDocLayoutModelCoreAsync(CancellationToken cancellationToken)
         {
             string targetPath = GetDocLayoutModelPath();
             string? targetDirectory = Path.GetDirectoryName(targetPath);
@@ -53,17 +323,27 @@ namespace MangaViewer.Services
 
             try
             {
-                using var response = await s_httpClient.GetAsync(DocLayoutModelDownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
-                response.EnsureSuccessStatusCode();
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(DocLayoutModelDownloadTimeout);
+                CancellationToken downloadToken = timeoutCts.Token;
 
-                await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
-                await using (var destination = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                try
                 {
-                    await source.CopyToAsync(destination, cancellationToken).ConfigureAwait(false);
+                    await DownloadDocLayoutModelFileAsync(tempPath, downloadToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"PP-DocLayoutV3 model download timed out after {DocLayoutModelDownloadTimeout.TotalMinutes:N0} minutes.");
+                }
+                catch (HttpRequestException ex)
+                {
+                    throw new InvalidOperationException($"PP-DocLayoutV3 download request failed. Url={DocLayoutModelDownloadUrl}, Target={targetPath}, Error={ex.Message}", ex);
                 }
 
+                ValidateDownloadedDocLayoutModelFile(tempPath);
                 File.Move(tempPath, targetPath, overwrite: true);
                 InvalidateDocLayoutSession();
+                SetDocLayoutModelDownloadProgress(new FileInfo(targetPath).Length, new FileInfo(targetPath).Length);
             }
             catch
             {
@@ -77,6 +357,253 @@ namespace MangaViewer.Services
                 }
 
                 throw;
+            }
+        }
+
+        private async Task DownloadDocLayoutModelFileAsync(string tempPath, CancellationToken cancellationToken)
+        {
+            if (TryIsPackagedApp() && !_docLayoutBackgroundTransferUnavailable)
+            {
+                try
+                {
+                    await DownloadDocLayoutModelWithBackgroundTransferAsync(DocLayoutModelDownloadUrl, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _docLayoutBackgroundTransferUnavailable = true;
+                    Debug.WriteLine($"[OcrService][ONNX] Background download unavailable. Falling back to HttpClient. Error={ex}");
+                }
+            }
+
+            using var response = await SendDocLayoutModelDownloadRequestAsync(DocLayoutModelDownloadUrl, cancellationToken).ConfigureAwait(false);
+
+            if (response.Content.Headers.ContentLength is long contentLength && contentLength < DocLayoutModelMinimumBytes)
+                throw new InvalidOperationException($"Downloaded ONNX model is unexpectedly small ({contentLength:N0} bytes).");
+            SetDocLayoutModelDownloadProgress(0, response.Content.Headers.ContentLength);
+
+            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false))
+            await using (var destination = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            {
+                await CopyDocLayoutModelWithProgressAsync(source, destination, response.Content.Headers.ContentLength, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task DownloadDocLayoutModelWithBackgroundTransferAsync(string url, CancellationToken cancellationToken)
+        {
+            StorageFolder modelFolder = await ApplicationData.Current.LocalFolder
+                .CreateFolderAsync(DocLayoutModelDirectoryName, CreationCollisionOption.OpenIfExists)
+                .AsTask(cancellationToken)
+                .ConfigureAwait(false);
+            StorageFile tempFile = await modelFolder
+                .CreateFileAsync(DocLayoutModelFileName + ".download", CreationCollisionOption.ReplaceExisting)
+                .AsTask(cancellationToken)
+                .ConfigureAwait(false);
+
+            var downloader = new BackgroundDownloader();
+            downloader.SetRequestHeader("User-Agent", "Mozilla/5.0 MangaViewer/1.0");
+            downloader.SetRequestHeader("Accept", "application/octet-stream,*/*");
+
+            DownloadOperation operation = downloader.CreateDownload(new Uri(url), tempFile);
+            var progress = new Progress<DownloadOperation>(download =>
+            {
+                ulong received = download.Progress.BytesReceived;
+                ulong total = download.Progress.TotalBytesToReceive;
+                SetDocLayoutModelDownloadProgress(
+                    received > long.MaxValue ? long.MaxValue : (long)received,
+                    total > 0 ? (total > long.MaxValue ? long.MaxValue : (long)total) : null);
+            });
+
+            try
+            {
+                await operation.StartAsync().AsTask(cancellationToken, progress).ConfigureAwait(false);
+                SetDocLayoutModelDownloadProgress(
+                    operation.Progress.BytesReceived > long.MaxValue ? long.MaxValue : (long)operation.Progress.BytesReceived,
+                    operation.Progress.TotalBytesToReceive > 0
+                        ? (operation.Progress.TotalBytesToReceive > long.MaxValue ? long.MaxValue : (long)operation.Progress.TotalBytesToReceive)
+                        : null);
+            }
+            catch
+            {
+                try { operation.AttachAsync().Cancel(); } catch { }
+                throw;
+            }
+        }
+
+        private static bool TryIsPackagedApp()
+        {
+            try
+            {
+                _ = ApplicationData.Current.LocalFolder.Path;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task<HttpResponseMessage> SendDocLayoutModelDownloadRequestAsync(string url, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await SendDocLayoutModelDownloadRequestOnceAsync(url, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && !string.Equals(url, DocLayoutModelDownloadFallbackUrl, StringComparison.OrdinalIgnoreCase))
+            {
+                return await SendDocLayoutModelDownloadRequestOnceAsync(DocLayoutModelDownloadFallbackUrl, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private static async Task<HttpResponseMessage> SendDocLayoutModelDownloadRequestOnceAsync(string url, CancellationToken cancellationToken)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url)
+            {
+                Version = HttpVersion.Version11,
+                VersionPolicy = HttpVersionPolicy.RequestVersionOrLower
+            };
+            request.Headers.UserAgent.ParseAdd("Mozilla/5.0 MangaViewer/1.0");
+            request.Headers.Accept.ParseAdd("application/octet-stream");
+            request.Headers.Accept.ParseAdd("*/*");
+
+            var response = await s_httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.IsSuccessStatusCode)
+                return response;
+
+            string errorBody = await ReadDownloadErrorBodyAsync(response, cancellationToken).ConfigureAwait(false);
+            string detail = string.IsNullOrWhiteSpace(errorBody) ? string.Empty : $" Body={errorBody}";
+            var statusCode = response.StatusCode;
+            string? reasonPhrase = response.ReasonPhrase;
+            response.Dispose();
+            throw new InvalidOperationException($"PP-DocLayoutV3 download failed with HTTP {(int)statusCode} {reasonPhrase}. Url={url}.{detail}");
+        }
+
+        private static async Task<string> ReadDownloadErrorBodyAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+        {
+            try
+            {
+                string body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                if (body.Length > 300)
+                    body = body[..300];
+                return body.Replace('\r', ' ').Replace('\n', ' ');
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private async Task CopyDocLayoutModelWithProgressAsync(Stream source, Stream destination, long? totalBytes, CancellationToken cancellationToken)
+        {
+            byte[] buffer = new byte[81920];
+            long receivedBytes = 0;
+            long lastReportedBytes = 0;
+
+            while (true)
+            {
+                int bytesRead;
+                using (var readCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                {
+                    readCts.CancelAfter(DocLayoutModelDownloadStallTimeout);
+                    try
+                    {
+                        bytesRead = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), readCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException($"PP-DocLayoutV3 model download stalled for more than {DocLayoutModelDownloadStallTimeout.TotalSeconds:N0} seconds.");
+                    }
+                }
+
+                if (bytesRead == 0)
+                    break;
+
+                await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken).ConfigureAwait(false);
+                receivedBytes += bytesRead;
+
+                if (receivedBytes - lastReportedBytes >= 1024L * 1024L || (totalBytes.HasValue && receivedBytes >= totalBytes.Value))
+                {
+                    lastReportedBytes = receivedBytes;
+                    SetDocLayoutModelDownloadProgress(receivedBytes, totalBytes);
+                }
+            }
+
+            SetDocLayoutModelDownloadProgress(receivedBytes, totalBytes);
+        }
+
+        private void SetDocLayoutModelDownloadProgress(long receivedBytes, long? totalBytes)
+        {
+            lock (_docLayoutModelDownloadGate)
+            {
+                DocLayoutModelDownloadReceivedBytes = receivedBytes;
+                DocLayoutModelDownloadTotalBytes = totalBytes;
+            }
+
+            DocLayoutModelDownloadStateChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        private static string GetDocLayoutUserDataModelPath()
+        {
+            string basePath;
+            try
+            {
+                basePath = ApplicationData.Current.LocalFolder.Path;
+            }
+            catch
+            {
+                string localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                basePath = string.IsNullOrWhiteSpace(localApplicationData)
+                    ? AppContext.BaseDirectory
+                    : Path.Combine(localApplicationData, "MangaViewer");
+            }
+
+            return Path.Combine(basePath, DocLayoutModelDirectoryName, DocLayoutModelFileName);
+        }
+
+        private static string GetLegacyDocLayoutModelPath()
+            => Path.Combine(AppContext.BaseDirectory, DocLayoutModelRelativePath.Replace('/', Path.DirectorySeparatorChar));
+
+        private static void TryMigrateLegacyDocLayoutModel(string targetPath)
+        {
+            if (File.Exists(targetPath))
+                return;
+
+            string legacyPath = GetLegacyDocLayoutModelPath();
+            if (!File.Exists(legacyPath) || !IsDocLayoutModelFilePlausible(legacyPath))
+                return;
+
+            try
+            {
+                string? targetDirectory = Path.GetDirectoryName(targetPath);
+                if (!string.IsNullOrWhiteSpace(targetDirectory))
+                    Directory.CreateDirectory(targetDirectory);
+
+                File.Copy(legacyPath, targetPath, overwrite: false);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[OcrService][ONNX] Legacy DocLayout model migration skipped. Error={ex.Message}");
+            }
+        }
+
+        private static bool IsDocLayoutModelFilePlausible(string path)
+        {
+            try
+            {
+                return File.Exists(path) && new FileInfo(path).Length >= DocLayoutModelMinimumBytes;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void ValidateDownloadedDocLayoutModelFile(string modelPath)
+        {
+            if (!IsDocLayoutModelFilePlausible(modelPath))
+            {
+                long length = File.Exists(modelPath) ? new FileInfo(modelPath).Length : 0;
+                throw new InvalidOperationException($"Downloaded ONNX model is incomplete or invalid ({length:N0} bytes).");
             }
         }
 
@@ -112,7 +639,7 @@ namespace MangaViewer.Services
             lock (_cacheGate)
             {
                 if (!_ollamaCache.TryGetValue(cacheKey, out var cached)
-                    || !ShouldReuseCachedOcrResult(cached)
+                    || !ShouldReuseCachedOcrResult(cached, mode)
                     || (requireCompleteHybrid && string.Equals(mode, "hybrid", StringComparison.OrdinalIgnoreCase) && HasIncompleteHybridTextBoxes(cached)))
                 {
                     response = new OllamaOcrResponse();
@@ -124,8 +651,16 @@ namespace MangaViewer.Services
             }
         }
 
-        private static bool ShouldReuseCachedOcrResult(OllamaOcrResponse? response)
-            => response != null && response.IsSuccessful;
+        private static bool ShouldReuseCachedOcrResult(OllamaOcrResponse? response, string? mode = null)
+        {
+            if (response == null || !response.IsSuccessful)
+                return false;
+
+            if (string.Equals(mode, "hybrid", StringComparison.OrdinalIgnoreCase))
+                return response.Boxes.Count > 0;
+
+            return true;
+        }
 
         private static bool HasIncompleteHybridTextBoxes(OllamaOcrResponse? response)
             => response != null && response.Boxes.Any(IsIncompleteHybridTextBox);
@@ -304,7 +839,7 @@ namespace MangaViewer.Services
                     var cacheableResult = CloneOllamaOcrResponse(result);
                     lock (_owner._cacheGate)
                     {
-                        if (ShouldReuseCachedOcrResult(cacheableResult))
+                        if (ShouldReuseCachedOcrResult(cacheableResult, "vlm"))
                             _owner._ollamaCache[cacheKey] = cacheableResult;
                         else
                             _owner._ollamaCache.Remove(cacheKey);
@@ -351,7 +886,8 @@ namespace MangaViewer.Services
                 string imagePath,
                 CancellationToken cancellationToken,
                 bool forceRefresh,
-                Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady)
+                Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady,
+                bool recognizeText = true)
             {
                 if (string.IsNullOrWhiteSpace(imagePath)) return new OllamaOcrResponse();
 
@@ -373,7 +909,7 @@ namespace MangaViewer.Services
                         try
                         {
                             var sourceImage = await _owner.TryGetHybridSourceImageAsync(imagePath, cancellationToken).ConfigureAwait(false);
-                            if (sourceImage.Bytes != null && sourceImage.Width > 0 && sourceImage.Height > 0)
+                            if (recognizeText && sourceImage.Bytes != null && sourceImage.Width > 0 && sourceImage.Height > 0)
                             {
                                 await _owner.RecognizeLayoutBoxesWithGlmOcrAsync(
                                     imagePath,
@@ -386,7 +922,7 @@ namespace MangaViewer.Services
                             var cacheableResumed = CloneOllamaOcrResponse(resumed);
                             lock (_owner._cacheGate)
                             {
-                                if (ShouldReuseCachedOcrResult(cacheableResumed))
+                                    if (ShouldReuseCachedOcrResult(cacheableResumed, "hybrid"))
                                     _owner._ollamaCache[cacheKey] = cacheableResumed;
                                 else
                                     _owner._ollamaCache.Remove(cacheKey);
@@ -437,18 +973,21 @@ namespace MangaViewer.Services
                     var resultBoxes = BuildLayoutBoundingBoxes(layoutBoxes, sourceImage.Width, sourceImage.Height);
                     onLayoutBoxesReady?.Invoke(resultBoxes);
 
-                    await _owner.RecognizeLayoutBoxesWithGlmOcrAsync(
-                        imagePath,
-                        sourceImage.Bytes,
-                        resultBoxes,
-                        cancellationToken).ConfigureAwait(false);
+                    if (recognizeText)
+                    {
+                        await _owner.RecognizeLayoutBoxesWithGlmOcrAsync(
+                            imagePath,
+                            sourceImage.Bytes,
+                            resultBoxes,
+                            cancellationToken).ConfigureAwait(false);
+                    }
 
                     var result = BuildOllamaOcrResponse(resultBoxes);
                     var cacheableResult = CloneOllamaOcrResponse(result);
 
                     lock (_owner._cacheGate)
                     {
-                        if (ShouldReuseCachedOcrResult(cacheableResult))
+                        if (ShouldReuseCachedOcrResult(cacheableResult, "hybrid"))
                             _owner._ollamaCache[cacheKey] = cacheableResult;
                         else
                             _owner._ollamaCache.Remove(cacheKey);
@@ -549,8 +1088,10 @@ namespace MangaViewer.Services
             {
                 lock (_owner._docLayoutSessionGate)
                 {
-                    _owner._docLayoutSession?.Dispose();
-                    _owner._docLayoutSession = null;
+                    // Do not dispose the ONNX session on the caller thread. EP-backed sessions
+                    // can block inside native driver teardown, and these setters are often
+                    // invoked by UI controls such as the EP mode ComboBox. Clearing the path
+                    // makes the next OCR run rebuild the session on its worker path.
                     _owner._docLayoutModelPath = null;
                     _owner._docLayoutRuntimeEpLogged = false;
                 }
@@ -796,8 +1337,9 @@ namespace MangaViewer.Services
             string imagePath,
             CancellationToken cancellationToken,
             bool forceRefresh = false,
-            Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady = null)
-            => await _hybridOcrBackend.GetOcrAsync(imagePath, cancellationToken, forceRefresh, onLayoutBoxesReady).ConfigureAwait(false);
+            Action<IReadOnlyList<BoundingBoxViewModel>>? onLayoutBoxesReady = null,
+            bool recognizeText = true)
+            => await _hybridOcrBackend.GetOcrAsync(imagePath, cancellationToken, forceRefresh, onLayoutBoxesReady, recognizeText).ConfigureAwait(false);
 
         private async Task<OllamaOcrResponse> BuildHybridFallbackResponseAsync(
             string imagePath,
@@ -897,9 +1439,11 @@ namespace MangaViewer.Services
                 using var boxCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 boxCts.CancelAfter(HybridCropRequestTimeout);
 
-                await throttler.WaitAsync(boxCts.Token).ConfigureAwait(false);
+                bool acquired = false;
                 try
                 {
+                    await throttler.WaitAsync(boxCts.Token).ConfigureAwait(false);
+                    acquired = true;
                     boxCts.Token.ThrowIfCancellationRequested();
                     string cropText = await GetOrRequestHybridBoxTextAsync(imagePath, box, originalBytes, boxCts.Token).ConfigureAwait(false);
                     box.Text = string.IsNullOrWhiteSpace(cropText) ? string.Empty : cropText.Trim();
@@ -916,7 +1460,8 @@ namespace MangaViewer.Services
                 }
                 finally
                 {
-                    throttler.Release();
+                    if (acquired)
+                        throttler.Release();
                 }
             }).ToArray();
 
@@ -934,6 +1479,166 @@ namespace MangaViewer.Services
                 Boxes = resultBoxes,
                 IsSuccessful = true
             };
+        }
+
+        private async Task<string> RunDocLayoutRawDiagnosticsAsync(
+            InferenceSession session,
+            byte[] imageBytes,
+            int imageWidth,
+            int imageHeight,
+            CancellationToken cancellationToken)
+        {
+            using var inputStream = new InMemoryRandomAccessStream();
+            await inputStream.WriteAsync(imageBytes.AsBuffer()).AsTask(cancellationToken).ConfigureAwait(false);
+            inputStream.Seek(0);
+
+            var decoder = await BitmapDecoder.CreateAsync(inputStream).AsTask(cancellationToken).ConfigureAwait(false);
+            var transform = new BitmapTransform
+            {
+                ScaledWidth = DocLayoutInputSize,
+                ScaledHeight = DocLayoutInputSize,
+                InterpolationMode = BitmapInterpolationMode.Linear
+            };
+
+            var resized = await decoder.GetSoftwareBitmapAsync(
+                BitmapPixelFormat.Bgra8,
+                BitmapAlphaMode.Ignore,
+                transform,
+                ExifOrientationMode.RespectExifOrientation,
+                ColorManagementMode.DoNotColorManage).AsTask(cancellationToken).ConfigureAwait(false);
+
+            var inputBlob = BuildDocLayoutInputBlob(resized);
+            var inputNames = session.InputMetadata.Keys.ToList();
+            ResolveDocLayoutInputNames(inputNames, out string imShapeInputName, out string imageInputName, out string scaleInputName);
+
+            var imShapeTensor = new DenseTensor<float>(new[] { 1, 2 });
+            imShapeTensor[0, 0] = DocLayoutInputSize;
+            imShapeTensor[0, 1] = DocLayoutInputSize;
+
+            var imageTensor = new DenseTensor<float>(new[] { 1, 3, DocLayoutInputSize, DocLayoutInputSize });
+            inputBlob.AsSpan().CopyTo(imageTensor.Buffer.Span);
+
+            var scaleTensor = new DenseTensor<float>(new[] { 1, 2 });
+            scaleTensor[0, 0] = imageHeight > 0 ? (float)DocLayoutInputSize / imageHeight : 0;
+            scaleTensor[0, 1] = imageWidth > 0 ? (float)DocLayoutInputSize / imageWidth : 0;
+
+            using var results = session.Run(new[]
+            {
+                NamedOnnxValue.CreateFromTensor(imShapeInputName, imShapeTensor),
+                NamedOnnxValue.CreateFromTensor(imageInputName, imageTensor),
+                NamedOnnxValue.CreateFromTensor(scaleInputName, scaleTensor)
+            });
+
+            var report = new StringBuilder();
+            foreach (var result in results)
+            {
+                if (result.Value is not Tensor<float> tensor)
+                {
+                    report.AppendLine($"RawOutput:{result.Name}=NonFloatTensor");
+                    continue;
+                }
+
+                var values = tensor.ToArray();
+                var dims = tensor.Dimensions.ToArray();
+                report.AppendLine($"RawOutput:{result.Name}=Dims[{string.Join(",", dims)}],Values={values.Length}");
+                if (values.Length == 0)
+                    continue;
+
+                int columns = dims.Length > 0 && dims[^1] > 0 ? dims[^1] : Math.Min(7, values.Length);
+                if (columns <= 0)
+                    continue;
+
+                int rows = values.Length / columns;
+                int maxColumnsToReport = Math.Min(columns, 8);
+                for (int c = 0; c < maxColumnsToReport; c++)
+                {
+                    float min = float.PositiveInfinity;
+                    float max = float.NegativeInfinity;
+                    for (int r = 0; r < rows; r++)
+                    {
+                        float value = values[r * columns + c];
+                        if (value < min) min = value;
+                        if (value > max) max = value;
+                    }
+
+                    report.AppendLine($"RawOutput:{result.Name}:Col{c}=Min:{min:0.###},Max:{max:0.###}");
+                }
+
+                int sampleRows = Math.Min(rows, 5);
+                for (int r = 0; r < sampleRows; r++)
+                {
+                    var rowValues = new string[maxColumnsToReport];
+                    for (int c = 0; c < maxColumnsToReport; c++)
+                        rowValues[c] = values[r * columns + c].ToString("0.###", CultureInfo.InvariantCulture);
+                    report.AppendLine($"RawOutput:{result.Name}:Row{r}=[{string.Join(",", rowValues)}]");
+                }
+            }
+
+            return report.ToString();
+        }
+
+        private static async Task<(byte[] Bytes, int Width, int Height)> CreateDocLayoutSelfTestImageAsync(CancellationToken cancellationToken)
+        {
+            const int width = 768;
+            const int height = 1024;
+            var pixels = new byte[width * height * 4];
+            Array.Fill<byte>(pixels, 0xFF);
+
+            static void FillRect(byte[] buffer, int imageWidth, int imageHeight, int x, int y, int w, int h, byte gray)
+            {
+                int left = Math.Clamp(x, 0, imageWidth);
+                int top = Math.Clamp(y, 0, imageHeight);
+                int right = Math.Clamp(x + w, 0, imageWidth);
+                int bottom = Math.Clamp(y + h, 0, imageHeight);
+                for (int py = top; py < bottom; py++)
+                {
+                    int row = py * imageWidth * 4;
+                    for (int px = left; px < right; px++)
+                    {
+                        int offset = row + px * 4;
+                        buffer[offset + 0] = gray;
+                        buffer[offset + 1] = gray;
+                        buffer[offset + 2] = gray;
+                        buffer[offset + 3] = 0xFF;
+                    }
+                }
+            }
+
+            FillRect(pixels, width, height, 92, 80, 584, 6, 0x00);
+            FillRect(pixels, width, height, 92, 900, 584, 6, 0x00);
+            FillRect(pixels, width, height, 92, 80, 6, 826, 0x00);
+            FillRect(pixels, width, height, 670, 80, 6, 826, 0x00);
+
+            for (int i = 0; i < 9; i++)
+            {
+                int y = 150 + i * 72;
+                FillRect(pixels, width, height, 150, y, 450, 18, 0x00);
+                FillRect(pixels, width, height, 150, y + 28, 360, 12, 0x20);
+            }
+
+            using var stream = new InMemoryRandomAccessStream();
+            var encoder = await BitmapEncoder.CreateAsync(BitmapEncoder.PngEncoderId, stream)
+                .AsTask(cancellationToken)
+                .ConfigureAwait(false);
+            encoder.SetPixelData(
+                BitmapPixelFormat.Bgra8,
+                BitmapAlphaMode.Ignore,
+                (uint)width,
+                (uint)height,
+                96,
+                96,
+                pixels);
+            await encoder.FlushAsync().AsTask(cancellationToken).ConfigureAwait(false);
+
+            if (stream.Size > int.MaxValue)
+                throw new InvalidOperationException($"DocLayout self-test image is unexpectedly large ({stream.Size:N0} bytes).");
+
+            var bytes = new byte[(int)stream.Size];
+            stream.Seek(0);
+            await stream.ReadAsync(bytes.AsBuffer(), (uint)bytes.Length, InputStreamOptions.None)
+                .AsTask(cancellationToken)
+                .ConfigureAwait(false);
+            return (bytes, width, height);
         }
 
         private static SessionOptions CreateCpuOnlyDocLayoutSessionOptions()
@@ -1994,26 +2699,51 @@ If no readable text exists, return an empty string.";
                 }
             };
 
-            payload["response_format"] = useSchemaResponse
-                ? new Dictionary<string, object?>
-                {
-                    ["type"] = "json_schema",
-                    ["schema"] = OllamaOcrProtocol.BuildOcrJsonSchema()
-                }
-                : new Dictionary<string, object?>
+            payload["response_format"] = BuildOpenAiCompatibleOcrResponseFormat(useSchemaResponse);
+
+            try
+            {
+                return await ExecuteOpenAiCompatibleChatRequestAsync(
+                    endpoint,
+                    payload,
+                    thinkEnabled,
+                    OllamaThinkingRequestTimeout,
+                    "[OcrService][llama-server]",
+                    OllamaOcrProtocol.StripThinkingContent,
+                    activeRequest,
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (useSchemaResponse && ex is not OperationCanceledException)
+            {
+                Debug.WriteLine($"[OcrService][llama-server] Structured response_format failed. Retrying with json_object. Error={ex.Message}");
+                payload["response_format"] = BuildOpenAiCompatibleOcrResponseFormat(useSchemaResponse: false);
+                return await ExecuteOpenAiCompatibleChatRequestAsync(
+                    endpoint,
+                    payload,
+                    thinkEnabled,
+                    OllamaThinkingRequestTimeout,
+                    "[OcrService][llama-server][json-object]",
+                    OllamaOcrProtocol.StripThinkingContent,
+                    activeRequest,
+                    cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private static Dictionary<string, object?> BuildOpenAiCompatibleOcrResponseFormat(bool useSchemaResponse)
+        {
+            if (!useSchemaResponse)
+            {
+                return new Dictionary<string, object?>
                 {
                     ["type"] = "json_object"
                 };
+            }
 
-            return await ExecuteOpenAiCompatibleChatRequestAsync(
-                endpoint,
-                payload,
-                thinkEnabled,
-                OllamaThinkingRequestTimeout,
-                "[OcrService][llama-server]",
-                OllamaOcrProtocol.StripThinkingContent,
-                activeRequest,
-                cancellationToken).ConfigureAwait(false);
+            return new Dictionary<string, object?>
+            {
+                ["type"] = "json_schema",
+                ["schema"] = OllamaOcrProtocol.BuildOcrJsonSchema()
+            };
         }
 
         private static OllamaOcrResponse ParseStructuredOllamaResponse(

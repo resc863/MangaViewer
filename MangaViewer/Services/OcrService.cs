@@ -53,7 +53,7 @@ namespace MangaViewer.Services
         private const double OllamaAssumedProcessingSquareSize = 1000.0;
         private const int OllamaOcrContextLength = 8192;
         private const int DocLayoutInputSize = 800;
-        private const float DocLayoutScoreThreshold = 0.5f;
+        private const float DefaultDocLayoutScoreThreshold = 0.25f;
         private const string DocLayoutModelRelativePath = "onnx/PP-DocLayoutV3.onnx";
         private static readonly TimeSpan OllamaRequestTimeout = TimeSpan.FromSeconds(180);
         private static readonly TimeSpan OllamaThinkingRequestTimeout = TimeSpan.FromMinutes(10);
@@ -157,6 +157,7 @@ namespace MangaViewer.Services
         public int LlamaServerMaxConcurrentRequestsUpperBound => LlamaServerReportedTotalSlots > 0 ? Math.Clamp(LlamaServerReportedTotalSlots, 1, 32) : 32;
         public int EffectiveLlamaServerMaxConcurrentRequests => Math.Min(LlamaServerMaxConcurrentRequests, LlamaServerMaxConcurrentRequestsUpperBound);
         public int HybridTextExtractionParallelism { get; private set; } = 2;
+        public double DocLayoutScoreThreshold { get; private set; } = DefaultDocLayoutScoreThreshold;
         public bool HybridOnnxFallbackEnabled { get; private set; } = false;
         public bool PrefetchAdjacentPagesEnabled { get; private set; } = true;
         public int PrefetchAdjacentPageCount { get; private set; } = 1;
@@ -217,6 +218,7 @@ namespace MangaViewer.Services
             LlamaServerMaxConcurrentRequests = Math.Clamp(SettingsProvider.Get("LlamaServerMaxConcurrentRequests", OllamaRequestLoadCoordinator.MaxConcurrentRequests), 1, 32);
             LlamaServerSlotEraseEnabled = SettingsProvider.Get("LlamaServerSlotEraseEnabled", OllamaRequestLoadCoordinator.SlotEraseEnabled);
             HybridTextExtractionParallelism = Math.Clamp(SettingsProvider.Get("OcrHybridTextExtractionParallelism", 2), 1, 8);
+            DocLayoutScoreThreshold = Math.Clamp(SettingsProvider.Get("OcrDocLayoutScoreThreshold", (double)DefaultDocLayoutScoreThreshold), 0.05, 0.95);
             HybridOnnxFallbackEnabled = SettingsProvider.Get("OcrHybridOnnxFallbackEnabled", false);
             PrefetchAdjacentPagesEnabled = SettingsProvider.Get("OcrPrefetchAdjacentPagesEnabled", true);
             PrefetchAdjacentPageCount = Math.Clamp(SettingsProvider.Get("OcrPrefetchAdjacentPageCount", 1), 0, 10);
@@ -394,6 +396,16 @@ namespace MangaViewer.Services
             if (HybridTextExtractionParallelism == clamped) return;
             HybridTextExtractionParallelism = clamped;
             SettingsProvider.Set("OcrHybridTextExtractionParallelism", clamped);
+        }
+
+        public void SetDocLayoutScoreThreshold(double value)
+        {
+            double clamped = Math.Clamp(value, 0.05, 0.95);
+            if (Math.Abs(DocLayoutScoreThreshold - clamped) <= 0.0001) return;
+            DocLayoutScoreThreshold = clamped;
+            SettingsProvider.Set("OcrDocLayoutScoreThreshold", clamped);
+            ClearCache();
+            OnSettingsChanged();
         }
 
         public void SetHybridOnnxFallbackEnabled(bool enabled)
